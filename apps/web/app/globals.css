@@ -1,0 +1,183 @@
+@import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=DM+Sans:ital,opsz,wght@0,9..40,300;0,9..40,400;0,9..40,500;0,9..40,600;1,9..40,400&display=swap');
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ─── CSS Custom Properties ─────────────────────────────────────────────── */
+:root {
+  --clash-black: #0A0A0F;
+  --clash-white: #F5F5F0;
+  --clash-gold: #FFB800;
+  --clash-blue: #1A3FBE;
+  --clash-red: #BE1A1A;
+  --clash-dim: #1A1A28;
+
+  /* Animation durations — tune these to adjust feel */
+  --float-duration: 3s;
+  --glow-duration: 2s;
+  --wipe-duration: 0.4s;
+  --pop-duration: 0.8s;
+  --fill-duration: 1.2s;
+  --flash-duration: 1.5s;
+}
+
+/* ─── Base ───────────────────────────────────────────────────────────────── */
+html {
+  color-scheme: dark;
+}
+
+body {
+  background-color: var(--clash-black);
+  color: var(--clash-white);
+  font-family: 'DM Sans', sans-serif;
+  min-height: 100vh;
+  overflow-x: hidden;
+  position: relative;
+}
+
+/* Scanline texture overlay — subtle CRT arena feel */
+body::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  background-image: repeating-linear-gradient(
+    0deg,
+    transparent,
+    transparent 2px,
+    rgba(0, 0, 0, 0.03) 2px,
+    rgba(0, 0, 0, 0.03) 4px
+  );
+  pointer-events: none;
+  z-index: 9999;
+}
+
+/* ─── Typography ─────────────────────────────────────────────────────────── */
+h1, h2, h3, h4, h5, h6 {
+  font-family: 'Syne', sans-serif;
+  font-weight: 700;
+}
+
+/* ─── Custom Scrollbar ───────────────────────────────────────────────────── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: var(--clash-black);
+}
+
+::-webkit-scrollbar-thumb {
+  background: var(--clash-dim);
+  border-radius: 3px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: var(--clash-gold);
+}
+
+/* Firefox */
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--clash-dim) var(--clash-black);
+}
+
+/* ─── Utility Classes ────────────────────────────────────────────────────── */
+@layer utilities {
+  .font-display {
+    font-family: 'Syne', sans-serif;
+  }
+
+  .text-gold {
+    color: var(--clash-gold);
+  }
+
+  .text-clash-blue {
+    color: var(--clash-blue);
+  }
+
+  .text-clash-red {
+    color: var(--clash-red);
+  }
+
+  .bg-surface {
+    background-color: var(--clash-dim);
+  }
+
+  .border-gold {
+    border-color: var(--clash-gold);
+  }
+
+  .glow-gold {
+    box-shadow: 0 0 16px 4px rgba(255, 184, 0, 0.35);
+  }
+
+  .glow-blue {
+    box-shadow: 0 0 16px 4px rgba(26, 63, 190, 0.45);
+  }
+
+  .glow-red {
+    box-shadow: 0 0 16px 4px rgba(190, 26, 26, 0.45);
+  }
+
+  /* Arena gradient background */
+  .arena-bg {
+    background: radial-gradient(ellipse at center top, #1A1A28 0%, #0A0A0F 70%);
+  }
+}
+
+/* ─── Component Styles ───────────────────────────────────────────────────── */
+@layer components {
+  .btn-primary {
+    @apply bg-clash-gold text-clash-black font-display font-bold px-6 py-3 rounded-lg
+           hover:brightness-110 active:scale-95 transition-all duration-150
+           disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  .btn-secondary {
+    @apply border border-clash-gold text-clash-gold font-display font-bold px-6 py-3 rounded-lg
+           hover:bg-clash-gold hover:text-clash-black active:scale-95 transition-all duration-150
+           disabled:opacity-40 disabled:cursor-not-allowed;
+  }
+
+  .btn-ghost {
+    @apply text-clash-white/70 font-body px-4 py-2 rounded-lg
+           hover:text-clash-white hover:bg-clash-dim active:scale-95 transition-all duration-150;
+  }
+
+  .card {
+    @apply bg-clash-dim border border-white/10 rounded-xl p-4;
+  }
+
+  .card-hover {
+    @apply card hover:border-clash-gold/40 hover:shadow-lg hover:shadow-clash-gold/10
+           transition-all duration-200 cursor-pointer;
+  }
+
+  .badge {
+    @apply inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-body font-medium;
+  }
+
+  .badge-gold {
+    @apply badge bg-clash-gold/20 text-clash-gold border border-clash-gold/30;
+  }
+
+  .badge-blue {
+    @apply badge bg-clash-blue/20 text-blue-300 border border-clash-blue/30;
+  }
+
+  .badge-red {
+    @apply badge bg-clash-red/20 text-red-300 border border-clash-red/30;
+  }
+
+  .input {
+    @apply bg-clash-black border border-white/20 rounded-lg px-4 py-2.5 text-clash-white
+           placeholder:text-white/30 focus:outline-none focus:border-clash-gold/60
+           transition-colors duration-150 w-full font-body;
+  }
+
+  .textarea {
+    @apply input resize-none;
+  }
+}
