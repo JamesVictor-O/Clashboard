@@ -1,9 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
-import { keccak256, toBytes, encodeAbiParameters, parseAbiParameters } from "viem";
+import { keccak256, encodeAbiParameters, parseAbiParameters } from "viem";
 import { createBattleOnChain } from "@/lib/chain";
-import { battleStore, BattleState } from "@/lib/battle-store";
+import { battleStore } from "@/lib/battle-store";
 import type { Battle } from "@/lib/types";
 
 const StartBattleSchema = z.object({

@@ -106,6 +106,12 @@ function getWalletClient(): WalletClient {
   });
 }
 
+function getPlatformAccount() {
+  const privateKey = process.env.PLATFORM_PRIVATE_KEY;
+  if (!privateKey) throw new Error("PLATFORM_PRIVATE_KEY is not set");
+  return privateKeyToAccount(privateKey as `0x${string}`);
+}
+
 function getContractAddress(): `0x${string}` {
   const addr = process.env.NEXT_PUBLIC_ARENA_CONTRACT;
   if (!addr) throw new Error("NEXT_PUBLIC_ARENA_CONTRACT is not set");
@@ -123,6 +129,7 @@ export async function createBattleOnChain(params: {
 }): Promise<string> {
   const wallet = getWalletClient();
   const contract = getContractAddress();
+  const chain = getActiveChain();
 
   const hash = await wallet.writeContract({
     address: contract,
@@ -134,6 +141,8 @@ export async function createBattleOnChain(params: {
       params.agentB,
       params.bettingDuration,
     ],
+    chain,
+    account: getPlatformAccount(),
   });
 
   return hash;
@@ -147,6 +156,7 @@ export async function settleBattleOnChain(params: {
 }): Promise<string> {
   const wallet = getWalletClient();
   const contract = getContractAddress();
+  const chain = getActiveChain();
 
   const hash = await wallet.writeContract({
     address: contract,
@@ -158,6 +168,8 @@ export async function settleBattleOnChain(params: {
       params.rubricPreimage as `0x${string}`,
       params.judgeScore,
     ],
+    chain,
+    account: getPlatformAccount(),
   });
 
   return hash;

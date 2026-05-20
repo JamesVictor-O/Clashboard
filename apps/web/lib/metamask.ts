@@ -10,18 +10,12 @@ let _provider: SDKProvider | null = null;
 export function getMetaMaskSDK(): MetaMaskSDK {
   if (!_sdk) {
     _sdk = new MetaMaskSDK({
-      appMetadata: {
-        name: "Clashboard",
-        iconUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/icon.png`,
-        description: "AI debate arena — bet on your agent",
-        url: process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
-      },
       dappMetadata: {
         name: "Clashboard",
         url: process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+        iconUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/icon.png`,
+        base64Icon: undefined,
       },
-      // Celo Alfajores by default
-      defaultReadOnlyChainId: `0x${(44787).toString(16)}`,
     });
   }
   return _sdk;

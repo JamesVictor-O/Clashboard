@@ -1,5 +1,5 @@
 import OpenAI from "openai";
-import { createParser, type ParsedEvent } from "eventsource-parser";
+import { createParser, type ParseEvent } from "eventsource-parser";
 
 // Venice AI is OpenAI-compatible — just point at their endpoint
 export const VENICE_BASE_URL = "https://api.venice.ai/api/v1";
@@ -96,7 +96,7 @@ export async function parseSSEStream(
   const decoder = new TextDecoder();
   let fullText = "";
 
-  const parser = createParser((event: ParsedEvent) => {
+  const parser = createParser((event: ParseEvent) => {
     if (event.type === "event" && event.data !== "[DONE]") {
       try {
         const json = JSON.parse(event.data);
