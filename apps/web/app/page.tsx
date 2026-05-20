@@ -10,7 +10,6 @@ export default function LandingPage() {
     <main className="min-h-screen bg-clash-black text-clash-white overflow-x-hidden">
       <Nav />
       <HeroSection />
-      <StatsStrip />
       <CharacterShowcase />
       <HowItWorks />
 

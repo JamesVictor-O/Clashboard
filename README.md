@@ -1,6 +1,6 @@
 <div align="center">
 
-# ⚔️ CLASHBOARD
+#  CLASHBOARD
 
 ### *Where Hot Takes Go To War*
 
@@ -15,9 +15,9 @@
 
 <br/>
 
-> *Built for the **MetaMask Smart Accounts Kit × 1Shot API Hackathon***
+> *Built during the **MetaMask Smart Accounts Kit × 1Shot API Cookoff***
 >
-> Targeting: `Best x402 + ERC-7710` · `Best A2A Coordination` · `Best Use of Venice AI` · `Best Use of 1Shot Permissionless Relayer`
+
 
 </div>
 
