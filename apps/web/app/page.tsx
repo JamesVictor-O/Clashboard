@@ -1,6 +1,5 @@
 import { Nav } from "@/components/landing/Nav";
 import { HeroSection } from "@/components/landing/HeroSection";
-import { StatsStrip } from "@/components/landing/StatsStrip";
 import { CharacterShowcase } from "@/components/landing/CharacterShowcase";
 import { HowItWorks } from "@/components/landing/HowItWorks";
 import { LandingCTA } from "@/components/landing/LandingCTA";
@@ -25,8 +24,8 @@ export default function LandingPage() {
           </p>
           <div className="flex items-center gap-5 sm:gap-6">
             {[
-              { href: "/lobby", label: "Arena" },
-              { href: "/build", label: "Builder" },
+              { href: "/arena", label: "Arena" },
+              { href: "/forge", label: "Forge" },
               { href: "/lobby", label: "Hot Takes" },
             ].map((link) => (
               <a

@@ -6,8 +6,9 @@ import { motion, AnimatePresence, useScroll } from "framer-motion";
 import { ConnectWallet } from "@/components/shared/ConnectWallet";
 
 const NAV_LINKS = [
+  { href: "/arena", label: "Arena" },
   { href: "/lobby", label: "Hot Takes" },
-  { href: "/build", label: "Build Agent" },
+  { href: "/forge", label: "Forge Agent" },
   { href: "#how-it-works", label: "How It Works" },
 ];
 
