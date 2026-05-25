@@ -295,6 +295,7 @@ function FeaturedFighterCard({
         {/* Status row */}
         <div className="flex items-center justify-between mb-5">
           <div className="flex items-center gap-2.5">
+            <img src="/logo.svg" alt="Clashboard" className="h-6 w-auto flex-shrink-0" />
             {isMatching ? (
               <>
                 <motion.span
@@ -668,7 +669,8 @@ export default function GameLobbyPage() {
       {/* ── NAV ──────────────────────────────────────────────────────────────── */}
       <header className="fixed top-0 left-0 right-0 z-40 border-b border-white/6 bg-clash-black/80 backdrop-blur-md">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-4">
-          <Link href="/" className="font-display text-sm font-extrabold tracking-widest">
+          <Link href="/" className="flex items-center gap-2.5">
+            <img src="/logo.svg" alt="Clashboard" className="h-6 w-auto flex-shrink-0" />
             <span className="text-clash-gold">CLASH</span>
             <span className="text-white/40">BOARD</span>
           </Link>

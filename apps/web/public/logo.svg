@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1000" width="1200" height="1000">
+  <rect width="1200" height="1000" fill="#0A0A0F"/>
+
+  <!-- LEFT WING -->
+  <polygon
+    points="
+      250,270
+      570,455
+      570,590
+      250,870
+      340,720
+      490,540
+      340,350
+    "
+    fill="#FFB800"/>
+
+  <!-- RIGHT WING — mirrored -->
+  <polygon
+    points="
+      950,270
+      630,455
+      630,590
+      950,870
+      860,720
+      710,540
+      860,350
+    "
+    fill="#FFB800"/>
+
+  <!-- CENTER GAP — black void between wings -->
+  <rect x="570" y="440" width="60" height="160" fill="#0A0A0F"/>
+
+  <!-- EYE DIAMOND — outer -->
+  <polygon points="600,430  622,540  600,690  578,540" fill="#FFB800"/>
+
+  <!-- EYE inner void -->
+  <polygon points="600,468  614,540  600,660  586,540" fill="#0A0A0F"/>
+
+  <!-- Pupil -->
+  <circle cx="600" cy="540" r="14" fill="#FFB800"/>
+  <circle cx="600" cy="540" r="6"  fill="#0A0A0F"/>
+
+</svg>

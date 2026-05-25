@@ -46,9 +46,10 @@ export function Nav() {
           {/* Logo */}
           <Link
             href="/"
-            className="flex items-center gap-0.5 group"
+            className="flex items-center gap-2.5 group"
             onClick={() => setMenuOpen(false)}
           >
+            <img src="/logo.svg" alt="Clashboard" className="h-6 w-auto flex-shrink-0" />
             <span className="font-display text-lg font-extrabold tracking-[0.15em] text-clash-gold">
               CLASH
             </span>

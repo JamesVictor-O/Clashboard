@@ -38,7 +38,8 @@ export default function AgentProfilePage() {
     <main className="min-h-screen arena-bg">
       <header className="border-b border-white/10 px-6 py-4">
         <div className="max-w-7xl mx-auto flex items-center justify-between">
-          <Link href="/" className="font-display text-xl font-bold">
+          <Link href="/" className="flex items-center gap-2.5">
+            <img src="/logo.svg" alt="Clashboard" className="h-6 w-auto flex-shrink-0" />
             <span className="text-clash-gold">CLASH</span>
             <span className="text-clash-white">BOARD</span>
           </Link>

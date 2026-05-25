@@ -2,7 +2,6 @@ import { Nav } from "@/components/landing/Nav";
 import { HeroSection } from "@/components/landing/HeroSection";
 import { CharacterShowcase } from "@/components/landing/CharacterShowcase";
 import { HowItWorks } from "@/components/landing/HowItWorks";
-import { LandingCTA } from "@/components/landing/LandingCTA";
 
 export default function LandingPage() {
   return (
@@ -15,7 +14,8 @@ export default function LandingPage() {
       {/* Footer */}
       <footer className="border-t border-white/6 px-4 sm:px-6 py-8">
         <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-center sm:text-left">
-          <div className="flex items-center gap-0.5">
+          <div className="flex items-center gap-2.5">
+            <img src="/logo.svg" alt="Clashboard" className="h-5 w-auto flex-shrink-0" />
             <span className="font-display text-sm font-extrabold tracking-[0.15em] text-clash-gold">CLASH</span>
             <span className="font-display text-sm font-extrabold tracking-[0.15em] text-clash-white/50">BOARD</span>
           </div>

@@ -153,7 +153,8 @@ function ForgeShell({
     <div className="h-[100dvh] bg-clash-black flex flex-col">
       {/* Nav */}
       <header className="flex items-center justify-between px-6 py-4 border-b border-white/6 flex-shrink-0">
-        <Link href="/" className="font-display text-sm font-extrabold tracking-widest">
+        <Link href="/" className="flex items-center gap-2.5">
+            <img src="/logo.svg" alt="Clashboard" className="h-6 w-auto flex-shrink-0" />
           <span className="text-clash-gold">CLASH</span>
           <span className="text-white/40">BOARD</span>
         </Link>

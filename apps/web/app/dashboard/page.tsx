@@ -452,7 +452,8 @@ export default function DashboardPage() {
       {/* Nav */}
       <header className="sticky top-0 z-30 border-b border-white/6 bg-clash-black/80 backdrop-blur-sm">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between">
-          <Link href="/" className="font-display text-sm font-extrabold tracking-widest">
+          <Link href="/" className="flex items-center gap-2.5">
+            <img src="/logo.svg" alt="Clashboard" className="h-6 w-auto flex-shrink-0" />
             <span className="text-clash-gold">CLASH</span>
             <span className="text-white/40">BOARD</span>
           </Link>

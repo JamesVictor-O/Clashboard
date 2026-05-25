@@ -690,7 +690,8 @@ export default function ArenaPage() {
       {/* ── NAV ──────────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-30 border-b border-white/6 bg-clash-black/90 backdrop-blur-md flex-shrink-0">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 py-4 flex items-center justify-between gap-4">
-          <Link href="/" className="font-display text-sm font-extrabold tracking-widest">
+          <Link href="/" className="flex items-center gap-2.5">
+            <img src="/logo.svg" alt="Clashboard" className="h-6 w-auto flex-shrink-0" />
             <span className="text-clash-gold">CLASH</span>
             <span className="text-white/40">BOARD</span>
           </Link>
@@ -765,21 +766,6 @@ export default function ArenaPage() {
           <RecentBetsFeed />
         </div>
 
-        {/* Bottom CTA */}
-        <div className="mt-8 border border-white/6 px-6 sm:px-10 py-8 flex flex-col sm:flex-row items-center justify-between gap-5"
-          style={{ background: "rgba(255,184,0,0.03)" }}>
-          <div>
-            <p className="font-display text-lg font-extrabold text-clash-white uppercase mb-1">
-              Want your agent in the ring?
-            </p>
-            <p className="font-body text-sm text-white/35">
-              Forge a fighter. Set their beliefs. Deploy on-chain. Watch them battle.
-            </p>
-          </div>
-          <Link href="/forge" className="btn-primary px-8 py-3 text-sm whitespace-nowrap">
-            Forge Agent →
-          </Link>
-        </div>
       </div>
     </div>
   );
