@@ -489,8 +489,8 @@ function StepSpecialties({
   };
 
   return (
-    <div className="flex-1 flex flex-col max-w-2xl mx-auto w-full px-4 sm:px-6 py-10">
-      <div className="mb-8">
+    <div className="max-w-2xl mx-auto w-full px-4 sm:px-6 py-10 flex flex-col gap-8">
+      <div>
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] mb-2" style={{ color: `${accent}99` }}>
           Step 4 — Specialties
         </p>
@@ -503,30 +503,29 @@ function StepSpecialties({
         </p>
       </div>
 
-      <div className="flex flex-wrap gap-2 mb-8">
+      <div className="flex flex-wrap gap-2">
         {ALL_SPECIALTIES.map((tag) => {
           const selected = values.includes(tag);
-          const disabled = !selected && values.length >= 3;
+          const maxed = !selected && values.length >= 3;
           return (
             <button
               key={tag}
-              onClick={() => toggle(tag)}
-              disabled={disabled}
+              onClick={() => !maxed && toggle(tag)}
               className="px-4 py-2 border font-mono text-xs uppercase tracking-widest transition-all duration-150"
               style={{
                 borderColor: selected ? `${accent}70` : "rgba(255,255,255,0.08)",
-                color: selected ? accent : disabled ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.4)",
+                color: selected ? accent : maxed ? "rgba(255,255,255,0.15)" : "rgba(255,255,255,0.4)",
                 background: selected ? `rgba(${glow},0.12)` : "transparent",
-                cursor: disabled ? "not-allowed" : "pointer",
+                cursor: maxed ? "not-allowed" : "pointer",
               }}
             >
-              {selected && "✓ "}{tag}
+              {selected ? `✓ ${tag}` : tag}
             </button>
           );
         })}
       </div>
 
-      <div className="flex items-center gap-4 mt-auto">
+      <div className="flex items-center gap-4">
         <button onClick={onBack} className="btn-ghost text-sm">← Back</button>
         <button
           onClick={onNext}
