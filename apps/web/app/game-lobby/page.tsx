@@ -439,7 +439,7 @@ function FeaturedFighterCard({
           </button>
           {agent.status === "LOCKED" ? (
             <Link
-              href="/arena"
+              href={`/arena/${agent.id ?? "demo"}`}
               className="flex-1 py-4 border font-display text-sm font-extrabold uppercase tracking-widest text-center transition-all hover:bg-red-500/6"
               style={{ borderColor: "rgba(239,68,68,0.3)", color: "#EF4444" }}
             >
