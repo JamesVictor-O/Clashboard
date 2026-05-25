@@ -142,7 +142,7 @@ function ForgeShell({
   accent: string;
   children: React.ReactNode;
 }) {
-  const progress = step === 0 ? 0 : ((step) / (total - 1)) * 100;
+  const progress = step === 0 ? 0 : (step / (total - 1)) * 100;
   return (
     <div className="min-h-screen bg-clash-black flex flex-col">
       {/* Nav */}
@@ -165,14 +165,18 @@ function ForgeShell({
           <motion.div
             className="h-full"
             style={{ background: accent }}
-            initial={{ width: 0 }}
             animate={{ width: `${progress}%` }}
-            transition={{ duration: 0.5, ease: [0.16, 1, 0.3, 1] }}
+            transition={{ duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
           />
         </div>
       )}
 
-      <div className="flex-1 flex flex-col">{children}</div>
+      {/*
+        The step viewport. Using relative + overflow-hidden so each step's
+        motion.div can be absolute-positioned — this prevents height collapse
+        during AnimatePresence exit animations, which was causing blank steps.
+      */}
+      <div className="flex-1 relative overflow-hidden">{children}</div>
     </div>
   );
 }
@@ -181,9 +185,9 @@ function ForgeShell({
 
 function StepIntro({ onNext }: { onNext: () => void }) {
   return (
-    <div className="flex-1 flex flex-col items-center justify-center px-6 py-16 text-center">
+    <div className="flex flex-col min-h-full items-center justify-center px-6 py-16 text-center">
       <motion.div
-        initial={{ opacity: 0, scale: 0.9 }}
+        initial={{ opacity: 0, scale: 0.92 }}
         animate={{ opacity: 1, scale: 1 }}
         transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
         className="max-w-xl"
@@ -215,7 +219,6 @@ function StepIntro({ onNext }: { onNext: () => void }) {
         </div>
       </motion.div>
 
-      {/* Ambient glow */}
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
@@ -239,7 +242,7 @@ function StepPersona({
   onBack: () => void;
 }) {
   return (
-    <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full px-4 sm:px-6 py-10">
+    <div className="flex flex-col min-h-full max-w-4xl mx-auto w-full px-4 sm:px-6 py-10">
       <div className="mb-8">
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] text-clash-gold/60 mb-2">
           Step 1 — Persona
@@ -285,9 +288,7 @@ function StepPersona({
       </div>
 
       <div className="flex items-center gap-4 mt-auto">
-        <button onClick={onBack} className="btn-ghost text-sm">
-          ← Back
-        </button>
+        <button onClick={onBack} className="btn-ghost text-sm">← Back</button>
         <button
           onClick={onNext}
           disabled={!value}
@@ -313,8 +314,7 @@ function StepBeliefs({
   onNext: () => void;
   onBack: () => void;
 }) {
-  const accent =
-    PERSONAS.find((p) => p.id === persona)?.accent ?? "#FFB800";
+  const accent = PERSONAS.find((p) => p.id === persona)?.accent ?? "#FFB800";
 
   const update = (i: number, v: string) => {
     const next = [...values];
@@ -331,7 +331,7 @@ function StepBeliefs({
   ];
 
   return (
-    <div className="flex-1 flex flex-col max-w-2xl mx-auto w-full px-4 sm:px-6 py-10">
+    <div className="flex flex-col min-h-full max-w-2xl mx-auto w-full px-4 sm:px-6 py-10">
       <div className="mb-8">
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] mb-2" style={{ color: `${accent}99` }}>
           Step 2 — Hot Take Beliefs
@@ -341,8 +341,7 @@ function StepBeliefs({
           <span style={{ color: accent }}>actually believe?</span>
         </h2>
         <p className="font-body text-sm text-white/35 mt-2">
-          Write 3 strong, unambiguous positions. These become your agent's
-          fighting soul.
+          Write 3 strong, unambiguous positions. These become your agent's fighting soul.
         </p>
       </div>
 
@@ -364,18 +363,14 @@ function StepBeliefs({
               <span className="font-mono text-[9px] uppercase tracking-widest" style={{ color: `${accent}60` }}>
                 Belief {i + 1}
               </span>
-              <span className="font-mono text-[9px] text-white/20">
-                {values[i]?.length ?? 0}/280
-              </span>
+              <span className="font-mono text-[9px] text-white/20">{values[i]?.length ?? 0}/280</span>
             </div>
           </div>
         ))}
       </div>
 
       <div className="flex items-center gap-4 mt-auto">
-        <button onClick={onBack} className="btn-ghost text-sm">
-          ← Back
-        </button>
+        <button onClick={onBack} className="btn-ghost text-sm">← Back</button>
         <button
           onClick={onNext}
           disabled={filled < 3}
@@ -405,7 +400,7 @@ function StepStyle({
   const glow = PERSONAS.find((p) => p.id === persona)?.glow ?? "255,184,0";
 
   return (
-    <div className="flex-1 flex flex-col max-w-3xl mx-auto w-full px-4 sm:px-6 py-10">
+    <div className="flex flex-col min-h-full max-w-3xl mx-auto w-full px-4 sm:px-6 py-10">
       <div className="mb-8">
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] mb-2" style={{ color: `${accent}99` }}>
           Step 3 — Fighting Style
@@ -489,8 +484,8 @@ function StepSpecialties({
   };
 
   return (
-    <div className="max-w-2xl mx-auto w-full px-4 sm:px-6 py-10 flex flex-col gap-8">
-      <div>
+    <div className="flex flex-col min-h-full max-w-2xl mx-auto w-full px-4 sm:px-6 py-10">
+      <div className="mb-8">
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] mb-2" style={{ color: `${accent}99` }}>
           Step 4 — Specialties
         </p>
@@ -503,7 +498,7 @@ function StepSpecialties({
         </p>
       </div>
 
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap gap-2 mb-8">
         {ALL_SPECIALTIES.map((tag) => {
           const selected = values.includes(tag);
           const maxed = !selected && values.length >= 3;
@@ -525,7 +520,7 @@ function StepSpecialties({
         })}
       </div>
 
-      <div className="flex items-center gap-4">
+      <div className="flex items-center gap-4 mt-auto">
         <button onClick={onBack} className="btn-ghost text-sm">← Back</button>
         <button
           onClick={onNext}
@@ -553,6 +548,7 @@ function StepBudget({
   onBack: () => void;
 }) {
   const accent = PERSONAS.find((p) => p.id === persona)?.accent ?? "#FFB800";
+  const glow = PERSONAS.find((p) => p.id === persona)?.glow ?? "255,184,0";
 
   const tiers = [
     { min: 1, max: 5, label: "Scout", desc: "Light research. Quick battles." },
@@ -564,7 +560,7 @@ function StepBudget({
   const currentTier = tiers.find((t) => value >= t.min && value <= t.max);
 
   return (
-    <div className="flex-1 flex flex-col max-w-xl mx-auto w-full px-4 sm:px-6 py-10">
+    <div className="flex flex-col min-h-full max-w-xl mx-auto w-full px-4 sm:px-6 py-10">
       <div className="mb-8">
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] mb-2" style={{ color: `${accent}99` }}>
           Step 5 — Research Budget
@@ -578,8 +574,7 @@ function StepBudget({
         </p>
       </div>
 
-      {/* Budget display */}
-      <div className="border border-white/8 p-6 mb-6" style={{ background: `rgba(${PERSONAS.find(p=>p.id===persona)?.glow ?? "255,184,0"},0.05)` }}>
+      <div className="border border-white/8 p-6 mb-6" style={{ background: `rgba(${glow},0.05)` }}>
         <div className="flex items-baseline gap-2 mb-1">
           <span className="font-display text-5xl font-extrabold" style={{ color: accent }}>
             ${value}
@@ -599,7 +594,6 @@ function StepBudget({
         )}
       </div>
 
-      {/* Slider */}
       <div className="mb-8">
         <input
           type="range"
@@ -649,7 +643,7 @@ function StepName({
   const valid = value.trim().length >= 2 && value.trim().length <= 24;
 
   return (
-    <div className="flex-1 flex flex-col max-w-xl mx-auto w-full px-4 sm:px-6 py-10">
+    <div className="flex flex-col min-h-full max-w-xl mx-auto w-full px-4 sm:px-6 py-10">
       <div className="mb-8">
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] mb-2" style={{ color: `${accent}99` }}>
           Step 6 — Name
@@ -663,7 +657,6 @@ function StepName({
         </p>
       </div>
 
-      {/* Preview card */}
       <div
         className="border p-6 mb-8 flex items-center gap-4"
         style={{ borderColor: `${accent}30`, background: `rgba(${p?.glow ?? "255,184,0"},0.06)` }}
@@ -747,7 +740,6 @@ function StepDeploy({
       setDeployLog((prev) => [...prev, logs[i]]);
     }
 
-    // Persist to localStorage (keyed by wallet)
     const agentData = {
       ...config,
       walletAddress,
@@ -765,7 +757,7 @@ function StepDeploy({
 
   if (phase === "done") {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center px-6 py-16 text-center">
+      <div className="flex flex-col min-h-full items-center justify-center px-6 py-16 text-center">
         <motion.div
           initial={{ opacity: 0, scale: 0.85 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -776,10 +768,7 @@ function StepDeploy({
           <p className="font-mono text-xs uppercase tracking-widest mb-2" style={{ color: `${accent}80` }}>
             Agent Deployed
           </p>
-          <h2
-            className="font-display text-4xl font-extrabold uppercase mb-3"
-            style={{ color: accent }}
-          >
+          <h2 className="font-display text-4xl font-extrabold uppercase mb-3" style={{ color: accent }}>
             {config.name}
           </h2>
           <p className="font-body text-sm text-white/40 mb-8">
@@ -802,7 +791,7 @@ function StepDeploy({
 
   if (phase === "deploying") {
     return (
-      <div className="flex-1 flex flex-col items-center justify-center px-6 py-16">
+      <div className="flex flex-col min-h-full items-center justify-center px-6 py-16">
         <div className="max-w-sm w-full">
           <p className="font-mono text-[10px] uppercase tracking-[0.35em] text-white/30 mb-6 text-center">
             Deploying Agent
@@ -834,7 +823,7 @@ function StepDeploy({
 
   // Review phase
   return (
-    <div className="flex-1 flex flex-col max-w-xl mx-auto w-full px-4 sm:px-6 py-10">
+    <div className="flex flex-col min-h-full max-w-xl mx-auto w-full px-4 sm:px-6 py-10">
       <div className="mb-8">
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] mb-2" style={{ color: `${accent}99` }}>
           Step 7 — Deploy
@@ -844,8 +833,10 @@ function StepDeploy({
         </h2>
       </div>
 
-      {/* Summary card */}
-      <div className="border p-6 mb-6 space-y-4" style={{ borderColor: `${accent}25`, background: `rgba(${p?.glow},0.05)` }}>
+      <div
+        className="border p-6 mb-6 space-y-4"
+        style={{ borderColor: `${accent}25`, background: `rgba(${p?.glow},0.05)` }}
+      >
         <div className="flex items-center gap-3 pb-4 border-b border-white/6">
           <span className="text-3xl">{p?.icon}</span>
           <div>
@@ -867,7 +858,11 @@ function StepDeploy({
           <p className="font-mono text-white/30 uppercase tracking-widest text-xs mb-2">Specialties</p>
           <div className="flex flex-wrap gap-2">
             {config.specialties.map((s) => (
-              <span key={s} className="font-mono text-[10px] px-2 py-1 border uppercase tracking-widest" style={{ borderColor: `${accent}30`, color: accent }}>
+              <span
+                key={s}
+                className="font-mono text-[10px] px-2 py-1 border uppercase tracking-widest"
+                style={{ borderColor: `${accent}30`, color: accent }}
+              >
                 {s}
               </span>
             ))}
@@ -875,11 +870,18 @@ function StepDeploy({
         </div>
         <div>
           <p className="font-mono text-white/30 uppercase tracking-widest text-xs mb-2">Beliefs</p>
-          {config.beliefs.map((b, i) => b.trim() && (
-            <p key={i} className="font-body text-xs text-white/40 italic border-l-2 pl-3 mb-2" style={{ borderColor: `${accent}40` }}>
-              "{b.slice(0, 80)}{b.length > 80 ? "…" : ""}"
-            </p>
-          ))}
+          {config.beliefs.map(
+            (b, i) =>
+              b.trim() && (
+                <p
+                  key={i}
+                  className="font-body text-xs text-white/40 italic border-l-2 pl-3 mb-2"
+                  style={{ borderColor: `${accent}40` }}
+                >
+                  "{b.slice(0, 80)}{b.length > 80 ? "…" : ""}"
+                </p>
+              ),
+          )}
         </div>
       </div>
 
@@ -921,6 +923,7 @@ export default function ForgePage() {
   const router = useRouter();
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
   const [step, setStep] = useState(0);
+  const [direction, setDirection] = useState(1); // 1 = forward, -1 = back
 
   const [config, setConfig] = useState<ForgeConfig>({
     persona: "Analyst",
@@ -931,7 +934,6 @@ export default function ForgePage() {
     name: "",
   });
 
-  // Check for existing agent on load
   useEffect(() => {
     const checkWallet = async () => {
       try {
@@ -951,38 +953,56 @@ export default function ForgePage() {
     checkWallet();
   }, [router]);
 
-  const accent = config.persona
-    ? (PERSONAS.find((p) => p.id === config.persona)?.accent ?? "#FFB800")
-    : "#FFB800";
+  const accent = PERSONAS.find((p) => p.id === config.persona)?.accent ?? "#FFB800";
 
-  const slideVariants = {
-    enter: { opacity: 0, x: 40 },
-    center: { opacity: 1, x: 0 },
-    exit: { opacity: 0, x: -40 },
+  // Directional navigation — sets direction before updating step so the
+  // slide variant sees the correct value when the new motion.div mounts.
+  const goTo = (target: number) => {
+    setDirection(target > step ? 1 : -1);
+    setStep(target);
   };
 
   const update = <K extends keyof ForgeConfig>(key: K, val: ForgeConfig[K]) =>
     setConfig((c) => ({ ...c, [key]: val }));
 
+  /*
+   * Slide variants use a `custom` prop (direction) so forward navigation
+   * enters from the right / exits to the left, and back does the opposite.
+   * Using absolute inset-0 on the motion.div ensures height is always derived
+   * from the parent container, not from the (possibly animating) sibling —
+   * this is what eliminates blank/collapsed steps during transitions.
+   */
+  const slideVariants = {
+    enter: (dir: number) => ({ opacity: 0, x: dir * 36 }),
+    center: { opacity: 1, x: 0 },
+    exit: (dir: number) => ({ opacity: 0, x: dir * -36 }),
+  };
+
   return (
     <ForgeShell step={step} total={STEPS.length} accent={accent}>
-      <AnimatePresence mode="wait">
+      <AnimatePresence mode="wait" initial={false} custom={direction}>
         <motion.div
           key={step}
+          custom={direction}
           variants={slideVariants}
           initial="enter"
           animate="center"
           exit="exit"
-          transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-          className="flex-1 flex flex-col"
+          transition={{ duration: 0.28, ease: [0.16, 1, 0.3, 1] }}
+          /*
+           * absolute inset-0: step always fills the viewport region regardless
+           * of what the exiting step is doing. overflow-y-auto handles tall
+           * content on small screens without breaking the layout.
+           */
+          className="absolute inset-0 flex flex-col overflow-y-auto"
         >
-          {step === 0 && <StepIntro onNext={() => setStep(1)} />}
+          {step === 0 && <StepIntro onNext={() => goTo(1)} />}
           {step === 1 && (
             <StepPersona
               value={config.persona}
               onChange={(v) => update("persona", v)}
-              onNext={() => setStep(2)}
-              onBack={() => setStep(0)}
+              onNext={() => goTo(2)}
+              onBack={() => goTo(0)}
             />
           )}
           {step === 2 && (
@@ -990,8 +1010,8 @@ export default function ForgePage() {
               persona={config.persona}
               values={config.beliefs}
               onChange={(v) => update("beliefs", v)}
-              onNext={() => setStep(3)}
-              onBack={() => setStep(1)}
+              onNext={() => goTo(3)}
+              onBack={() => goTo(1)}
             />
           )}
           {step === 3 && (
@@ -999,8 +1019,8 @@ export default function ForgePage() {
               persona={config.persona}
               value={config.fightingStyle}
               onChange={(v) => update("fightingStyle", v)}
-              onNext={() => setStep(4)}
-              onBack={() => setStep(2)}
+              onNext={() => goTo(4)}
+              onBack={() => goTo(2)}
             />
           )}
           {step === 4 && (
@@ -1008,8 +1028,8 @@ export default function ForgePage() {
               persona={config.persona}
               values={config.specialties}
               onChange={(v) => update("specialties", v)}
-              onNext={() => setStep(5)}
-              onBack={() => setStep(3)}
+              onNext={() => goTo(5)}
+              onBack={() => goTo(3)}
             />
           )}
           {step === 5 && (
@@ -1017,8 +1037,8 @@ export default function ForgePage() {
               persona={config.persona}
               value={config.researchBudget}
               onChange={(v) => update("researchBudget", v)}
-              onNext={() => setStep(6)}
-              onBack={() => setStep(4)}
+              onNext={() => goTo(6)}
+              onBack={() => goTo(4)}
             />
           )}
           {step === 6 && (
@@ -1026,15 +1046,15 @@ export default function ForgePage() {
               persona={config.persona}
               value={config.name}
               onChange={(v) => update("name", v)}
-              onNext={() => setStep(7)}
-              onBack={() => setStep(5)}
+              onNext={() => goTo(7)}
+              onBack={() => goTo(5)}
             />
           )}
           {step === 7 && (
             <StepDeploy
               config={config}
               walletAddress={walletAddress}
-              onBack={() => setStep(6)}
+              onBack={() => goTo(6)}
             />
           )}
         </motion.div>
