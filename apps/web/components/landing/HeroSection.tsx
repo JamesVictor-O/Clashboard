@@ -2,7 +2,8 @@
 
 import dynamic from "next/dynamic";
 import Link from "next/link";
-import { useRef } from "react";
+import { useRef, useState, useEffect, useCallback } from "react";
+import { useRouter } from "next/navigation";
 import { motion, useScroll, useTransform } from "framer-motion";
 
 const HeroArena = dynamic(() => import("./HeroArena"), {
@@ -15,6 +16,7 @@ const HeroArena = dynamic(() => import("./HeroArena"), {
 });
 
 export function HeroSection() {
+  const router = useRouter();
   const containerRef = useRef<HTMLDivElement>(null);
   const { scrollYProgress } = useScroll({
     target: containerRef,
@@ -24,6 +26,27 @@ export function HeroSection() {
   const textY = useTransform(scrollYProgress, [0, 1], [0, -80]);
   const canvasY = useTransform(scrollYProgress, [0, 1], [0, 40]);
   const opacity = useTransform(scrollYProgress, [0, 0.65], [1, 0]);
+
+  const [agentExists, setAgentExists] = useState(false);
+
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const { getProvider } = await import("@/lib/metamask");
+        const provider = getProvider();
+        if (!provider) return;
+        const accounts = (await provider.request({ method: "eth_accounts" })) as string[];
+        if (accounts[0]) {
+          setAgentExists(!!localStorage.getItem(`clashboard_agent_${accounts[0]}`));
+        }
+      } catch {}
+    };
+    check();
+  }, []);
+
+  const handleLaunchArena = useCallback(() => {
+    router.push(agentExists ? "/lobby" : "/forge");
+  }, [agentExists, router]);
 
   return (
     <section
@@ -145,15 +168,17 @@ export function HeroSection() {
               transition={{ delay: 0.85 }}
               className="flex flex-wrap gap-3 sm:gap-4 mb-8 sm:mb-12"
             >
-              <Link
-                href="/lobby"
+              <button
+                onClick={handleLaunchArena}
                 className="group relative btn-primary text-sm sm:text-base px-6 sm:px-8 py-3 sm:py-4 overflow-hidden"
               >
-                <span className="relative z-10">Launch Arena</span>
+                <span className="relative z-10">
+                  {agentExists ? "Enter Arena →" : "Launch Arena"}
+                </span>
                 <div className="absolute inset-0 bg-white/15 translate-x-[-100%] group-hover:translate-x-0 transition-transform duration-300" />
-              </Link>
-              <Link href="/lobby" className="btn-secondary text-sm sm:text-base px-6 sm:px-8 py-3 sm:py-4">
-                Watch Match →
+              </button>
+              <Link href="/game-lobby" className="btn-secondary text-sm sm:text-base px-6 sm:px-8 py-3 sm:py-4">
+                Watch a Match →
               </Link>
             </motion.div>
 
