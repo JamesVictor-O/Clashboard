@@ -144,7 +144,13 @@ function ForgeShell({
 }) {
   const progress = step === 0 ? 0 : (step / (total - 1)) * 100;
   return (
-    <div className="min-h-screen bg-clash-black flex flex-col">
+    /*
+     * h-[100dvh] (not min-h-screen) gives an EXPLICIT, definite height so
+     * flex-1 children and absolute inset-0 grandchildren both resolve to
+     * real pixel values. min-h-screen is not "definite" for CSS flex
+     * intrinsic sizing, which caused absolute inset-0 to collapse to 0px.
+     */
+    <div className="h-[100dvh] bg-clash-black flex flex-col">
       {/* Nav */}
       <header className="flex items-center justify-between px-6 py-4 border-b border-white/6 flex-shrink-0">
         <Link href="/" className="font-display text-sm font-extrabold tracking-widest">
@@ -172,11 +178,11 @@ function ForgeShell({
       )}
 
       {/*
-        The step viewport. Using relative + overflow-hidden so each step's
-        motion.div can be absolute-positioned — this prevents height collapse
-        during AnimatePresence exit animations, which was causing blank steps.
-      */}
-      <div className="flex-1 relative overflow-hidden">{children}</div>
+       * min-h-0 overrides flex item's default min-height:auto, which would
+       * otherwise let the container grow beyond its flex-1 allocation and
+       * prevent absolute children from resolving inset:0 correctly.
+       */}
+      <div className="flex-1 min-h-0 relative overflow-hidden">{children}</div>
     </div>
   );
 }
@@ -185,7 +191,7 @@ function ForgeShell({
 
 function StepIntro({ onNext }: { onNext: () => void }) {
   return (
-    <div className="flex flex-col min-h-full items-center justify-center px-6 py-16 text-center">
+    <div className="flex-1 flex flex-col items-center justify-center px-6 py-16 text-center">
       <motion.div
         initial={{ opacity: 0, scale: 0.92 }}
         animate={{ opacity: 1, scale: 1 }}
@@ -242,7 +248,7 @@ function StepPersona({
   onBack: () => void;
 }) {
   return (
-    <div className="flex flex-col min-h-full max-w-4xl mx-auto w-full px-4 sm:px-6 py-10">
+    <div className="flex-1 flex flex-col max-w-4xl mx-auto w-full px-4 sm:px-6 py-10">
       <div className="mb-8">
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] text-clash-gold/60 mb-2">
           Step 1 — Persona
@@ -331,7 +337,7 @@ function StepBeliefs({
   ];
 
   return (
-    <div className="flex flex-col min-h-full max-w-2xl mx-auto w-full px-4 sm:px-6 py-10">
+    <div className="flex-1 flex flex-col max-w-2xl mx-auto w-full px-4 sm:px-6 py-10">
       <div className="mb-8">
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] mb-2" style={{ color: `${accent}99` }}>
           Step 2 — Hot Take Beliefs
@@ -400,7 +406,7 @@ function StepStyle({
   const glow = PERSONAS.find((p) => p.id === persona)?.glow ?? "255,184,0";
 
   return (
-    <div className="flex flex-col min-h-full max-w-3xl mx-auto w-full px-4 sm:px-6 py-10">
+    <div className="flex-1 flex flex-col max-w-3xl mx-auto w-full px-4 sm:px-6 py-10">
       <div className="mb-8">
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] mb-2" style={{ color: `${accent}99` }}>
           Step 3 — Fighting Style
@@ -484,7 +490,7 @@ function StepSpecialties({
   };
 
   return (
-    <div className="flex flex-col min-h-full max-w-2xl mx-auto w-full px-4 sm:px-6 py-10">
+    <div className="flex-1 flex flex-col max-w-2xl mx-auto w-full px-4 sm:px-6 py-10">
       <div className="mb-8">
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] mb-2" style={{ color: `${accent}99` }}>
           Step 4 — Specialties
@@ -560,7 +566,7 @@ function StepBudget({
   const currentTier = tiers.find((t) => value >= t.min && value <= t.max);
 
   return (
-    <div className="flex flex-col min-h-full max-w-xl mx-auto w-full px-4 sm:px-6 py-10">
+    <div className="flex-1 flex flex-col max-w-xl mx-auto w-full px-4 sm:px-6 py-10">
       <div className="mb-8">
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] mb-2" style={{ color: `${accent}99` }}>
           Step 5 — Research Budget
@@ -643,7 +649,7 @@ function StepName({
   const valid = value.trim().length >= 2 && value.trim().length <= 24;
 
   return (
-    <div className="flex flex-col min-h-full max-w-xl mx-auto w-full px-4 sm:px-6 py-10">
+    <div className="flex-1 flex flex-col max-w-xl mx-auto w-full px-4 sm:px-6 py-10">
       <div className="mb-8">
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] mb-2" style={{ color: `${accent}99` }}>
           Step 6 — Name
@@ -757,7 +763,7 @@ function StepDeploy({
 
   if (phase === "done") {
     return (
-      <div className="flex flex-col min-h-full items-center justify-center px-6 py-16 text-center">
+      <div className="flex-1 flex flex-col items-center justify-center px-6 py-16 text-center">
         <motion.div
           initial={{ opacity: 0, scale: 0.85 }}
           animate={{ opacity: 1, scale: 1 }}
@@ -791,7 +797,7 @@ function StepDeploy({
 
   if (phase === "deploying") {
     return (
-      <div className="flex flex-col min-h-full items-center justify-center px-6 py-16">
+      <div className="flex-1 flex flex-col items-center justify-center px-6 py-16">
         <div className="max-w-sm w-full">
           <p className="font-mono text-[10px] uppercase tracking-[0.35em] text-white/30 mb-6 text-center">
             Deploying Agent
@@ -823,7 +829,7 @@ function StepDeploy({
 
   // Review phase
   return (
-    <div className="flex flex-col min-h-full max-w-xl mx-auto w-full px-4 sm:px-6 py-10">
+    <div className="flex-1 flex flex-col max-w-xl mx-auto w-full px-4 sm:px-6 py-10">
       <div className="mb-8">
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] mb-2" style={{ color: `${accent}99` }}>
           Step 7 — Deploy
@@ -980,7 +986,7 @@ export default function ForgePage() {
 
   return (
     <ForgeShell step={step} total={STEPS.length} accent={accent}>
-      <AnimatePresence mode="wait" initial={false} custom={direction}>
+      <AnimatePresence initial={false} custom={direction}>
         <motion.div
           key={step}
           custom={direction}
