@@ -4,7 +4,10 @@ import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { keccak256, encodeAbiParameters, parseAbiParameters } from "viem";
 import { ConnectWallet } from "@/components/shared/ConnectWallet";
+import { REGISTRY_ABI } from "@/lib/chain";
+import { writeUserContract, waitForTx } from "@/lib/wallet-contract";
 import type { PersonalityType, FightingStyle } from "@/lib/types";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -570,14 +573,15 @@ function StepBudget({
     <div className="flex-1 flex flex-col max-w-xl mx-auto w-full px-4 sm:px-6 py-10">
       <div className="mb-8">
         <p className="font-mono text-[10px] uppercase tracking-[0.35em] mb-2" style={{ color: `${accent}99` }}>
-          Step 5 — Research Budget
+          Step 5 — Operating Budget
         </p>
         <h2 className="font-display text-2xl sm:text-3xl font-extrabold text-clash-white uppercase">
-          How deep does your agent{" "}
-          <span style={{ color: accent }}>dig?</span>
+          How much can your agent{" "}
+          <span style={{ color: accent }}>operate with?</span>
         </h2>
         <p className="font-body text-sm text-white/35 mt-2">
-          USDC spent per battle on Venice AI research. Higher = more ammo.
+          One master testnet USDC budget for research purchases, x402 data,
+          agent-to-agent research, demo arena actions, and arena stake.
         </p>
       </div>
 
@@ -586,7 +590,7 @@ function StepBudget({
           <span className="font-display text-5xl font-extrabold" style={{ color: accent }}>
             ${value}
           </span>
-          <span className="font-mono text-sm text-white/30 uppercase tracking-widest">/ battle</span>
+          <span className="font-mono text-sm text-white/30 uppercase tracking-widest">/ day</span>
         </div>
         {currentTier && (
           <div className="flex items-center gap-3 mt-2">
@@ -625,7 +629,7 @@ function StepBudget({
       <div className="flex items-center gap-4 mt-auto">
         <button onClick={onBack} className="btn-ghost text-sm">← Back</button>
         <button onClick={onNext} className="btn-primary px-8 py-3 text-sm">
-          Set Budget →
+          Set Operating Budget →
         </button>
       </div>
     </div>
@@ -724,7 +728,7 @@ function StepDeploy({
   onBack: () => void;
 }) {
   const router = useRouter();
-  const [phase, setPhase] = useState<"review" | "deploying" | "done">("review");
+  const [phase, setPhase] = useState<"review" | "deploying" | "done" | "error">("review");
   const [deployLog, setDeployLog] = useState<string[]>([]);
   const accent = PERSONAS.find((p) => p.id === config.persona)?.accent ?? "#FFB800";
   const p = PERSONAS.find((x) => x.id === config.persona);
@@ -733,33 +737,62 @@ function StepDeploy({
     if (!walletAddress) return;
     setPhase("deploying");
 
-    const logs = [
-      "Initialising agent smart account…",
-      "Committing personality matrix to chain…",
-      "Anchoring belief system…",
-      "Configuring research allocation…",
-      "Minting agent identity NFT…",
-      "Agent deployed. Welcome to the arena.",
-    ];
+    const registryAddress = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT as `0x${string}`;
 
-    for (let i = 0; i < logs.length; i++) {
-      await new Promise((r) => setTimeout(r, 700 + Math.random() * 400));
-      setDeployLog((prev) => [...prev, logs[i]]);
+    try {
+      setDeployLog(["Preparing agent identity…"]);
+
+      // Build metadataHash — commits the full config on-chain without storing it
+      const metaJson = JSON.stringify({
+        name: config.name,
+        persona: config.persona,
+        fightingStyle: config.fightingStyle,
+        beliefs: config.beliefs,
+        specialties: config.specialties,
+        operatingBudgetUSDC: config.researchBudget,
+        researchBudget: config.researchBudget,
+      });
+      const metaHash = keccak256(
+        encodeAbiParameters(parseAbiParameters("string"), [metaJson])
+      ) as `0x${string}`;
+
+      setDeployLog((p) => [...p, "Requesting wallet signature…"]);
+
+      const txHash = await writeUserContract({
+        address: registryAddress,
+        abi: REGISTRY_ABI,
+        functionName: "forge",
+        args: [config.name, metaHash],
+        account: walletAddress as `0x${string}`,
+      });
+
+      setDeployLog((p) => [...p, `Transaction sent: ${txHash.slice(0, 10)}…`]);
+      setDeployLog((p) => [...p, "Waiting for confirmation…"]);
+
+      await waitForTx(txHash);
+
+      setDeployLog((p) => [...p, "Agent identity confirmed on Base Sepolia."]);
+      setDeployLog((p) => [...p, "Agent deployed. Welcome to the arena."]);
+
+      // Cache config locally so dashboard can display personality details
+      localStorage.setItem(
+        `clashboard_agent_${walletAddress}`,
+        JSON.stringify({
+          ...config,
+          operatingBudgetUSDC: config.researchBudget,
+          walletAddress,
+          txHash,
+          deployedAt: Date.now(),
+        })
+      );
+
+      setPhase("done");
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : "Transaction failed";
+      setDeployLog((p) => [...p, `Error: ${msg}`]);
+      // Return to config step so user can retry
+      setTimeout(() => setPhase("review"), 2500);
     }
-
-    const agentData = {
-      ...config,
-      walletAddress,
-      deployedAt: Date.now(),
-      wins: 0,
-      losses: 0,
-      earnings: 0,
-      rank: Math.floor(Math.random() * 800) + 200,
-    };
-    localStorage.setItem(`clashboard_agent_${walletAddress}`, JSON.stringify(agentData));
-
-    await new Promise((r) => setTimeout(r, 600));
-    setPhase("done");
   }, [config, walletAddress]);
 
   if (phase === "done") {
@@ -858,7 +891,7 @@ function StepDeploy({
           </div>
           <div>
             <p className="font-mono text-white/30 uppercase tracking-widest mb-1">Budget</p>
-            <p className="font-display font-bold" style={{ color: accent }}>${config.researchBudget}/battle</p>
+            <p className="font-display font-bold" style={{ color: accent }}>${config.researchBudget}/day</p>
           </div>
         </div>
         <div>
@@ -942,22 +975,58 @@ export default function ForgePage() {
   });
 
   useEffect(() => {
-    const checkWallet = async () => {
+    let mounted = true;
+
+    const handleAccount = async (address: string) => {
+      if (!mounted) return;
+      setWalletAddress(address);
+
+      // Redirect if agent already exists on-chain for this wallet
       try {
-        const { getProvider } = await import("@/lib/metamask");
-        const provider = getProvider();
-        if (!provider) return;
-        const accounts = (await provider.request({ method: "eth_accounts" })) as string[];
-        if (accounts[0]) {
-          setWalletAddress(accounts[0]);
-          const existing = localStorage.getItem(`clashboard_agent_${accounts[0]}`);
-          if (existing) router.replace("/dashboard");
-        }
+        const { getPublicClient, REGISTRY_ABI } = await import("@/lib/chain");
+        const client = getPublicClient();
+        const registryAddress = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT as `0x${string}`;
+        const exists = (await client.readContract({
+          address: registryAddress,
+          abi: REGISTRY_ABI,
+          functionName: "agentExists_",
+          args: [address as `0x${string}`],
+        })) as boolean;
+        if (exists && mounted) router.replace("/dashboard");
       } catch {
-        // not connected
+        // Chain unreachable — let user proceed
       }
     };
-    checkWallet();
+
+    const init = () => {
+      // Use window.ethereum directly — avoids MetaMask SDK init which pops the
+      // "choose wallet" modal and fails to return the session on page refresh.
+      const eth = typeof window !== "undefined"
+        ? (window as unknown as { ethereum?: { request: (a: { method: string }) => Promise<unknown>; on: (e: string, h: (...a: unknown[]) => void) => void; removeListener: (e: string, h: (...a: unknown[]) => void) => void } }).ethereum
+        : undefined;
+      if (!eth) return;
+
+      // eth_accounts never prompts — returns already-connected accounts immediately
+      eth.request({ method: "eth_accounts" }).then((accs) => {
+        const list = accs as string[];
+        if (list[0]) handleAccount(list[0]);
+      }).catch(() => {});
+
+      // Stay in sync when the user connects/switches in the nav
+      const onAccountsChanged = (accs: unknown) => {
+        const list = accs as string[];
+        if (list[0]) handleAccount(list[0]);
+        else if (mounted) setWalletAddress(null);
+      };
+      eth.on("accountsChanged", onAccountsChanged);
+      return () => eth.removeListener("accountsChanged", onAccountsChanged);
+    };
+
+    const cleanup = init();
+    return () => {
+      mounted = false;
+      cleanup?.();
+    };
   }, [router]);
 
   const accent = PERSONAS.find((p) => p.id === config.persona)?.accent ?? "#FFB800";

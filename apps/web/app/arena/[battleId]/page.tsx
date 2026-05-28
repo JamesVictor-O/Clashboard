@@ -21,9 +21,9 @@ const ArenaScene = dynamic(
   }
 );
 
-// ─── Mock debate content ─────────────────────────────────────────────────────
+// ─── Demo fallback content (used when battleId === "demo") ───────────────────
 
-const ROUNDS = [
+const DEMO_ROUNDS = [
   {
     a: "Kobe Bryant had something LeBron will never have — pure, uncut obsession. Five rings, 81 points in a single game, a work ethic that turned myths into milestones. He practiced at 4 AM while others slept. That relentless Mamba Mentality is what separates legends from mere statistics.",
     b: "Four MVPs. Four championships. Three different franchises. LeBron has been the best player on earth for two straight decades. Kobe was elite — but LeBron redefined what a basketball player can be: scorer, playmaker, defender, and franchise builder simultaneously. The numbers don't argue.",
@@ -38,9 +38,41 @@ const ROUNDS = [
   },
 ];
 
+const DEMO_BATTLE: Battle = {
+  id: "demo",
+  topic: "Kobe Bryant vs LeBron James — Who is the GOAT?",
+  agentA: {
+    address: "0x1111111111111111111111111111111111111111",
+    name: "StatMaster",
+    personality: "Analyst",
+    color: "#FFB800",
+    winRate: 0.72,
+    totalBattles: 18,
+  },
+  agentB: {
+    address: "0x2222222222222222222222222222222222222222",
+    name: "HoopHistorian",
+    personality: "Historian",
+    color: "#4466FF",
+    winRate: 0.65,
+    totalBattles: 23,
+  },
+  state: "LIVE",
+  poolA: 42_000_000n,
+  poolB: 38_000_000n,
+  bettingDeadline: BigInt(Math.floor(Date.now() / 1000) + 300),
+  roundDuration: 60,
+  rubricHash: "0xdeadbeef",
+  winner: null,
+  bettorCount: 14,
+  createdAt: Date.now() - 120_000,
+};
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 type Phase = "countdown" | "betting" | "live" | "verdict";
+
+interface DebateRound { a: string; b: string }
 
 interface FloatingEmoji {
   id: string;
@@ -59,7 +91,6 @@ function CountdownOverlay({ count }: { count: number }) {
       animate={{ opacity: 1 }}
       exit={{ opacity: 0, transition: { duration: 0.6 } }}
     >
-      {/* Top label */}
       <motion.p
         className="font-body text-xs text-white/30 uppercase tracking-[0.35em] mb-6"
         initial={{ opacity: 0 }}
@@ -111,7 +142,6 @@ function CountdownOverlay({ count }: { count: number }) {
         )}
       </AnimatePresence>
 
-      {/* Ambient bar at bottom */}
       <div className="absolute bottom-0 left-0 right-0 h-[2px] bg-gradient-to-r from-transparent via-clash-gold/40 to-transparent" />
     </motion.div>
   );
@@ -186,7 +216,6 @@ function RoundBreakOverlay({
           {isLast ? "FINAL" : `Round ${round}`}
         </h2>
 
-        {/* Score cards */}
         {(scores.A > 0 || scores.B > 0) && (
           <div className="grid grid-cols-2 gap-3 mb-8">
             {(["A", "B"] as const).map((side) => {
@@ -234,7 +263,6 @@ function RoundBreakOverlay({
         </motion.p>
       </motion.div>
 
-      {/* Corner accent */}
       <div className="absolute bottom-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-clash-gold/30 to-transparent" />
     </motion.div>
   );
@@ -262,7 +290,6 @@ function WinnerOverlay({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
     >
-      {/* Conic spotlight */}
       <motion.div
         className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[800px] pointer-events-none"
         style={{
@@ -272,7 +299,6 @@ function WinnerOverlay({
         transition={{ duration: 12, repeat: Infinity, ease: "linear" }}
       />
 
-      {/* Ambient glow */}
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
@@ -286,7 +312,6 @@ function WinnerOverlay({
         animate={{ scale: 1, opacity: 1 }}
         transition={{ delay: 0.2, type: "spring", damping: 14, stiffness: 100 }}
       >
-        {/* Trophy */}
         <motion.div
           className="text-7xl mb-5"
           animate={{ rotate: [0, -8, 8, -4, 4, 0], scale: [1, 1.15, 1] }}
@@ -317,7 +342,6 @@ function WinnerOverlay({
           {agent.personality} · Victorious
         </p>
 
-        {/* Score summary */}
         <motion.div
           className="flex items-center justify-center gap-6 mt-6 mb-8"
           initial={{ opacity: 0 }}
@@ -354,32 +378,18 @@ function WinnerOverlay({
 
 // ─── Momentum Bar ─────────────────────────────────────────────────────────────
 
-function MomentumBar({
-  momentum,
-  battle,
-}: {
-  momentum: number;
-  battle: Battle;
-}) {
+function MomentumBar({ momentum, battle }: { momentum: number; battle: Battle }) {
   const aFrac = Math.max(0.05, Math.min(0.95, 0.5 - momentum / 200));
   const bFrac = 1 - aFrac;
 
   return (
     <div className="space-y-1.5">
       <div className="flex justify-between items-center">
-        <span
-          className="font-display text-[11px] font-bold uppercase tracking-widest"
-          style={{ color: battle.agentA.color }}
-        >
+        <span className="font-display text-[11px] font-bold uppercase tracking-widest" style={{ color: battle.agentA.color }}>
           {battle.agentA.name}
         </span>
-        <span className="font-body text-[10px] text-white/25 uppercase tracking-widest">
-          Momentum
-        </span>
-        <span
-          className="font-display text-[11px] font-bold uppercase tracking-widest"
-          style={{ color: battle.agentB.color }}
-        >
+        <span className="font-body text-[10px] text-white/25 uppercase tracking-widest">Momentum</span>
+        <span className="font-display text-[11px] font-bold uppercase tracking-widest" style={{ color: battle.agentB.color }}>
           {battle.agentB.name}
         </span>
       </div>
@@ -493,7 +503,6 @@ function AgentCard({
       style={{ background: `${agent.color}07` }}
       transition={{ duration: 0.45 }}
     >
-      {/* Active speaking badge */}
       <AnimatePresence>
         {isActive && isLive && (
           <motion.div
@@ -507,14 +516,8 @@ function AgentCard({
               className="flex items-center gap-1.5 rounded-full px-2.5 py-1"
               style={{ background: `${agent.color}20` }}
             >
-              <span
-                className="w-1.5 h-1.5 rounded-full animate-pulse"
-                style={{ background: agent.color }}
-              />
-              <span
-                className="font-display text-[9px] uppercase tracking-widest"
-                style={{ color: agent.color }}
-              >
+              <span className="w-1.5 h-1.5 rounded-full animate-pulse" style={{ background: agent.color }} />
+              <span className="font-display text-[9px] uppercase tracking-widest" style={{ color: agent.color }}>
                 Speaking
               </span>
             </span>
@@ -522,13 +525,8 @@ function AgentCard({
         )}
       </AnimatePresence>
 
-      <div className="font-body text-[10px] text-white/25 uppercase tracking-widest mb-1">
-        Agent {side}
-      </div>
-      <div
-        className="font-display font-extrabold text-xl leading-tight mb-0.5"
-        style={{ color: agent.color }}
-      >
+      <div className="font-body text-[10px] text-white/25 uppercase tracking-widest mb-1">Agent {side}</div>
+      <div className="font-display font-extrabold text-xl leading-tight mb-0.5" style={{ color: agent.color }}>
         {agent.name}
       </div>
       <div className="font-body text-xs text-white/35">{agent.personality}</div>
@@ -564,44 +562,21 @@ function ArgumentPanel({
       exit={{ opacity: 0, y: -10 }}
       transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
       className="relative rounded-xl p-5 sm:p-6 border overflow-hidden"
-      style={{
-        borderColor: `${agent.color}28`,
-        background: `${agent.color}06`,
-      }}
+      style={{ borderColor: `${agent.color}28`, background: `${agent.color}06` }}
     >
-      {/* Left accent bar */}
       <div
         className="absolute left-0 top-5 bottom-5 w-[3px] rounded-full"
         style={{ background: `linear-gradient(180deg, ${agent.color}, ${agent.color}40)` }}
       />
-
-      {/* Agent name */}
-      <div
-        className="font-display text-xs font-bold uppercase tracking-widest mb-3 ml-1"
-        style={{ color: agent.color }}
-      >
+      <div className="font-display text-xs font-bold uppercase tracking-widest mb-3 ml-1" style={{ color: agent.color }}>
         {agent.name}
       </div>
-
-      {/* Typewriter argument */}
-      <p
-        className="font-body text-sm sm:text-[15px] leading-relaxed ml-1"
-        style={{ color: `${agent.color}CC` }}
-      >
-        <TypewriterText
-          key={`tw-${roundIndex}-${turn}`}
-          text={text}
-          onDone={onDone}
-          speed={14}
-        />
+      <p className="font-body text-sm sm:text-[15px] leading-relaxed ml-1" style={{ color: `${agent.color}CC` }}>
+        <TypewriterText key={`tw-${roundIndex}-${turn}`} text={text} onDone={onDone} speed={14} />
       </p>
-
-      {/* Subtle bottom glow */}
       <div
         className="absolute bottom-0 left-0 right-0 h-16 pointer-events-none"
-        style={{
-          background: `linear-gradient(0deg, ${agent.color}08, transparent)`,
-        }}
+        style={{ background: `linear-gradient(0deg, ${agent.color}08, transparent)` }}
       />
     </motion.div>
   );
@@ -611,6 +586,7 @@ function ArgumentPanel({
 
 export default function BattlePage() {
   const { battleId } = useParams<{ battleId: string }>();
+  const isDemo = !battleId || battleId === "demo" || !battleId.startsWith("0x");
 
   const [phase, setPhase] = useState<Phase>("countdown");
   const [countdown, setCountdown] = useState(3);
@@ -629,36 +605,72 @@ export default function BattlePage() {
   const [typingDone, setTypingDone] = useState(false);
   const [floatingEmojis, setFloatingEmojis] = useState<FloatingEmoji[]>([]);
 
-  const battle: Battle = {
-    id: battleId ?? "demo",
-    topic: "Kobe Bryant vs LeBron James — Who is the GOAT?",
-    agentA: {
-      address: "0x1111111111111111111111111111111111111111",
-      name: "StatMaster",
-      personality: "Analyst",
-      color: "#FFB800",
-      winRate: 0.72,
-      totalBattles: 18,
-    },
-    agentB: {
-      address: "0x2222222222222222222222222222222222222222",
-      name: "HoopHistorian",
-      personality: "Historian",
-      color: "#4466FF",
-      winRate: 0.65,
-      totalBattles: 23,
-    },
-    state: "LIVE",
-    poolA: 42_000_000n,
-    poolB: 38_000_000n,
-    bettingDeadline: BigInt(Math.floor(Date.now() / 1000) + 300),
-    rubricHash: "0xdeadbeef",
-    winner: null,
-    bettorCount: 14,
-    createdAt: Date.now() - 120_000,
-  };
+  // Real battle data
+  const [battle, setBattle] = useState<Battle>(DEMO_BATTLE);
+  const [receivedRounds, setReceivedRounds] = useState<DebateRound[]>(
+    isDemo ? DEMO_ROUNDS : []
+  );
+  const verdictCalledRef = useRef(false);
 
-  // ─── Spawn floating crowd emojis ───────────────────────────────────────────
+  // ─── Fetch battle metadata (non-demo) ────────────────────────────────────
+
+  useEffect(() => {
+    if (isDemo) return;
+
+    fetch(`/api/battle/${battleId}`)
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
+        if (!data) return;
+        setBattle({
+          id: data.id,
+          topic: data.topic,
+          agentA: data.agentA,
+          agentB: data.agentB,
+          state: data.state,
+          poolA: BigInt(data.poolA),
+          poolB: BigInt(data.poolB),
+          bettingDeadline: BigInt(data.bettingDeadline),
+          roundDuration: data.roundDuration,
+          rubricHash: "0x",
+          winner: null,
+          createdAt: data.createdAt,
+        });
+      })
+      .catch(() => {});
+  }, [battleId, isDemo]);
+
+  // ─── Connect SSE stream (non-demo) ───────────────────────────────────────
+
+  useEffect(() => {
+    if (isDemo) return;
+
+    const sse = new EventSource(
+      `/api/battle/stream?battleId=${encodeURIComponent(battleId!)}`
+    );
+
+    sse.onmessage = (e) => {
+      try {
+        const { type, data } = JSON.parse(e.data) as {
+          type: string;
+          data: unknown;
+        };
+
+        if (type === "round") {
+          const round = data as { agentAText: string; agentBText: string };
+          setReceivedRounds((prev) => [
+            ...prev,
+            { a: round.agentAText, b: round.agentBText },
+          ]);
+        }
+      } catch {}
+    };
+
+    sse.onerror = () => sse.close();
+
+    return () => sse.close();
+  }, [battleId, isDemo]);
+
+  // ─── Spawn floating crowd emojis ─────────────────────────────────────────
 
   const spawnEmojis = useCallback((set: string[]) => {
     const count = 3 + Math.floor(Math.random() * 4);
@@ -675,7 +687,7 @@ export default function BattlePage() {
     );
   }, []);
 
-  // ─── Phase: countdown ─────────────────────────────────────────────────────
+  // ─── Phase: countdown ────────────────────────────────────────────────────
 
   useEffect(() => {
     if (phase !== "countdown") return;
@@ -687,19 +699,31 @@ export default function BattlePage() {
     return () => clearTimeout(t);
   }, [phase, countdown]);
 
-  // ─── Phase: betting → live ─────────────────────────────────────────────────
+  // ─── Phase: betting → live ───────────────────────────────────────────────
+  // Demo: use a fixed 7s timer. Real battles: triggered by first SSE round.
 
   useEffect(() => {
     if (phase !== "betting") return;
-    const t = setTimeout(() => {
-      setPhase("live");
-      setCurrentText(ROUNDS[0].a);
-      setTurn("A");
-    }, 7000);
-    return () => clearTimeout(t);
-  }, [phase]);
 
-  // ─── Phase: live — handle typing done ──────────────────────────────────────
+    if (isDemo) {
+      const t = setTimeout(() => {
+        setPhase("live");
+        setCurrentText(DEMO_ROUNDS[0].a);
+        setTurn("A");
+      }, 7000);
+      return () => clearTimeout(t);
+    }
+  }, [phase, isDemo]);
+
+  // For real battles: switch to live when the first round arrives
+  useEffect(() => {
+    if (isDemo || phase !== "betting" || receivedRounds.length === 0) return;
+    setPhase("live");
+    setCurrentText(receivedRounds[0].a);
+    setTurn("A");
+  }, [receivedRounds.length, phase, isDemo]);
+
+  // ─── Phase: live — handle typing done ────────────────────────────────────
 
   useEffect(() => {
     if (!typingDone || phase !== "live") return;
@@ -707,7 +731,6 @@ export default function BattlePage() {
     spawnEmojis(["🔥", "💯", "🎯", "👏", "💡"]);
 
     if (turn === "A") {
-      // Switch to B with rebuttal badge
       const t1 = setTimeout(() => {
         setShowRebuttal(true);
         setMomentum((m) => m + (10 + Math.floor(Math.random() * 18)));
@@ -716,12 +739,12 @@ export default function BattlePage() {
       const t2 = setTimeout(() => {
         setShowRebuttal(false);
         setTurn("B");
-        setCurrentText(ROUNDS[roundIndex].b);
+        const rounds = isDemo ? DEMO_ROUNDS : receivedRounds;
+        setCurrentText(rounds[roundIndex].b);
       }, 2400);
 
       return () => { clearTimeout(t1); clearTimeout(t2); };
     } else {
-      // B finished — end of round
       const scoreA = roundScores.A + 28 + Math.floor(Math.random() * 24);
       const scoreB = roundScores.B + 24 + Math.floor(Math.random() * 24);
       const newScores = { A: scoreA, B: scoreB };
@@ -729,32 +752,58 @@ export default function BattlePage() {
       setMomentum((m) => m - (8 + Math.floor(Math.random() * 16)));
       spawnEmojis(["👏", "🔥", "⚡", "💥", "😤"]);
 
+      const totalRounds = isDemo ? DEMO_ROUNDS.length : receivedRounds.length;
       const t1 = setTimeout(() => setShowRoundBreak(true), 600);
 
       const t2 = setTimeout(() => {
         setShowRoundBreak(false);
         const nextRound = roundIndex + 1;
 
-        if (nextRound < ROUNDS.length) {
+        if (nextRound < totalRounds) {
+          const rounds = isDemo ? DEMO_ROUNDS : receivedRounds;
           setRoundIndex(nextRound);
           setTurn("A");
-          setCurrentText(ROUNDS[nextRound].a);
+          setCurrentText(rounds[nextRound].a);
         } else {
-          const w: "A" | "B" = newScores.A > newScores.B ? "A" : "B";
-          setWinner(w);
+          // All rounds done
           setPhase("verdict");
-          setTimeout(() => {
-            setShowWinner(true);
-            spawnEmojis(["🏆", "🎉", "👑", "🥇", "🔥", "💰"]);
-          }, 600);
+          if (isDemo) {
+            const w: "A" | "B" = newScores.A > newScores.B ? "A" : "B";
+            setWinner(w);
+            setTimeout(() => {
+              setShowWinner(true);
+              spawnEmojis(["🏆", "🎉", "👑", "🥇", "🔥", "💰"]);
+            }, 600);
+          } else if (!verdictCalledRef.current) {
+            verdictCalledRef.current = true;
+            fetch(`/api/battle/verdict?battleId=${encodeURIComponent(battleId!)}`)
+              .then((r) => r.json())
+              .then((result: { winner: "A" | "B" }) => {
+                setWinner(result.winner);
+                setTimeout(() => {
+                  setShowWinner(true);
+                  spawnEmojis(["🏆", "🎉", "👑", "🥇", "🔥", "💰"]);
+                }, 600);
+              })
+              .catch(() => {
+                const w: "A" | "B" = newScores.A > newScores.B ? "A" : "B";
+                setWinner(w);
+                setTimeout(() => {
+                  setShowWinner(true);
+                  spawnEmojis(["🏆", "🎉", "👑", "🥇", "🔥", "💰"]);
+                }, 600);
+              });
+          }
         }
       }, 4100);
 
       return () => { clearTimeout(t1); clearTimeout(t2); };
     }
-  }, [typingDone, phase, turn, roundIndex, roundScores, spawnEmojis]);
+  }, [typingDone, phase, turn, roundIndex, roundScores, spawnEmojis, isDemo, receivedRounds, battleId]);
 
-  // ─── Derived ───────────────────────────────────────────────────────────────
+  // ─── Derived ─────────────────────────────────────────────────────────────
+
+  const activeRounds = isDemo ? DEMO_ROUNDS : receivedRounds;
 
   const bettingPhase: BattlePhase =
     phase === "betting" ? "BETTING" :
@@ -764,9 +813,9 @@ export default function BattlePage() {
   return (
     <div className="min-h-screen bg-clash-black flex flex-col">
 
-      {/* ── Live ticker bar ─────────────────────────────────────────────────── */}
+      {/* ── Live ticker bar ───────────────────────────────────────────────── */}
       <div className="border-b border-white/8 bg-clash-black/80 sticky top-0 z-20 backdrop-blur-sm">
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 py-3 flex items-center justify-between gap-4">
+        <div className="max-w-[1440px] mx-auto px-6 sm:px-10 lg:px-16 py-3 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
             {phase === "live" || phase === "verdict" ? (
               <span className="flex-shrink-0 flex items-center gap-1.5 bg-red-500/15 rounded-full px-2.5 py-1">
@@ -793,27 +842,25 @@ export default function BattlePage() {
             <div className="flex-shrink-0 text-right">
               <div className="font-body text-[10px] text-white/25 uppercase tracking-widest">Round</div>
               <div className="font-display text-sm font-bold text-white">
-                {roundIndex + 1} / {ROUNDS.length}
+                {roundIndex + 1} / {activeRounds.length || 3}
               </div>
             </div>
           )}
         </div>
       </div>
 
-      {/* ── Main grid ───────────────────────────────────────────────────────── */}
+      {/* ── Main grid ─────────────────────────────────────────────────────── */}
       <div className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-4 sm:py-5
                       grid grid-cols-1 xl:grid-cols-[1fr_340px] gap-4 sm:gap-5">
 
-        {/* Left: Arena + debate ─────────────────────────────────────────────── */}
+        {/* Left: Arena + debate */}
         <div className="space-y-4">
 
-          {/* Agent header cards */}
           <div className="grid grid-cols-2 gap-3">
             <AgentCard side="A" agent={battle.agentA} isActive={turn === "A"} phase={phase} />
             <AgentCard side="B" agent={battle.agentB} isActive={turn === "B"} phase={phase} />
           </div>
 
-          {/* 3D Arena scene */}
           <ArenaScene
             battle={battle}
             activeAgent={turn}
@@ -821,7 +868,6 @@ export default function BattlePage() {
             phase={bettingPhase}
           />
 
-          {/* Rebuttal badge + round indicator */}
           <div className="flex items-center justify-center h-12">
             <AnimatePresence mode="wait">
               {showRebuttal ? (
@@ -833,7 +879,7 @@ export default function BattlePage() {
                   animate={{ opacity: 1 }}
                   className="flex items-center gap-2"
                 >
-                  {Array.from({ length: ROUNDS.length }, (_, i) => (
+                  {Array.from({ length: activeRounds.length || 3 }, (_, i) => (
                     <div
                       key={i}
                       className="w-2 h-2 rounded-full transition-all duration-300"
@@ -843,7 +889,7 @@ export default function BattlePage() {
                     />
                   ))}
                   <span className="font-body text-[10px] text-white/25 ml-1 uppercase tracking-widest">
-                    Round {roundIndex + 1} of {ROUNDS.length}
+                    Round {roundIndex + 1} of {activeRounds.length || 3}
                   </span>
                 </motion.div>
               ) : phase === "betting" ? (
@@ -859,7 +905,6 @@ export default function BattlePage() {
             </AnimatePresence>
           </div>
 
-          {/* Argument text panel */}
           <AnimatePresence mode="wait">
             {phase === "live" && currentText ? (
               <ArgumentPanel
@@ -888,21 +933,16 @@ export default function BattlePage() {
             ) : null}
           </AnimatePresence>
 
-          {/* Momentum bar */}
           <AnimatePresence>
             {(phase === "live" || phase === "verdict") && (
-              <motion.div
-                initial={{ opacity: 0, y: 8 }}
-                animate={{ opacity: 1, y: 0 }}
-                exit={{ opacity: 0 }}
-              >
+              <motion.div initial={{ opacity: 0, y: 8 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}>
                 <MomentumBar momentum={momentum} battle={battle} />
               </motion.div>
             )}
           </AnimatePresence>
         </div>
 
-        {/* Right: Betting panel + score ─────────────────────────────────────── */}
+        {/* Right: Betting panel + score */}
         <div className="space-y-4">
           <BettingPanel
             battle={battle}
@@ -910,7 +950,6 @@ export default function BattlePage() {
             onBetPlaced={() => spawnEmojis(["💰", "🤑", "💸", "🎲"])}
           />
 
-          {/* Live score card */}
           <AnimatePresence>
             {(phase === "live" || phase === "verdict") && (roundScores.A > 0 || roundScores.B > 0) && (
               <motion.div
@@ -919,26 +958,19 @@ export default function BattlePage() {
                 exit={{ opacity: 0 }}
                 className="rounded-xl border border-white/8 bg-white/[0.03] p-4 space-y-3"
               >
-                <div className="font-display text-xs text-white/35 uppercase tracking-widest">
-                  Score
-                </div>
+                <div className="font-display text-xs text-white/35 uppercase tracking-widest">Score</div>
                 {(["A", "B"] as const).map((side) => {
                   const agent = side === "A" ? battle.agentA : battle.agentB;
                   const score = roundScores[side];
                   const isLeading = roundScores[side] > roundScores[side === "A" ? "B" : "A"];
                   return (
                     <div key={side} className="flex items-center justify-between">
-                      <span
-                        className="font-display text-xs font-bold"
-                        style={{ color: agent.color }}
-                      >
+                      <span className="font-display text-xs font-bold" style={{ color: agent.color }}>
                         {agent.name}
                       </span>
                       <div className="flex items-center gap-2">
                         {isLeading && <span className="text-xs">👑</span>}
-                        <span className="font-display text-lg font-extrabold text-white">
-                          {score}
-                        </span>
+                        <span className="font-display text-lg font-extrabold text-white">{score}</span>
                       </div>
                     </div>
                   );
@@ -947,39 +979,28 @@ export default function BattlePage() {
             )}
           </AnimatePresence>
 
-          {/* Spectators strip */}
           <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
             <div className="flex items-center justify-between mb-3">
-              <span className="font-display text-xs text-white/30 uppercase tracking-widest">
-                Watching
-              </span>
+              <span className="font-display text-xs text-white/30 uppercase tracking-widest">Watching</span>
               <div className="flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-                <span className="font-body text-xs text-white/30">24 live</span>
+                <span className="font-body text-xs text-white/30">live</span>
               </div>
             </div>
             <div className="flex -space-x-2">
               {["#FFB800", "#4466FF", "#BE1A1A", "#22C55E", "#7C3AED"].map((c, i) => (
-                <div
-                  key={i}
-                  className="w-6 h-6 rounded-full border-2 border-[#0A0A0F]"
-                  style={{ backgroundColor: c, opacity: 0.75 }}
-                />
+                <div key={i} className="w-6 h-6 rounded-full border-2 border-[#0A0A0F]"
+                  style={{ backgroundColor: c, opacity: 0.75 }} />
               ))}
-              <div className="w-6 h-6 rounded-full border-2 border-[#0A0A0F] bg-white/10 flex items-center justify-center">
-                <span className="font-display text-[8px] text-white/50">+19</span>
-              </div>
             </div>
           </div>
         </div>
       </div>
 
-      {/* ── Overlays ────────────────────────────────────────────────────────── */}
+      {/* ── Overlays ──────────────────────────────────────────────────────── */}
 
       <AnimatePresence>
-        {phase === "countdown" && (
-          <CountdownOverlay key="countdown" count={countdown} />
-        )}
+        {phase === "countdown" && <CountdownOverlay key="countdown" count={countdown} />}
       </AnimatePresence>
 
       <AnimatePresence>
@@ -987,7 +1008,7 @@ export default function BattlePage() {
           <RoundBreakOverlay
             key="roundbreak"
             round={roundIndex + 1}
-            totalRounds={ROUNDS.length}
+            totalRounds={activeRounds.length || 3}
             scores={roundScores}
             battle={battle}
           />

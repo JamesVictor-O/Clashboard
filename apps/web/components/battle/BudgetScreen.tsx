@@ -2,7 +2,8 @@
 
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { grantPermissions, buildSpendingPermission } from "@/lib/metamask";
+import { grantPermissions } from "@/lib/metamask";
+import { storePermissionContext } from "@/lib/permissions";
 
 interface BudgetScreenProps {
   onConfirm: (budget: number) => void;
@@ -24,20 +25,30 @@ export function BudgetScreen({ onConfirm, onCancel }: BudgetScreenProps) {
     setError(null);
 
     try {
-      const permission = buildSpendingPermission(budget);
-      const expiry = Math.floor(Date.now() / 1000) + 24 * 60 * 60; // 24h
+      const eth = (window as unknown as { ethereum?: { request: (a: { method: string }) => Promise<unknown> } }).ethereum;
+      if (!eth) throw new Error("Wallet not connected");
+      const accounts = (await eth.request({ method: "eth_accounts" })) as string[];
+      if (!accounts[0]) throw new Error("No wallet connected");
+      const account = accounts[0];
 
-      await grantPermissions({
-        account: "", // Will be filled with connected wallet address
+      const expiry = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
+
+      const result = await grantPermissions({
+        account,
         expiry,
-        permissions: [permission],
+        budgetUSDC: budget,
       });
+
+      // Persist the context so autonomous txs can use it without pop-ups
+      storePermissionContext(account, result);
 
       onConfirm(budget);
     } catch (err) {
-      setError(
-        err instanceof Error ? err.message : "Permission request failed"
-      );
+      const msg = err instanceof Error ? err.message
+        : typeof err === "object" && err !== null && "message" in err
+          ? String((err as { message: unknown }).message)
+          : "Permission request failed";
+      setError(msg);
     } finally {
       setIsLoading(false);
     }

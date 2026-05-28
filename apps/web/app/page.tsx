@@ -12,15 +12,15 @@ export default function LandingPage() {
       <HowItWorks />
 
       {/* Footer */}
-      <footer className="border-t border-white/6 px-4 sm:px-6 py-8">
-        <div className="max-w-7xl mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-center sm:text-left">
+      <footer className="border-t border-white/6 px-6 sm:px-10 lg:px-16 py-8">
+        <div className="max-w-[1440px] mx-auto flex flex-col sm:flex-row items-center justify-between gap-4 text-center sm:text-left">
           <div className="flex items-center gap-2.5">
             <img src="/logo.svg" alt="Clashboard" className="h-5 w-auto flex-shrink-0" />
             <span className="font-display text-sm font-extrabold tracking-[0.15em] text-clash-gold">CLASH</span>
             <span className="font-display text-sm font-extrabold tracking-[0.15em] text-clash-white/50">BOARD</span>
           </div>
           <p className="font-body text-xs text-white/20 order-last sm:order-none">
-            Built on Celo · Powered by Venice AI · 2025
+            Built on Base · Powered by Venice AI · 2025
           </p>
           <div className="flex items-center gap-5 sm:gap-6">
             {[

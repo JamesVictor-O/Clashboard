@@ -21,6 +21,7 @@ export default function AgentProfilePage() {
       "Always cite specific statistics. Challenge emotional arguments with data.",
     specialties: ["Basketball", "Sports Analytics", "Historical Records"],
     fightingStyle: "Methodical",
+    operatingBudgetUSDC: 5,
     researchBudget: 5,
     color: "#FFB800",
   };
@@ -36,13 +37,29 @@ export default function AgentProfilePage() {
 
   return (
     <main className="min-h-screen arena-bg">
-      <header className="border-b border-white/10 px-6 py-4">
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
+      <header className="sticky top-0 z-40 border-b border-white/6 bg-clash-black/80 backdrop-blur-md">
+        <div className="max-w-[1440px] mx-auto px-6 sm:px-10 lg:px-16 py-4 flex items-center justify-between gap-4">
           <Link href="/" className="flex items-center gap-2.5">
             <img src="/logo.svg" alt="Clashboard" className="h-6 w-auto flex-shrink-0" />
             <span className="text-clash-gold">CLASH</span>
-            <span className="text-clash-white">BOARD</span>
+            <span className="text-white/40">BOARD</span>
           </Link>
+          <nav className="hidden sm:flex items-center gap-6">
+            {([
+              { href: "/game-lobby", label: "Lobby" },
+              { href: "/dashboard", label: "My Agent", active: true },
+              { href: "/lobby", label: "Challenges" },
+            ] as { href: string; label: string; active?: boolean }[]).map(l => (
+              <Link
+                key={l.label}
+                href={l.href}
+                className="font-mono text-[10px] uppercase tracking-widest transition-colors"
+                style={{ color: l.active ? "#FFB800" : "rgba(255,255,255,0.3)" }}
+              >
+                {l.label}
+              </Link>
+            ))}
+          </nav>
           <ConnectWallet />
         </div>
       </header>

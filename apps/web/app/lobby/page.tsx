@@ -3,7 +3,15 @@
 import { useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
-import { BudgetScreen } from "@/components/battle/BudgetScreen";
+import { useRouter } from "next/navigation";
+import { keccak256, encodeAbiParameters, parseAbiParameters, parseAbiItem } from "viem";
+import { ConnectWallet } from "@/components/shared/ConnectWallet";
+import { HOTTAKEROOMS_ABI } from "@/lib/chain";
+import {
+  writeUserContract,
+  ensureUSDCApproval,
+  waitForTx,
+} from "@/lib/wallet-contract";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -19,65 +27,7 @@ interface Room {
   bettors: number;
 }
 
-// ─── Mock data ────────────────────────────────────────────────────────────────
-
-const MOCK_ROOMS: Room[] = [
-  {
-    id: "room-001",
-    topic: "Messi vs Ronaldo — Greatest of All Time",
-    creatorName: "TacticsTitan",
-    creatorAddress: "0xaaaa",
-    stake: 2,
-    state: "WAITING",
-    createdAt: Date.now() - 300_000,
-    category: "Sports",
-    bettors: 14,
-  },
-  {
-    id: "room-002",
-    topic: "Wizkid vs Burna Boy — Afrobeats King",
-    creatorName: "AfriMaven",
-    creatorAddress: "0xbbbb",
-    stake: 5,
-    state: "WAITING",
-    createdAt: Date.now() - 180_000,
-    category: "Music",
-    bettors: 31,
-  },
-  {
-    id: "room-003",
-    topic: "Bitcoin vs Ethereum — Future of Finance",
-    creatorName: "CryptoSage",
-    creatorAddress: "0xcccc",
-    stake: 10,
-    state: "LOCKED",
-    createdAt: Date.now() - 900_000,
-    category: "Crypto",
-    bettors: 52,
-  },
-  {
-    id: "room-004",
-    topic: "iPhone vs Android — Which ecosystem wins",
-    creatorName: "TechRealist",
-    creatorAddress: "0xdddd",
-    stake: 1,
-    state: "WAITING",
-    createdAt: Date.now() - 60_000,
-    category: "Tech",
-    bettors: 8,
-  },
-  {
-    id: "room-005",
-    topic: "LeBron vs Kobe — Greatest Laker ever",
-    creatorName: "CourtVision",
-    creatorAddress: "0xeeee",
-    stake: 3,
-    state: "LOCKED",
-    createdAt: Date.now() - 1_200_000,
-    category: "Sports",
-    bettors: 67,
-  },
-];
+// Rooms are fetched live from on-chain RoomCreated events
 
 const HOT_TAKES = [
   { label: "Kobe vs LeBron — GOAT debate", category: "Sports" },
@@ -157,10 +107,12 @@ function ChallengeCard({
   room,
   index,
   onAccept,
+  hasAgent,
 }: {
   room: Room;
   index: number;
   onAccept: (room: Room) => void;
+  hasAgent?: boolean | null;
 }) {
   const cat = CATEGORY_COLORS[room.category] ?? CATEGORY_COLORS.Custom;
   const isWaiting = room.state === "WAITING";
@@ -173,21 +125,27 @@ function ChallengeCard({
 
   return (
     <motion.div
-      initial={{ opacity: 0, x: -12 }}
-      animate={{ opacity: 1, x: 0 }}
-      transition={{ delay: index * 0.07, duration: 0.45, ease: [0.16, 1, 0.3, 1] }}
+      initial={{ opacity: 0, y: 10 }}
+      animate={{ opacity: 1, y: 0 }}
+      transition={{ delay: index * 0.045, duration: 0.24, ease: [0, 0, 0.2, 1] }}
+      whileHover={isWaiting ? { y: -2 } : undefined}
       className="group relative overflow-hidden cursor-pointer"
-      onClick={() => isWaiting && onAccept(room)}
+      onClick={() => isWaiting && hasAgent !== false && onAccept(room)}
     >
       {/* ── Base + atmosphere ──────────────────────────────────────── */}
-      <div className="absolute inset-0 bg-[#0A0A0F]" />
+      <div
+        className="absolute inset-0 bg-[#0A0A0F]"
+        style={{
+          background: "#09090F",
+        }}
+      />
 
       {/* Category glow — stronger on OPEN, whisper on LOCKED */}
       <div
         className="absolute inset-y-0 left-0 w-3/4 pointer-events-none transition-opacity duration-500"
         style={{
-          background: `radial-gradient(ellipse 70% 100% at 0% 50%, rgba(${cat.glow},${isWaiting ? 0.14 : 0.05}) 0%, transparent 75%)`,
-          opacity: isWaiting ? 0.8 : 1,
+          background: `radial-gradient(ellipse 52% 95% at 0% 50%, rgba(${cat.glow},${isWaiting ? 0.048 : 0.018}) 0%, transparent 74%)`,
+          opacity: 1,
         }}
       />
 
@@ -195,7 +153,7 @@ function ChallengeCard({
       <div
         className="absolute inset-0 pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-400"
         style={{
-          background: `radial-gradient(ellipse 60% 100% at 0% 50%, rgba(${cat.glow},0.1) 0%, transparent 70%)`,
+          background: `radial-gradient(ellipse 55% 100% at 0% 50%, rgba(${cat.glow},0.055) 0%, transparent 70%)`,
         }}
       />
 
@@ -205,14 +163,14 @@ function ChallengeCard({
         className="absolute inset-0 border pointer-events-none transition-colors duration-300"
         style={{
           borderColor: isWaiting
-            ? `rgba(${cat.glow},0.28)`
+            ? `rgba(${cat.glow},0.22)`
             : "rgba(255,255,255,0.07)",
         }}
       />
       {/* Hover border brightens */}
       <div
         className="absolute inset-0 border border-transparent pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-300"
-        style={{ borderColor: isWaiting ? `${cat.fg}55` : "rgba(255,255,255,0.12)" }}
+        style={{ borderColor: isWaiting ? `rgba(${cat.glow},0.36)` : "rgba(255,255,255,0.12)" }}
       />
 
       {/* ── Top accent line ───────────────────────────────────────── */}
@@ -220,8 +178,8 @@ function ChallengeCard({
         className="absolute top-0 left-0 right-0 h-[1px] pointer-events-none"
         style={{
           background: isWaiting
-            ? `linear-gradient(90deg, ${cat.fg}80 0%, ${cat.fg}20 50%, transparent 100%)`
-            : `linear-gradient(90deg, rgba(${cat.glow},0.15) 0%, transparent 60%)`,
+            ? `rgba(${cat.glow},0.32)`
+            : "rgba(255,255,255,0.05)",
         }}
       />
 
@@ -240,66 +198,67 @@ function ChallengeCard({
         )}
       </div>
 
-      {/* ── Scanline sweep on hover (OPEN) ────────────────────────── */}
+      {/* ── Quiet hover sheen (OPEN) ──────────────────────────────── */}
       {isWaiting && (
         <motion.div
-          className="absolute left-0 right-0 h-[1px] pointer-events-none opacity-0 group-hover:opacity-100 transition-opacity duration-200"
+          className="absolute inset-y-0 left-0 w-10 skew-x-[-16deg] pointer-events-none opacity-0 group-hover:opacity-100"
           style={{
-            background: `linear-gradient(90deg, transparent 0%, rgba(${cat.glow},0.45) 50%, transparent 100%)`,
+            background: "rgba(255,255,255,0.045)",
           }}
-          animate={{ top: ["0%", "100%"] }}
-          transition={{ duration: 2.8, repeat: Infinity, ease: "linear", repeatDelay: 0.6 }}
+          animate={{ x: [-80, 1380] }}
+          transition={{ duration: 2.6, repeat: Infinity, ease: "easeInOut", repeatDelay: 2 }}
         />
       )}
 
       {/* ── Layout ────────────────────────────────────────────────── */}
-      <div className="relative flex items-stretch">
+      <div className="relative grid grid-cols-1 md:grid-cols-[128px_1fr_auto] items-stretch">
 
         {/* Stake column */}
         <div
-          className="flex-shrink-0 flex flex-col items-center justify-center px-4 sm:px-6 py-5 border-r"
+          className="relative flex min-h-24 flex-row md:flex-col items-center justify-between md:justify-center gap-4 px-5 py-5 border-b md:border-b-0 md:border-r overflow-hidden"
           style={{
             borderColor: isWaiting
-              ? `rgba(${cat.glow},0.18)`
+              ? `rgba(${cat.glow},0.16)`
               : "rgba(255,255,255,0.05)",
-            background: isWaiting ? `rgba(${cat.glow},0.06)` : "transparent",
-            minWidth: "82px",
+            background: isWaiting ? `rgba(${cat.glow},0.045)` : "transparent",
           }}
         >
-          <span
-            className="font-display font-extrabold leading-none transition-all duration-300"
-            style={{
-              fontSize: "clamp(1.55rem, 3.5vw, 2.1rem)",
-              color: isWaiting ? cat.fg : "rgba(255,255,255,0.18)",
-              textShadow: isWaiting ? `0 0 22px rgba(${cat.glow},0.55)` : "none",
-            }}
-          >
-            ${room.stake}
-          </span>
-          <span
-            className="font-mono text-[8px] uppercase tracking-widest mt-1.5 block"
-            style={{
-              color: isWaiting ? `rgba(${cat.glow},0.5)` : "rgba(255,255,255,0.14)",
-            }}
-          >
-            USDC
-          </span>
-          <span className="font-mono text-[7px] uppercase tracking-widest text-white/12 mt-0.5 block">
-            per side
-          </span>
+          <div className="relative md:text-center">
+            <span
+              className="font-display font-bold leading-none transition-all duration-300"
+              style={{
+                fontSize: "clamp(1.65rem, 3.6vw, 2.2rem)",
+                color: isWaiting ? cat.fg : "rgba(255,255,255,0.18)",
+                textShadow: isWaiting ? `0 0 10px rgba(${cat.glow},0.20)` : "none",
+              }}
+            >
+              ${room.stake}
+            </span>
+            <span
+              className="font-mono text-[8px] uppercase tracking-widest mt-1.5 block"
+              style={{
+                color: isWaiting ? `rgba(${cat.glow},0.5)` : "rgba(255,255,255,0.14)",
+              }}
+            >
+              USDC
+            </span>
+            <span className="font-mono text-[7px] uppercase tracking-widest text-white/12 mt-0.5 block">
+              per side
+            </span>
+          </div>
         </div>
 
         {/* Main content */}
-        <div className="flex-1 px-4 sm:px-6 py-4 sm:py-5 min-w-0">
+        <div className="relative px-5 sm:px-7 py-5 sm:py-6 min-w-0">
 
           {/* Meta row */}
           <div className="flex items-center gap-2 mb-3 flex-wrap">
             {/* Status badge */}
             <span
-              className="inline-flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-widest px-2.5 py-1 border transition-all duration-200"
+              className="inline-flex items-center gap-1.5 font-mono text-[9px] uppercase tracking-widest px-2.5 py-1 border transition-colors duration-150"
               style={
                 isWaiting
-                  ? { color: cat.fg, borderColor: `${cat.fg}45`, background: cat.bg }
+                  ? { color: cat.fg, borderColor: `rgba(${cat.glow},0.25)`, background: "rgba(255,255,255,0.015)" }
                   : { color: "rgba(255,255,255,0.28)", borderColor: "rgba(255,255,255,0.08)", background: "transparent" }
               }
             >
@@ -335,7 +294,7 @@ function ChallengeCard({
                 style={{
                   color: "#FF6B00",
                   borderColor: "rgba(255,107,0,0.35)",
-                  background: "rgba(255,107,0,0.08)",
+                  background: "rgba(255,107,0,0.06)",
                 }}
               >
                 🔥 Hot
@@ -343,7 +302,7 @@ function ChallengeCard({
             )}
 
             {/* Watcher + age — right side */}
-            <div className="flex items-center gap-2 ml-auto">
+            <div className="flex items-center gap-2 sm:ml-auto">
               <div className="flex items-center gap-1">
                 {isWaiting && (
                   <motion.span
@@ -363,20 +322,22 @@ function ChallengeCard({
 
           {/* Topic — VS highlighted */}
           <p
-            className="font-display font-extrabold uppercase leading-tight mb-2.5 transition-colors duration-200 group-hover:text-clash-white"
+            className="font-display font-bold uppercase leading-tight mb-2.5 transition-colors duration-200 group-hover:text-clash-white"
             style={{
-              fontSize: "clamp(1rem, 2.4vw, 1.22rem)",
-              color: isWaiting ? "#F5F5F0" : "rgba(245,245,240,0.28)",
+              fontSize: "clamp(1.02rem, 2.45vw, 1.42rem)",
+              color: isWaiting ? "rgba(245,245,240,0.86)" : "rgba(245,245,240,0.30)",
+              textShadow: "none",
+              letterSpacing: "0",
             }}
           >
             {topicParts.map((part, i) =>
               /^vs\.?$/i.test(part.trim()) ? (
                 <span
                   key={i}
-                  className="font-extrabold mx-1"
+                  className="font-bold mx-1"
                   style={{
                     color: isWaiting ? cat.fg : `rgba(${cat.glow},0.3)`,
-                    textShadow: isWaiting ? `0 0 16px rgba(${cat.glow},0.5)` : "none",
+                    textShadow: "none",
                   }}
                 >
                   {part}
@@ -388,7 +349,7 @@ function ChallengeCard({
           </p>
 
           {/* Creator line */}
-          <div className="flex items-center gap-3">
+          <div className="flex flex-wrap items-center gap-3">
             <span className="font-body text-xs text-white/28">
               Challenged by{" "}
               <span className="font-medium text-white/48">{room.creatorName}</span>
@@ -416,28 +377,41 @@ function ChallengeCard({
         </div>
 
         {/* Action column */}
-        <div className="flex-shrink-0 flex items-center px-3 sm:px-5">
+        <div className="relative flex items-center justify-stretch md:justify-center px-5 sm:px-6 pb-5 md:py-5">
           {isWaiting ? (
-            <motion.button
-              whileHover={{ scale: 1.04 }}
-              whileTap={{ scale: 0.95 }}
-              onClick={(e) => { e.stopPropagation(); onAccept(room); }}
-              className="relative overflow-hidden font-display text-xs sm:text-sm font-extrabold uppercase tracking-widest px-4 sm:px-6 py-3.5 text-clash-black"
-              style={{ background: cat.fg }}
-            >
-              <motion.div
-                className="absolute inset-0 bg-white/25"
-                initial={{ x: "-100%" }}
-                whileHover={{ x: "100%" }}
-                transition={{ duration: 0.32 }}
-              />
-              <span className="relative whitespace-nowrap">Accept →</span>
-            </motion.button>
+            hasAgent === false ? (
+              <Link
+                href="/forge"
+                onClick={(e) => e.stopPropagation()}
+                className="w-full md:w-auto min-h-12 inline-flex items-center justify-center font-display text-xs font-semibold uppercase tracking-widest px-5 sm:px-7 py-3 border border-white/15 text-white/40 hover:text-white/70 hover:border-white/30 transition-colors whitespace-nowrap focus-visible:ring-2 focus-visible:ring-clash-gold focus-visible:ring-offset-2 focus-visible:ring-offset-clash-black"
+              >
+                Forge Agent →
+              </Link>
+            ) : (
+              <motion.button
+                whileHover={{ y: -1 }}
+                whileTap={{ scale: 0.98 }}
+                onClick={(e) => { e.stopPropagation(); onAccept(room); }}
+                className="relative min-h-12 w-full md:w-[156px] overflow-hidden border font-display text-xs font-semibold uppercase tracking-widest px-5 sm:px-6 py-3 text-clash-white focus-visible:ring-2 focus-visible:ring-clash-gold focus-visible:ring-offset-2 focus-visible:ring-offset-clash-black"
+                style={{
+                  background: `rgba(${cat.glow},0.075)`,
+                  borderColor: `rgba(${cat.glow},0.30)`,
+                  color: cat.fg,
+                }}
+              >
+                <motion.div
+                  className="absolute inset-y-0 left-0 w-10 skew-x-[-18deg] bg-white/10 opacity-0 group-hover:opacity-100"
+                  animate={{ x: ["-140%", "420%"] }}
+                  transition={{ duration: 1.2, repeat: Infinity, ease: "easeInOut", repeatDelay: 0.8 }}
+                />
+                <span className="relative whitespace-nowrap">Accept →</span>
+              </motion.button>
+            )
           ) : (
             <Link
               href={`/arena/${room.id}`}
               onClick={(e) => e.stopPropagation()}
-              className="font-mono text-[10px] uppercase tracking-widest text-white/25 hover:text-white/55 transition-colors px-3 sm:px-5 py-3.5 border border-white/8 hover:border-white/18 whitespace-nowrap"
+              className="w-full md:w-auto min-h-12 inline-flex items-center justify-center font-mono text-[10px] uppercase tracking-widest text-white/25 hover:text-white/55 transition-colors px-5 py-3 border border-white/8 hover:border-white/18 whitespace-nowrap"
             >
               Watch →
             </Link>
@@ -454,14 +428,36 @@ function CreateDrawer({
   onSubmit,
 }: {
   onClose: () => void;
-  onSubmit: (topic: string, stake: number) => void;
+  onSubmit: (topic: string, stake: number) => Promise<void>;
 }) {
   const [selectedTopic, setSelectedTopic] = useState("");
   const [customTopic, setCustomTopic] = useState("");
   const [stake, setStake] = useState(1);
+  const [submitting, setSubmitting] = useState(false);
+  const [txError, setTxError] = useState<string | null>(null);
 
   const finalTopic =
     selectedTopic === "Custom hot take..." ? customTopic.trim() : selectedTopic;
+
+  const handleSubmit = async () => {
+    if (!finalTopic || submitting) return;
+    setSubmitting(true);
+    setTxError(null);
+    try {
+      await onSubmit(finalTopic, stake);
+      // parent closes the drawer on success
+    } catch (err) {
+      let msg = "Transaction failed";
+      if (err instanceof Error) {
+        msg = err.message;
+      } else if (typeof err === "object" && err !== null) {
+        const e = err as Record<string, unknown>;
+        msg = String(e.message ?? e.reason ?? e.shortMessage ?? JSON.stringify(err));
+      }
+      setTxError(msg);
+      setSubmitting(false);
+    }
+  };
 
   const activeCat =
     CATEGORY_COLORS[
@@ -477,7 +473,7 @@ function CreateDrawer({
       exit={{ opacity: 0 }}
       className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6"
       style={{ background: "rgba(0,0,0,0.92)", backdropFilter: "blur(12px)" }}
-      onClick={onClose}
+      onClick={submitting ? undefined : onClose}
     >
       <motion.div
         initial={{ y: "60%", opacity: 0 }}
@@ -788,28 +784,50 @@ function CreateDrawer({
 
               {/* CTA */}
               <motion.button
-                whileHover={finalTopic ? { scale: 1.005 } : {}}
-                whileTap={finalTopic ? { scale: 0.985 } : {}}
-                onClick={() => finalTopic && onSubmit(finalTopic, stake)}
-                disabled={!finalTopic}
+                whileHover={finalTopic && !submitting ? { scale: 1.005 } : {}}
+                whileTap={finalTopic && !submitting ? { scale: 0.985 } : {}}
+                onClick={handleSubmit}
+                disabled={!finalTopic || submitting}
                 className="relative w-full py-5 font-display text-sm sm:text-base font-extrabold uppercase tracking-widest text-clash-black overflow-hidden transition-all duration-200"
                 style={{
                   background: "#FFB800",
-                  opacity: finalTopic ? 1 : 0.22,
-                  cursor: finalTopic ? "pointer" : "not-allowed",
+                  opacity: finalTopic && !submitting ? 1 : 0.5,
+                  cursor: finalTopic && !submitting ? "pointer" : "not-allowed",
                 }}
               >
-                <motion.div
-                  className="absolute inset-0 bg-white/25"
-                  initial={{ x: "-100%" }}
-                  whileHover={{ x: "100%" }}
-                  transition={{ duration: 0.4 }}
-                />
+                {!submitting && (
+                  <motion.div
+                    className="absolute inset-0 bg-white/25"
+                    initial={{ x: "-100%" }}
+                    whileHover={{ x: "100%" }}
+                    transition={{ duration: 0.4 }}
+                  />
+                )}
                 <span className="relative flex items-center justify-center gap-2.5">
-                  <span className="text-base">⚔</span>
-                  Issue the Challenge — ${stake} USDC
+                  {submitting ? (
+                    <>
+                      <span className="w-4 h-4 border-2 border-black/25 border-t-black/70 rounded-full animate-spin flex-shrink-0" />
+                      Confirm in MetaMask…
+                    </>
+                  ) : (
+                    <>
+                      <span className="text-base">⚔</span>
+                      Create Challenge — ${stake} USDC
+                    </>
+                  )}
                 </span>
               </motion.button>
+
+              {txError && (
+                <motion.div
+                  initial={{ opacity: 0, y: -4 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  className="mt-2 px-4 py-3 border border-red-500/30 bg-red-500/8 flex items-start gap-2"
+                >
+                  <span className="text-red-400 text-xs mt-0.5 flex-shrink-0">✕</span>
+                  <p className="font-mono text-[10px] text-red-400/80 leading-relaxed">{txError}</p>
+                </motion.div>
+              )}
 
               <p className="font-mono text-[8px] text-center text-white/15 mt-3 uppercase tracking-widest">
                 Stake locked until accepted · Cancel anytime before that
@@ -873,29 +891,602 @@ function PulseRing({ color }: { color: string }) {
   );
 }
 
+// ─── Rooms cache ──────────────────────────────────────────────────────────────
+const ROOMS_CACHE_KEY = "clashboard_lobby_rooms";
+const ROOMS_CACHE_TTL = 60; // seconds
+
+function loadRoomsCache(): Room[] | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(ROOMS_CACHE_KEY);
+    if (!raw) return null;
+    const { rooms, cachedAt } = JSON.parse(raw) as { rooms: Room[]; cachedAt: number };
+    if (Math.floor(Date.now() / 1000) - cachedAt > ROOMS_CACHE_TTL) return null;
+    return rooms;
+  } catch { return null; }
+}
+
+function saveRoomsCache(rooms: Room[]) {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(ROOMS_CACHE_KEY, JSON.stringify({ rooms, cachedAt: Math.floor(Date.now() / 1000) }));
+  } catch {}
+}
+
+async function fetchRooms(): Promise<Room[]> {
+  const { getPublicClient, HOTTAKEROOMS_ABI: roomsAbi } = await import("@/lib/chain");
+  const client = getPublicClient();
+  const roomsAddress = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
+
+  const latestBlock = await client.getBlockNumber();
+  // Public RPC caps getLogs at 2 000 blocks per request. Scan sequentially so we don't
+  // hammer the rate limit with 25 simultaneous requests (all would fail silently).
+  const TARGET_RANGE = 50000n;
+  const CHUNK = 2000n;
+  const startBlock = latestBlock > TARGET_RANGE ? latestBlock - TARGET_RANGE : 0n;
+  const event = parseAbiItem(
+    "event RoomCreated(bytes32 indexed roomId, address indexed creator, uint256 stake, string topicPreview, uint256 expiresAt)"
+  );
+
+  const allLogs = [];
+  for (let from = startBlock; from < latestBlock; from += CHUNK) {
+    const to = from + CHUNK - 1n < latestBlock ? from + CHUNK - 1n : latestBlock;
+    try {
+      const chunk = await client.getLogs({ address: roomsAddress, event, fromBlock: from, toBlock: to });
+      allLogs.push(...chunk);
+    } catch {
+      // skip chunks that fail (RPC node quirks) — process whatever we got
+    }
+  }
+
+  const topLogs = [...allLogs].reverse().slice(0, 30);
+
+  // Fetch all room states in parallel (eth_call, not eth_getLogs — fine to batch)
+  const roomResults = await Promise.allSettled(
+    topLogs.map(async (log) => {
+      const roomId = log.args.roomId as `0x${string}`;
+      const creator = log.args.creator as `0x${string}`;
+      const stakeWei = log.args.stake as bigint;
+      const topicPreview = (log.args.topicPreview as string) ?? "";
+
+      const roomData = (await client.readContract({
+        address: roomsAddress,
+        abi: roomsAbi,
+        functionName: "getRoom",
+        args: [roomId],
+      }) as unknown) as { state: number; createdAt: bigint; expiresAt: bigint };
+
+      // 0=OPEN, 1=LOCKED, 2=SETTLED, 3=CANCELLED — skip finished rooms
+      if (roomData.state === 2 || roomData.state === 3) return null;
+
+      const state: Room["state"] = roomData.state === 1 ? "LOCKED" : "WAITING";
+      const topic = topicPreview;
+      const categoryGuess =
+        /sport|football|soccer|basketball|nba|nfl|kobe|lebron|messi|ronaldo/i.test(topic) ? "Sports" :
+        /music|rap|hip.?hop|wizkid|burna|singer|song/i.test(topic) ? "Music" :
+        /crypto|bitcoin|eth|web3|defi/i.test(topic) ? "Crypto" :
+        /tech|iphone|android|ai|apple|google/i.test(topic) ? "Tech" : "Culture";
+
+      return {
+        id: roomId,
+        topic,
+        creatorName: `${creator.slice(0, 6)}…${creator.slice(-4)}`,
+        creatorAddress: creator,
+        stake: Number(stakeWei) / 1e6,
+        state,
+        createdAt: Number(roomData.createdAt) * 1000,
+        category: categoryGuess,
+        bettors: 0,
+      } as Room;
+    })
+  );
+
+  return roomResults.flatMap((r) => r.status === "fulfilled" && r.value !== null ? [r.value] : []);
+}
+
+// ─── My open challenges (cancel + refund) ────────────────────────────────────
+
+function MyOpenChallenges({
+  rooms,
+  walletAddress,
+  onCancel,
+}: {
+  rooms: Room[];
+  walletAddress: string | null;
+  onCancel: (roomId: string) => void;
+}) {
+  if (!walletAddress) return null;
+  const mine = rooms.filter(
+    (r) => r.state === "WAITING" && r.creatorAddress.toLowerCase() === walletAddress.toLowerCase()
+  );
+  if (mine.length === 0) return null;
+
+  return (
+    <motion.div
+      initial={{ opacity: 0, y: -8 }}
+      animate={{ opacity: 1, y: 0 }}
+      className="mb-8 border border-clash-gold/20 overflow-hidden"
+      style={{ background: "rgba(255,184,0,0.03)" }}
+    >
+      <div className="flex items-center justify-between px-5 py-3 border-b border-clash-gold/10">
+        <div className="flex items-center gap-2">
+          <motion.span
+            className="w-1.5 h-1.5 rounded-full bg-clash-gold"
+            animate={{ opacity: [1, 0.3, 1] }}
+            transition={{ duration: 1.4, repeat: Infinity }}
+          />
+          <span className="font-mono text-[9px] uppercase tracking-widest text-clash-gold/70">
+            Your Open Challenges
+          </span>
+        </div>
+        <span className="font-mono text-[9px] text-white/25">{mine.length} active</span>
+      </div>
+      <div className="divide-y divide-white/5">
+        {mine.map((r) => (
+          <div key={r.id} className="flex items-center gap-4 px-5 py-3">
+            <div className="flex-1 min-w-0">
+              <p className="font-display text-sm font-bold text-white/80 uppercase truncate leading-tight">
+                {r.topic}
+              </p>
+              <p className="font-mono text-[9px] text-white/30 mt-0.5">
+                ${r.stake} staked · waiting for opponent
+              </p>
+            </div>
+            <CancelChallengeButton roomId={r.id} stake={r.stake} onSuccess={() => onCancel(r.id)} />
+          </div>
+        ))}
+      </div>
+      <div className="px-5 py-2.5 border-t border-clash-gold/10">
+        <p className="font-mono text-[8px] text-white/20 uppercase tracking-widest">
+          Cancel any time before someone accepts to get your USDC back
+        </p>
+      </div>
+    </motion.div>
+  );
+}
+
+function CancelChallengeButton({
+  roomId,
+  stake,
+  onSuccess,
+}: {
+  roomId: string;
+  stake: number;
+  onSuccess: () => void;
+}) {
+  const [cancelling, setCancelling] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  const handleCancel = async (e: React.MouseEvent) => {
+    e.stopPropagation();
+    setCancelling(true);
+    setError(null);
+    try {
+      const { getProvider } = await import("@/lib/metamask");
+      const provider = getProvider();
+      if (!provider) throw new Error("Wallet not connected");
+      const accounts = (await provider.request({ method: "eth_accounts" })) as string[];
+      if (!accounts[0]) throw new Error("No wallet connected");
+
+      const { HOTTAKEROOMS_ABI: abi } = await import("@/lib/chain");
+      const { writeUserContract, waitForTx } = await import("@/lib/wallet-contract");
+
+      const txHash = await writeUserContract({
+        address: process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`,
+        abi,
+        functionName: "cancelChallenge",
+        args: [roomId as `0x${string}`],
+        account: accounts[0] as `0x${string}`,
+      });
+      await waitForTx(txHash);
+      onSuccess();
+    } catch (err) {
+      let msg = "Cancel failed";
+      if (err instanceof Error) {
+        msg = err.message;
+      } else if (typeof err === "object" && err !== null) {
+        const e = err as Record<string, unknown>;
+        msg = String(e.message ?? e.reason ?? e.shortMessage ?? JSON.stringify(err));
+      }
+      setError(msg);
+      setCancelling(false);
+    }
+  };
+
+  return (
+    <div className="flex-shrink-0 flex flex-col items-end gap-1">
+      <button
+        onClick={handleCancel}
+        disabled={cancelling}
+        className="font-mono text-[9px] uppercase tracking-widest px-3 py-2 border transition-colors disabled:opacity-40"
+        style={{ borderColor: "rgba(239,68,68,0.3)", color: "rgba(239,68,68,0.7)" }}
+      >
+        {cancelling ? (
+          <span className="flex items-center gap-1.5">
+            <span className="w-2.5 h-2.5 border border-red-400/40 border-t-red-400 rounded-full animate-spin" />
+            Cancelling…
+          </span>
+        ) : (
+          `Cancel +$${stake} back`
+        )}
+      </button>
+      {error && <p className="font-mono text-[8px] text-red-400/70 max-w-[180px] text-right">{error}</p>}
+    </div>
+  );
+}
+
+// ─── Skeleton card ────────────────────────────────────────────────────────────
+function SkeletonCard({ index }: { index: number }) {
+  const titleWidths = ["72%", "85%", "60%"];
+  const creatorWidths = ["44%", "52%", "38%"];
+  return (
+    <motion.div
+      initial={{ opacity: 0, x: -10 }}
+      animate={{ opacity: 1, x: 0 }}
+      transition={{ delay: index * 0.1, duration: 0.4, ease: [0.16, 1, 0.3, 1] }}
+      className="relative overflow-hidden border border-white/5 bg-[#0A0A0F]"
+    >
+      {/* Golden shimmer sweep */}
+      <div className="absolute inset-0 overflow-hidden pointer-events-none">
+        <motion.div
+          className="absolute inset-y-0 w-[200%]"
+          style={{ background: "linear-gradient(105deg, transparent 30%, rgba(255,184,0,0.04) 50%, transparent 70%)" }}
+          animate={{ x: ["-50%", "50%"] }}
+          transition={{ duration: 2.4, delay: index * 0.55, repeat: Infinity, ease: "linear" }}
+        />
+      </div>
+      <div className="flex items-stretch">
+        {/* Stake column */}
+        <div className="flex-shrink-0 flex flex-col items-center justify-center px-4 sm:px-6 py-5 border-r border-white/5 min-w-[82px]">
+          <div className="w-12 h-7 rounded-sm bg-white/6" />
+          <div className="w-7 h-2 rounded-sm bg-white/4 mt-2" />
+          <div className="w-10 h-1.5 rounded-sm bg-white/3 mt-1" />
+        </div>
+        {/* Content */}
+        <div className="flex-1 px-4 sm:px-6 py-4">
+          <div className="flex items-center gap-2 mb-3">
+            <div className="w-10 h-3.5 rounded-sm bg-white/6" />
+            <div className="w-14 h-3.5 rounded-sm bg-white/4" />
+            <div className="ml-auto w-16 h-2.5 rounded-sm bg-white/3" />
+          </div>
+          <div className="h-5 rounded-sm bg-white/8 mb-2.5" style={{ width: titleWidths[index] }} />
+          <div className="h-2.5 rounded-sm bg-white/4" style={{ width: creatorWidths[index] }} />
+        </div>
+        {/* Button */}
+        <div className="flex-shrink-0 flex items-center px-3 sm:px-5">
+          <div className="w-[88px] h-11 rounded-sm bg-white/5" />
+        </div>
+      </div>
+    </motion.div>
+  );
+}
+
+// ─── Challenges loader ────────────────────────────────────────────────────────
+const LOADER_MSGS = [
+  "Scanning the arena",
+  "Summoning challengers",
+  "Finding worthy opponents",
+  "Loading battle rooms",
+  "Preparing the gauntlet",
+  "Searching for fighters",
+];
+
+function ChallengesLoader() {
+  const [msgIdx, setMsgIdx] = useState(0);
+  useEffect(() => {
+    const id = setInterval(() => setMsgIdx(i => (i + 1) % LOADER_MSGS.length), 2200);
+    return () => clearInterval(id);
+  }, []);
+
+  return (
+    <motion.div
+      key="challenges-loader"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0, scale: 0.98 }}
+      transition={{ duration: 0.3 }}
+      className="space-y-2"
+    >
+      {/* Arena scanner */}
+      <div className="relative overflow-hidden border border-white/6 bg-[#0A0A0F] flex flex-col items-center py-10 mb-2">
+        {/* Atmospheric glow */}
+        <div
+          className="absolute inset-0 pointer-events-none"
+          style={{ background: "radial-gradient(ellipse 70% 80% at 50% 50%, rgba(255,184,0,0.06) 0%, transparent 70%)" }}
+        />
+        {/* Horizontal scan line sweeping top to bottom */}
+        <motion.div
+          className="absolute inset-x-0 h-[1px] pointer-events-none"
+          style={{ background: "linear-gradient(90deg, transparent 0%, rgba(255,184,0,0.55) 50%, transparent 100%)" }}
+          animate={{ top: ["5%", "95%"] }}
+          transition={{ duration: 2.8, repeat: Infinity, ease: "linear", repeatDelay: 0.4 }}
+        />
+        {/* Central icon + rings */}
+        <div className="relative z-10 flex items-center justify-center" style={{ width: 80, height: 80 }}>
+          {/* Expanding pulse rings */}
+          {[0, 1, 2].map(i => (
+            <motion.div
+              key={i}
+              className="absolute rounded-full border border-clash-gold/18"
+              animate={{ scale: [1, 2.8 + i * 0.7], opacity: [0.6, 0] }}
+              transition={{ duration: 2.2, delay: i * 0.65, repeat: Infinity, ease: "easeOut" }}
+              style={{ width: 46, height: 46 }}
+            />
+          ))}
+          {/* Icon box */}
+          <motion.div
+            className="relative z-10 w-16 h-16 flex items-center justify-center border"
+            animate={{ borderColor: ["rgba(255,184,0,0.28)", "rgba(255,184,0,0.72)", "rgba(255,184,0,0.28)"] }}
+            transition={{ duration: 2, repeat: Infinity, ease: "easeInOut" }}
+          >
+            {/* Corner accents */}
+            {[
+              "top-0 left-0 border-t border-l",
+              "top-0 right-0 border-t border-r",
+              "bottom-0 left-0 border-b border-l",
+              "bottom-0 right-0 border-b border-r",
+            ].map((cls, i) => (
+              <div key={i} className={`absolute w-2.5 h-2.5 border-clash-gold/55 ${cls}`} />
+            ))}
+            <motion.span
+              className="text-2xl select-none"
+              style={{ filter: "drop-shadow(0 0 16px rgba(255,184,0,0.7))" }}
+              animate={{ rotate: [0, 12, -12, 0], scale: [1, 1.14, 1] }}
+              transition={{ duration: 3.2, repeat: Infinity, ease: "easeInOut" }}
+            >
+              ⚔️
+            </motion.span>
+          </motion.div>
+        </div>
+        {/* Cycling battle message */}
+        <div className="mt-8 h-4 flex items-center">
+          <AnimatePresence mode="wait">
+            <motion.p
+              key={msgIdx}
+              initial={{ opacity: 0, y: 8 }}
+              animate={{ opacity: 1, y: 0 }}
+              exit={{ opacity: 0, y: -8 }}
+              transition={{ duration: 0.28 }}
+              className="font-mono text-[10px] uppercase tracking-[0.4em] text-clash-gold/60"
+            >
+              {LOADER_MSGS[msgIdx]}
+            </motion.p>
+          </AnimatePresence>
+        </div>
+        {/* Pulsing dots */}
+        <div className="flex gap-1.5 mt-3.5">
+          {[0, 1, 2].map(i => (
+            <motion.span
+              key={i}
+              className="w-1 h-1 rounded-full bg-clash-gold/45"
+              animate={{ opacity: [0.15, 1, 0.15] }}
+              transition={{ duration: 1.1, delay: i * 0.22, repeat: Infinity }}
+            />
+          ))}
+        </div>
+      </div>
+      {/* Skeleton cards */}
+      {[0, 1, 2].map(i => <SkeletonCard key={i} index={i} />)}
+    </motion.div>
+  );
+}
+
 // ─── Main page ────────────────────────────────────────────────────────────────
 export default function LobbyPage() {
+  const router = useRouter();
   const [showCreate, setShowCreate] = useState(false);
-  const [showBudget, setShowBudget] = useState(false);
-  const [pendingTopic, setPendingTopic] = useState("");
   const [filter, setFilter] = useState<"ALL" | "WAITING" | "LOCKED">("ALL");
+  const [rooms, setRooms] = useState<Room[]>([]);
+  const [loadingRooms, setLoadingRooms] = useState(true);
+  const [walletAddress, setWalletAddress] = useState<string | null>(null);
+  const [hasAgent, setHasAgent] = useState<boolean | null>(null);
+  const [noAgentToast, setNoAgentToast] = useState(false);
+  const [acceptTxState, setAcceptTxState] = useState<"idle" | "approving" | "accepting" | "error">("idle");
+  const [acceptTxError, setAcceptTxError] = useState<string | null>(null);
 
-  const waitingRooms = MOCK_ROOMS.filter((r) => r.state === "WAITING").length;
-  const totalPool = MOCK_ROOMS.reduce((acc, r) => acc + r.stake * 2, 0);
+  useEffect(() => {
+    // Show cached rooms immediately for instant UX, then refresh in background
+    const cached = loadRoomsCache();
+    if (cached && cached.length > 0) {
+      setRooms(cached);
+      setLoadingRooms(false);
+    }
 
-  const filtered = MOCK_ROOMS.filter((r) =>
+    fetchRooms()
+      .then((fresh) => {
+        // Only update state if we actually received rooms — prevents an RPC failure
+        // returning [] from wiping rooms that were already shown from cache.
+        if (fresh.length > 0) {
+          setRooms(fresh);
+          saveRoomsCache(fresh);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoadingRooms(false));
+
+    // Use window.ethereum directly — MetaMask SDK has init overhead that causes it to
+    // appear disconnected on page refresh even when MetaMask still holds the session.
+    const eth = typeof window !== "undefined"
+      ? (window as unknown as { ethereum?: { request: (a: { method: string }) => Promise<unknown>; on: (e: string, h: (...a: unknown[]) => void) => void; removeListener: (e: string, h: (...a: unknown[]) => void) => void } }).ethereum
+      : undefined;
+
+    if (!eth) return;
+
+    const checkAgent = async (addr: string) => {
+      try {
+        const { getPublicClient, REGISTRY_ABI } = await import("@/lib/chain");
+        const client = getPublicClient();
+        const exists = await client.readContract({
+          address: process.env.NEXT_PUBLIC_REGISTRY_CONTRACT as `0x${string}`,
+          abi: REGISTRY_ABI,
+          functionName: "agentExists_",
+          args: [addr as `0x${string}`],
+        });
+        setHasAgent(exists as boolean);
+      } catch {
+        // If registry is unreachable, assume no agent so the gate blocks correctly.
+        // The user can refresh to retry once network recovers.
+        setHasAgent(false);
+      }
+    };
+
+    eth.request({ method: "eth_accounts" }).then(async (accs) => {
+      const list = accs as string[];
+      if (!list[0]) return;
+      setWalletAddress(list[0]);
+      checkAgent(list[0]);
+    }).catch(() => {});
+
+    // Keep wallet state in sync — account switch or disconnect in MetaMask
+    const onAccountsChanged = (accs: unknown) => {
+      const list = accs as string[];
+      const addr = list[0] ?? null;
+      setWalletAddress(addr);
+      setHasAgent(null);
+      if (addr) checkAgent(addr);
+    };
+    eth.on("accountsChanged", onAccountsChanged);
+    return () => eth.removeListener("accountsChanged", onAccountsChanged);
+  }, []);
+
+  const waitingRooms = rooms.filter((r) => r.state === "WAITING").length;
+  const totalPool = rooms.reduce((acc, r) => acc + r.stake * 2, 0);
+
+  const filtered = rooms.filter((r) =>
     filter === "ALL" ? true : r.state === filter,
   );
 
-  function handleAccept(room: Room) {
-    setPendingTopic(room.topic);
-    setShowBudget(true);
+  function handleCancelRoom(roomId: string) {
+    setRooms((prev) => prev.filter((r) => r.id !== roomId));
   }
 
-  function handleCreateSubmit(topic: string, _stake: number) {
-    setPendingTopic(topic);
+  function handleAccept(room: Room) {
+    if (hasAgent === false) {
+      setNoAgentToast(true);
+      setTimeout(() => setNoAgentToast(false), 5000);
+      return;
+    }
+    void handleAcceptChallenge(room);
+  }
+
+  async function handleAcceptChallenge(room: Room) {
+    setAcceptTxState("approving");
+    setAcceptTxError(null);
+    try {
+      const { getProvider } = await import("@/lib/metamask");
+      const provider = getProvider();
+      if (!provider) throw new Error("Connect your wallet first");
+      const accounts = (await provider.request({ method: "eth_accounts" })) as string[];
+      if (!accounts[0]) throw new Error("No wallet connected");
+      const account = accounts[0] as `0x${string}`;
+
+      const battleId = keccak256(
+        encodeAbiParameters(parseAbiParameters("bytes32,address,uint256"), [
+          room.id as `0x${string}`, account, BigInt(Date.now()),
+        ])
+      ) as `0x${string}`;
+
+      const roomsAddress = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
+      const stakeWei = BigInt(Math.round(room.stake * 1_000_000));
+
+      // Approve USDC for the stake, wait for it to mine before submitting accept
+      const approvalHash = await ensureUSDCApproval(account, roomsAddress, stakeWei);
+      if (approvalHash) await waitForTx(approvalHash);
+
+      setAcceptTxState("accepting");
+      const txHash = await writeUserContract({
+        address: roomsAddress,
+        abi: HOTTAKEROOMS_ABI,
+        functionName: "acceptChallenge",
+        args: [room.id as `0x${string}`, battleId, 300n, 120n, 1000000n],
+        account,
+      });
+      await waitForTx(txHash);
+      router.push(`/arena/${battleId}`);
+    } catch (err) {
+      let msg = "Accept failed";
+      if (err instanceof Error) {
+        msg = err.message;
+      } else if (typeof err === "object" && err !== null) {
+        const e = err as Record<string, unknown>;
+        msg = String(e.message ?? e.reason ?? e.shortMessage ?? JSON.stringify(err));
+      }
+      setAcceptTxError(msg);
+      setAcceptTxState("error");
+    }
+  }
+
+  async function handleCreateSubmit(topic: string, stakeUsdc: number): Promise<void> {
+    const { getProvider } = await import("@/lib/metamask");
+    const provider = getProvider();
+    if (!provider) throw new Error("Connect your wallet first");
+
+    const accounts = (await provider.request({ method: "eth_accounts" })) as string[];
+    if (!accounts[0]) throw new Error("No wallet connected");
+    const account = accounts[0] as `0x${string}`;
+
+    const roomsAddress = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
+    const stakeWei = BigInt(Math.round(stakeUsdc * 1_000_000));
+    const onChainTopic = topic.slice(0, 280);
+
+    const roomId = keccak256(
+      encodeAbiParameters(parseAbiParameters("address,string,uint256"), [
+        account, onChainTopic, BigInt(Date.now()),
+      ])
+    ) as `0x${string}`;
+
+    const topicHash = keccak256(
+      encodeAbiParameters(parseAbiParameters("string"), [onChainTopic])
+    ) as `0x${string}`;
+
+    const categoryHash = keccak256(
+      encodeAbiParameters(parseAbiParameters("string"), ["general"])
+    ) as `0x${string}`;
+
+    const challengeCall = {
+      address: roomsAddress,
+      abi: HOTTAKEROOMS_ABI,
+      functionName: "issueChallenge",
+      args: [roomId, topicHash, onChainTopic, categoryHash, stakeWei] as readonly unknown[],
+    };
+
+    // Challenge creation always uses plain user-signed txs. Never wallet_sendCalls:
+    // issueChallenge requires registry.agentExists_(msg.sender) and ERC-7715 delegation
+    // changes who msg.sender is, causing the check to fail.
+    //
+    // MUST wait for approval to mine before sending issueChallenge — MetaMask simulates
+    // the challenge tx against current chain state where allowance is still 0 otherwise.
+    const approvalHash = await ensureUSDCApproval(account, roomsAddress, stakeWei);
+    if (approvalHash) await waitForTx(approvalHash);
+    const txHash = await writeUserContract({ ...challengeCall, account });
+    await waitForTx(txHash);
+
+    // Only reach here on success — optimistically add the new room immediately so
+    // it appears in "My Open Challenges" without waiting for RPC event indexing.
+    const catGuess =
+      /sport|football|soccer|basketball|nba|nfl|kobe|lebron|messi|ronaldo/i.test(topic) ? "Sports" :
+      /music|rap|hip.?hop|wizkid|burna|singer|song/i.test(topic) ? "Music" :
+      /crypto|bitcoin|eth|web3|defi/i.test(topic) ? "Crypto" :
+      /tech|iphone|android|ai|apple|google/i.test(topic) ? "Tech" : "Culture";
+
+    setRooms((prev) => [
+      {
+        id: roomId,
+        topic,
+        creatorName: `${account.slice(0, 6)}…${account.slice(-4)}`,
+        creatorAddress: account,
+        stake: stakeUsdc,
+        state: "WAITING" as const,
+        createdAt: Date.now(),
+        category: catGuess,
+        bettors: 0,
+      },
+      ...prev,
+    ]);
+    setWalletAddress(account);
+
     setShowCreate(false);
-    setShowBudget(true);
+    setTimeout(() => fetchRooms().then((fresh) => { setRooms(fresh); saveRoomsCache(fresh); }).catch(() => {}), 4000);
   }
 
   return (
@@ -924,8 +1515,38 @@ export default function LobbyPage() {
 
       
 
+      {/* ── Nav ─────────────────────────────────────────────────────────────── */}
+      <header className="fixed top-0 left-0 right-0 z-40 border-b border-white/6 bg-clash-black/80 backdrop-blur-md">
+        <div className="max-w-[1440px] mx-auto px-6 sm:px-10 lg:px-16 py-4 flex items-center justify-between gap-4">
+          <Link href="/" className="flex items-center gap-2.5">
+            <img src="/logo.svg" alt="Clashboard" className="h-6 w-auto flex-shrink-0" />
+            <span className="text-clash-gold">CLASH</span>
+            <span className="text-white/40">BOARD</span>
+          </Link>
+          <nav className="hidden sm:flex items-center gap-6">
+            {([
+              { href: "/game-lobby", label: "Lobby" },
+              { href: "/dashboard", label: "My Agent" },
+              { href: "/lobby", label: "Challenges", active: true },
+            ] as { href: string; label: string; active?: boolean }[]).map(l => (
+              <Link
+                key={l.label}
+                href={l.href}
+                className="font-mono text-[10px] uppercase tracking-widest transition-colors"
+                style={{ color: l.active ? "#FFB800" : "rgba(255,255,255,0.3)" }}
+              >
+                {l.label}
+              </Link>
+            ))}
+          </nav>
+          <ConnectWallet />
+        </div>
+      </header>
+
       {/* ── Ticker ──────────────────────────────────────────────────────────── */}
-      <LiveTicker />
+      <div className="pt-[57px]">
+        <LiveTicker />
+      </div>
 
       <div className="relative max-w-5xl mx-auto px-4 sm:px-6 py-8 sm:py-12">
         {/* ── Hero area ────────────────────────────────────────────────────── */}
@@ -978,7 +1599,7 @@ export default function LobbyPage() {
             />
             <div className="w-px bg-white/6" />
             <StatPill
-              value={String(MOCK_ROOMS.reduce((a, r) => a + r.bettors, 0))}
+              value={String(rooms.reduce((a, r) => a + r.bettors, 0))}
               label="Watching"
               accent="#10B981"
             />
@@ -993,7 +1614,13 @@ export default function LobbyPage() {
           className="relative mb-8"
         >
           <button
-            onClick={() => setShowCreate(true)}
+            onClick={() => {
+              if (hasAgent === false) {
+                router.push("/forge");
+                return;
+              }
+              setShowCreate(true);
+            }}
             className="w-full group relative overflow-hidden text-left"
           >
             {/* Base bg */}
@@ -1095,7 +1722,7 @@ export default function LobbyPage() {
                   Throw Down the Gauntlet
                 </h3>
                 <p className="font-body text-sm text-white/28 group-hover:text-white/42 transition-colors duration-200 leading-snug">
-                  Post your hot take · Stake USDC · Your AI agent fights for your belief
+                  Pick a topic · Stake USDC · Your AI agent fights for your belief
                 </p>
               </div>
 
@@ -1111,12 +1738,19 @@ export default function LobbyPage() {
                     whileHover={{ x: "100%" }}
                     transition={{ duration: 0.35 }}
                   />
-                  <span className="relative whitespace-nowrap">Issue →</span>
+                  <span className="relative whitespace-nowrap">Create Challenge →</span>
                 </div>
               </div>
             </div>
           </button>
         </motion.div>
+
+        {/* ── My open challenges ────────────────────────────────────────────── */}
+        <MyOpenChallenges
+          rooms={rooms}
+          walletAddress={walletAddress}
+          onCancel={handleCancelRoom}
+        />
 
         {/* ── Filter strip (mobile) ────────────────────────────────────────── */}
         <div className="sm:hidden flex gap-1 mb-5 border border-white/6 p-0.5 overflow-hidden">
@@ -1147,32 +1781,47 @@ export default function LobbyPage() {
         </div>
 
         {/* ── Challenge list ──────────────────────────────────────────────── */}
-        <div className="space-y-2">
-          <AnimatePresence mode="popLayout">
-            {filtered.map((room, i) => (
-              <ChallengeCard
-                key={room.id}
-                room={room}
-                index={i}
-                onAccept={handleAccept}
-              />
-            ))}
-          </AnimatePresence>
+        <div>
+          <AnimatePresence mode="wait">
+            {loadingRooms ? (
+              <ChallengesLoader key="loader" />
+            ) : (
+              <motion.div
+                key="rooms"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                transition={{ duration: 0.35 }}
+                className="space-y-4"
+              >
+                <AnimatePresence mode="popLayout">
+                  {filtered.map((room, i) => (
+                    <ChallengeCard
+                      key={room.id}
+                      room={room}
+                      index={i}
+                      onAccept={handleAccept}
+                      hasAgent={hasAgent}
+                    />
+                  ))}
+                </AnimatePresence>
 
-          {filtered.length === 0 && (
-            <motion.div
-              initial={{ opacity: 0 }}
-              animate={{ opacity: 1 }}
-              className="text-center py-16 border border-white/5"
-            >
-              <p className="font-display text-sm text-white/20 uppercase tracking-widest">
-                No challenges yet
-              </p>
-              <p className="font-body text-xs text-white/15 mt-1">
-                Be the first to issue one
-              </p>
-            </motion.div>
-          )}
+                {filtered.length === 0 && (
+                  <motion.div
+                    initial={{ opacity: 0 }}
+                    animate={{ opacity: 1 }}
+                    className="text-center py-16 border border-white/5"
+                  >
+                    <p className="font-display text-sm text-white/20 uppercase tracking-widest">
+                      No challenges yet
+                    </p>
+                    <p className="font-body text-xs text-white/15 mt-1">
+                      Be the first to create one
+                    </p>
+                  </motion.div>
+                )}
+              </motion.div>
+            )}
+          </AnimatePresence>
         </div>
 
         {/* ── Bottom callout ────────────────────────────────────────────────── */}
@@ -1217,26 +1866,68 @@ export default function LobbyPage() {
         )}
       </AnimatePresence>
 
-      {/* ── Budget screen modal ─────────────────────────────────────────────── */}
+      {/* ── No-agent toast ──────────────────────────────────────────────────── */}
       <AnimatePresence>
-        {showBudget && (
+        {noAgentToast && (
+          <motion.div
+            initial={{ opacity: 0, y: 16 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: 16 }}
+            className="fixed bottom-6 left-1/2 -translate-x-1/2 z-[60] flex items-center gap-3 px-5 py-4 border w-[calc(100%-2rem)] max-w-sm"
+            style={{ background: "#0A0A0F", borderColor: "rgba(239,68,68,0.4)" }}
+          >
+            <span className="text-red-400 text-base flex-shrink-0">⚔</span>
+            <div className="flex-1 min-w-0">
+              <p className="font-mono text-[10px] uppercase tracking-widest text-red-400/90">No Agent Forged</p>
+              <p className="font-body text-xs text-white/50 mt-0.5 leading-snug">
+                You need a forged agent to fight.{" "}
+                <Link href="/forge" className="text-clash-gold underline">Forge one →</Link>
+              </p>
+            </div>
+            <button onClick={() => setNoAgentToast(false)} className="text-white/20 hover:text-white/50 font-mono text-xs flex-shrink-0 pl-2">✕</button>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Accept challenge tx overlay ─────────────────────────────────────── */}
+      <AnimatePresence>
+        {acceptTxState !== "idle" && (
           <motion.div
             initial={{ opacity: 0 }}
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
-            className="fixed inset-0 bg-black/90 backdrop-blur-sm z-50 flex items-center justify-center p-6"
+            className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[55] flex items-center justify-center p-6"
           >
-            <BudgetScreen
-              onConfirm={(budget) => {
-                console.log("Budget set:", budget, "topic:", pendingTopic);
-                setShowBudget(false);
-                setShowCreate(false);
-              }}
-              onCancel={() => setShowBudget(false)}
-            />
+            <div className="w-full max-w-sm border border-white/10 bg-[#0A0A0F] p-8 text-center">
+              {acceptTxState === "error" ? (
+                <>
+                  <p className="font-display text-lg font-bold uppercase text-red-400 mb-3">Transaction Failed</p>
+                  <p className="font-mono text-[10px] text-red-400/70 mb-6 leading-relaxed break-words">{acceptTxError}</p>
+                  <button
+                    onClick={() => { setAcceptTxState("idle"); setAcceptTxError(null); }}
+                    className="font-mono text-[10px] uppercase tracking-widest px-6 py-3 border border-white/15 text-white/50 hover:text-white/80 transition-colors"
+                  >
+                    Dismiss
+                  </button>
+                </>
+              ) : (
+                <>
+                  <div className="flex items-center justify-center mb-5">
+                    <span className="w-10 h-10 border-2 border-white/10 border-t-clash-gold/70 rounded-full animate-spin" />
+                  </div>
+                  <p className="font-display text-lg font-bold uppercase text-clash-white mb-2">
+                    {acceptTxState === "approving" ? "Approving USDC…" : "Locking Your Stake…"}
+                  </p>
+                  <p className="font-mono text-[10px] text-white/35 uppercase tracking-widest">
+                    {acceptTxState === "approving" ? "Confirm approval in MetaMask" : "Confirm accept in MetaMask"}
+                  </p>
+                </>
+              )}
+            </div>
           </motion.div>
         )}
       </AnimatePresence>
+
     </main>
   );
 }

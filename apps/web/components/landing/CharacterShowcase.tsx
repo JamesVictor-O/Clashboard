@@ -561,7 +561,7 @@ export function CharacterShowcase() {
         />
       </AnimatePresence>
 
-      <div className="relative max-w-7xl mx-auto px-4 sm:px-6 flex flex-col h-screen max-h-[1000px] min-h-[640px]">
+      <div className="relative max-w-[1440px] mx-auto px-6 sm:px-10 lg:px-16 flex flex-col h-screen max-h-[1000px] min-h-[640px]">
         {/* ── TOP BAR ──────────────────────────────────────────────────────── */}
         <div className="flex items-center justify-between pt-6 pb-0 flex-shrink-0">
           <motion.div

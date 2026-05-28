@@ -26,6 +26,8 @@ export type FightingStyle =
   | "Defensive"
   | "Balanced";
 
+export type RiskMode = "Conservative" | "Balanced" | "Aggressive";
+
 /** Lightweight agent reference used in battle context */
 export interface Agent {
   address: string;
@@ -44,7 +46,10 @@ export interface AgentConfig {
   customInstructions?: string;
   specialties: string[];
   fightingStyle: FightingStyle;
-  researchBudget: number; // USD
+  operatingBudgetUSDC: number;
+  /** @deprecated Use operatingBudgetUSDC. Kept for legacy localStorage/API payloads. */
+  researchBudget?: number;
+  riskMode?: RiskMode;
   color: string;
 }
 
@@ -59,6 +64,7 @@ export interface Battle {
   poolA: bigint;
   poolB: bigint;
   bettingDeadline: bigint;
+  roundDuration: number;   // seconds per round
   rubricHash: string;
   winner: string | null;
   bettorCount?: number;
@@ -112,6 +118,68 @@ export interface ResearchPurchase {
   txHash: string;
   data: Record<string, unknown>;
   purchasedAt: number;
+}
+
+export type ResearchCategory =
+  | "sports"
+  | "music"
+  | "tech"
+  | "culture"
+  | "crypto";
+
+export interface ResearchArtifact {
+  id: string;
+  ownerAgentId: string;
+  ownerWalletAddress: `0x${string}`;
+  topic: string;
+  category: ResearchCategory;
+  facts: string[];
+  sources: string[];
+  summary: string;
+  priceUSDC: string;
+  createdAt: number;
+  txHash?: `0x${string}`;
+}
+
+export interface PermissionMetadata {
+  context: `0x${string}`;
+  delegationManager: `0x${string}`;
+  sessionAddress: `0x${string}`;
+  walletAddress: `0x${string}`;
+  chainId: number;
+  permissionType: string;
+  budgetUSDC: number;
+  budgetPeriod: string;
+  expiry: number;
+  createdAt: number;
+  active: boolean;
+}
+
+export type PolicyResult =
+  | { ok: true }
+  | { ok: false; reason: string };
+
+export type AutonomousActionType =
+  | "ENTER_BATTLE"
+  | "BUY_RESEARCH"
+  | "BUY_AGENT_RESEARCH"
+  | "DEBATE_ROUND"
+  | "SKIP_ACTION";
+
+export interface AgentDecision {
+  action: AutonomousActionType;
+  reason: string;
+  category?: ResearchCategory;
+  maxSpendUSDC?: string;
+}
+
+export interface AutonomousActionLog {
+  action: AutonomousActionType;
+  reason: string;
+  amountUSDC?: string;
+  txHash?: `0x${string}`;
+  artifactId?: string;
+  createdAt: number;
 }
 
 // ─── On-chain ─────────────────────────────────────────────────────────────────

@@ -2,375 +2,731 @@
 pragma solidity ^0.8.20;
 
 import "forge-std/Test.sol";
+import "../src/AgentRegistry.sol";
+import "../src/AgentTreasury.sol";
 import "../src/ClashboardArena.sol";
+import "../src/HotTakeRooms.sol";
+import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
-/// @dev Minimal ERC20 mock for testing
-contract MockUSDC {
-    mapping(address => uint256) public balanceOf;
-    mapping(address => mapping(address => uint256)) public allowance;
-
-    string public name     = "USD Coin";
-    string public symbol   = "USDC";
-    uint8  public decimals = 6;
-
-    function mint(address to, uint256 amount) external {
-        balanceOf[to] += amount;
+// ─── Mock USDC ────────────────────────────────────────────────────────────────
+contract MockUSDC is ERC20 {
+    constructor() ERC20("USD Coin", "USDC") {
+        _mint(msg.sender, 1_000_000 * 1e6);
     }
-
-    function approve(address spender, uint256 amount) external returns (bool) {
-        allowance[msg.sender][spender] = amount;
-        return true;
-    }
-
-    function transfer(address to, uint256 amount) external returns (bool) {
-        require(balanceOf[msg.sender] >= amount, "Insufficient balance");
-        balanceOf[msg.sender] -= amount;
-        balanceOf[to] += amount;
-        return true;
-    }
-
-    function transferFrom(address from, address to, uint256 amount) external returns (bool) {
-        require(balanceOf[from] >= amount,           "Insufficient balance");
-        require(allowance[from][msg.sender] >= amount, "Insufficient allowance");
-        allowance[from][msg.sender] -= amount;
-        balanceOf[from] -= amount;
-        balanceOf[to]   += amount;
-        return true;
-    }
+    function decimals() public pure override returns (uint8) { return 6; }
+    function mint(address to, uint256 amount) external { _mint(to, amount); }
 }
 
-contract ClashboardArenaTest is Test {
-    ClashboardArena public arena;
-    MockUSDC        public usdc;
+// ─── Test suite ───────────────────────────────────────────────────────────────
+contract ClashboardTest is Test {
 
-    address public owner    = address(this);
-    address public treasury = makeAddr("treasury");
-    address public agentA   = makeAddr("agentA");
-    address public agentB   = makeAddr("agentB");
-    address public bettor1  = makeAddr("bettor1");
-    address public bettor2  = makeAddr("bettor2");
+    MockUSDC        usdc;
+    AgentRegistry   registry;
+    AgentTreasury   treasury;
+    ClashboardArena arena;
+    HotTakeRooms    rooms;
 
-    bytes32 public constant BATTLE_ID = keccak256("battle-001");
-    bytes32 public constant ROOM_ID   = keccak256("room-001");
+    address owner     = address(this);
+    address scheduler = makeAddr("scheduler");
+    address platform  = makeAddr("platform");
 
-    // Rubric preimage and hash
-    string  public rubricPreimage = "rubric-preimage-001";
-    bytes32 public rubricHash;
+    address alice = makeAddr("alice");
+    address bob   = makeAddr("bob");
+    address carol = makeAddr("carol");
+    address dave  = makeAddr("dave");
 
-    uint256 public constant BET_AMOUNT  = 10e6;  // 10 USDC
-    uint256 public constant STAKE       = 5e6;   // 5 USDC
-    uint256 public constant JUDGE_SCORE = 85;
+    uint256 constant ENTRY_FEE      = 2 * 1e6;   // $2 USDC
+    uint256 constant BET_AMOUNT     = 5 * 1e6;   // $5 USDC
+    uint256 constant STAKE          = 2 * 1e6;   // $2 USDC
+    uint256 constant RESEARCH_CAP   = 500_000;   // $0.50 USDC
+    uint256 constant BETTING_WINDOW = 120;        // 2 min minimum
+    uint256 constant ROUND_DURATION = 60;         // 60 seconds per round
+
+    // Total battle duration after betting closes = 3 * 60 = 180 seconds
+    uint256 constant BATTLE_DURATION = BETTING_WINDOW + TOTAL_ROUND_TIME;
+    uint256 constant TOTAL_ROUND_TIME = 3 * ROUND_DURATION;
+
+    bytes32 constant BATTLE_ID = keccak256("battle-001");
+    bytes32 constant ROOM_ID   = keccak256("room-001");
+    string  constant TOPIC     = "Messi is the GOAT over Ronaldo";
+
+    bytes32 constant RUBRIC_PREIMAGE = "judge system prompt v1";
+    bytes32          RUBRIC_HASH;
 
     function setUp() public {
-        usdc  = new MockUSDC();
-        arena = new ClashboardArena(address(usdc), treasury);
+        RUBRIC_HASH = keccak256(abi.encode(RUBRIC_PREIMAGE));
 
-        rubricHash = keccak256(abi.encode(rubricPreimage));
+        usdc     = new MockUSDC();
+        registry = new AgentRegistry();
+        treasury = new AgentTreasury(address(usdc));
+        arena    = new ClashboardArena(
+            address(usdc), address(registry), address(treasury), platform, scheduler
+        );
+        rooms    = new HotTakeRooms(
+            address(usdc), address(registry), address(treasury), address(arena)
+        );
 
-        // Fund bettors and agents
-        usdc.mint(bettor1, 100e6);
-        usdc.mint(bettor2, 100e6);
-        usdc.mint(agentA,  100e6);
-        usdc.mint(agentB,  100e6);
+        registry.setAuthorisedContract(address(arena), true);
+        treasury.setAuthorisedContract(address(arena), true);
+        treasury.setAuthorisedContract(address(rooms), true);
+        arena.setHotTakeRooms(address(rooms));
 
-        // Approve arena
-        vm.prank(bettor1); usdc.approve(address(arena), type(uint256).max);
-        vm.prank(bettor2); usdc.approve(address(arena), type(uint256).max);
-        vm.prank(agentA);  usdc.approve(address(arena), type(uint256).max);
-        vm.prank(agentB);  usdc.approve(address(arena), type(uint256).max);
+        usdc.mint(alice, 100 * 1e6);
+        usdc.mint(bob,   100 * 1e6);
+        usdc.mint(carol, 100 * 1e6);
+        usdc.mint(dave,  100 * 1e6);
+
+        vm.prank(alice); registry.forge("AliceBot", keccak256("alice-meta"));
+        vm.prank(bob);   registry.forge("BobBot",   keccak256("bob-meta"));
+        vm.prank(carol); registry.forge("CarolBot", keccak256("carol-meta"));
+
+        // Alice and bob grant the arena direct spending permission (ERC-7715 model).
+        vm.prank(alice);
+        usdc.approve(address(arena), 50 * 1e6);
+
+        vm.prank(bob);
+        usdc.approve(address(arena), 50 * 1e6);
+
+        // Carol pre-funds treasury for autonomous bet tests.
+        vm.startPrank(carol);
+        usdc.approve(address(treasury), 20 * 1e6);
+        treasury.deposit(carol, 20 * 1e6);
+        vm.stopPrank();
     }
 
-    // ─── Battle Creation ──────────────────────────────────────────────────────
+    // ─── Helpers ──────────────────────────────────────────────────────────────
 
-    function testCreateBattle() public {
-        arena.createBattle(BATTLE_ID, agentA, agentB, 300);
-
-        (
-            ClashboardArena.BattleState state,
-            bytes32 rHash,
-            address a,
-            address b,
-            address winner,
-            uint256 poolA,
-            uint256 poolB,
-            uint256 deadline
-        ) = arena.battles(BATTLE_ID);
-
-        assertEq(uint8(state), uint8(ClashboardArena.BattleState.OPEN));
-        assertEq(rHash,   bytes32(0));
-        assertEq(a,       agentA);
-        assertEq(b,       agentB);
-        assertEq(winner,  address(0));
-        assertEq(poolA,   0);
-        assertEq(poolB,   0);
-        assertGt(deadline, block.timestamp);
+    function _createBattle() internal {
+        vm.prank(scheduler);
+        arena.createBattle(
+            BATTLE_ID, alice, bob, ENTRY_FEE,
+            BETTING_WINDOW, ROUND_DURATION, RESEARCH_CAP,
+            _topicHash(TOPIC), TOPIC, keccak256("sports")
+        );
     }
 
-    function testCreateBattle_revertsIfExists() public {
-        arena.createBattle(BATTLE_ID, agentA, agentB, 300);
-        vm.expectRevert("Battle exists");
-        arena.createBattle(BATTLE_ID, agentA, agentB, 300);
+    function _topicHash(string memory topic) internal pure returns (bytes32) {
+        return keccak256(abi.encode(topic));
     }
 
-    function testCreateBattle_onlyOwner() public {
-        vm.prank(bettor1);
-        vm.expectRevert();
-        arena.createBattle(BATTLE_ID, agentA, agentB, 300);
+    function _commitRubric() internal {
+        vm.prank(scheduler);
+        arena.commitRubric(BATTLE_ID, RUBRIC_HASH);
     }
 
-    // ─── Betting ──────────────────────────────────────────────────────────────
-
-    function testDepositBet() public {
-        arena.createBattle(BATTLE_ID, agentA, agentB, 300);
-
-        uint256 before = usdc.balanceOf(bettor1);
-        vm.prank(bettor1);
-        arena.depositBet(BATTLE_ID, 1, BET_AMOUNT);
-
-        assertEq(usdc.balanceOf(bettor1), before - BET_AMOUNT);
-        assertEq(usdc.balanceOf(address(arena)), BET_AMOUNT);
-
-        (uint8 side, uint256 amount) = arena.bets(BATTLE_ID, bettor1);
-        assertEq(side,   1);
-        assertEq(amount, BET_AMOUNT);
-
-        (uint256 poolA, uint256 poolB,) = arena.getBattlePool(BATTLE_ID);
-        assertEq(poolA, BET_AMOUNT);
-        assertEq(poolB, 0);
+    /// Warp past the entire battle (betting + all 3 rounds).
+    function _warpPastAllRounds() internal {
+        vm.warp(block.timestamp + BATTLE_DURATION + 1);
     }
 
-    function testCannotBetTwice() public {
-        arena.createBattle(BATTLE_ID, agentA, agentB, 300);
+    // ─── AgentRegistry ────────────────────────────────────────────────────────
 
-        vm.prank(bettor1);
-        arena.depositBet(BATTLE_ID, 1, BET_AMOUNT);
-
-        vm.prank(bettor1);
-        vm.expectRevert("Already bet");
-        arena.depositBet(BATTLE_ID, 2, BET_AMOUNT);
+    function testForge_success() public {
+        assertTrue(registry.agentExists_(alice));
+        (AgentRegistry.Agent memory agent,) = registry.getAgent(alice);
+        assertEq(agent.name, "AliceBot");
+        assertEq(agent.owner, alice);
     }
 
-    function testCannotBetAfterDeadline() public {
-        arena.createBattle(BATTLE_ID, agentA, agentB, 300);
-        vm.warp(block.timestamp + 301);
-
-        vm.prank(bettor1);
-        vm.expectRevert("Deadline passed");
-        arena.depositBet(BATTLE_ID, 1, BET_AMOUNT);
+    function testForge_onePerWallet() public {
+        vm.prank(alice);
+        vm.expectRevert("Agent already forged for this wallet");
+        registry.forge("AliceBot2", keccak256("meta2"));
     }
 
-    function testCannotBetInvalidSide() public {
-        arena.createBattle(BATTLE_ID, agentA, agentB, 300);
-
-        vm.prank(bettor1);
-        vm.expectRevert("Invalid side");
-        arena.depositBet(BATTLE_ID, 3, BET_AMOUNT);
+    function testForge_uniqueName() public {
+        vm.prank(dave);
+        vm.expectRevert("Name already taken");
+        registry.forge("AliceBot", keccak256("dave-meta"));
     }
 
-    // ─── Rubric Commit ────────────────────────────────────────────────────────
-
-    function testCommitRubric() public {
-        arena.createBattle(BATTLE_ID, agentA, agentB, 300);
-        arena.commitRubric(BATTLE_ID, rubricHash);
-
-        (ClashboardArena.BattleState state, bytes32 rHash,,,,,, ) = arena.battles(BATTLE_ID);
-        assertEq(uint8(state), uint8(ClashboardArena.BattleState.LIVE));
-        assertEq(rHash, rubricHash);
+    function testForge_nameLengthValidation() public {
+        vm.prank(dave);
+        vm.expectRevert("Name too short");
+        registry.forge("X", keccak256("meta"));
     }
 
-    function testCommitRubric_wrongState() public {
-        arena.createBattle(BATTLE_ID, agentA, agentB, 300);
-        arena.commitRubric(BATTLE_ID, rubricHash);
-
-        vm.expectRevert("Wrong state");
-        arena.commitRubric(BATTLE_ID, rubricHash);
+    function testSetAutonomousLimits() public {
+        vm.prank(alice);
+        registry.setAutonomousLimits(
+            true, 2 * 1e6, 500_000, 5,
+            block.timestamp + 7 days,
+            keccak256("sports,music")
+        );
+        (bool eligible,) = registry.isAutonomousEligible(alice, 1 * 1e6);
+        assertTrue(eligible);
     }
 
-    // ─── Settlement ───────────────────────────────────────────────────────────
-
-    function _setupLiveBattle() internal {
-        arena.createBattle(BATTLE_ID, agentA, agentB, 300);
-
-        vm.prank(bettor1);
-        arena.depositBet(BATTLE_ID, 1, BET_AMOUNT); // bets on A
-
-        vm.prank(bettor2);
-        arena.depositBet(BATTLE_ID, 2, BET_AMOUNT); // bets on B
-
-        arena.commitRubric(BATTLE_ID, rubricHash);
+    function testAutonomousLimits_expiry() public {
+        vm.prank(alice);
+        registry.setAutonomousLimits(
+            true, 2 * 1e6, 500_000, 5,
+            block.timestamp + 1 hours,
+            keccak256("sports")
+        );
+        vm.warp(block.timestamp + 2 hours);
+        (bool eligible, string memory reason) = registry.isAutonomousEligible(alice, 1 * 1e6);
+        assertFalse(eligible);
+        assertEq(reason, "Permission expired");
     }
 
-    function testSettleBattle_correctPayout() public {
-        _setupLiveBattle();
+    function testAutonomousLimits_feeTooHigh() public {
+        vm.prank(alice);
+        registry.setAutonomousLimits(
+            true, 1 * 1e6, 500_000, 5,
+            block.timestamp + 7 days,
+            keccak256("sports")
+        );
+        (bool eligible, string memory reason) = registry.isAutonomousEligible(alice, 2 * 1e6);
+        assertFalse(eligible);
+        assertEq(reason, "Entry fee exceeds limit");
+    }
 
-        uint256 total    = BET_AMOUNT * 2;          // 20 USDC
-        uint256 platform = total * 5  / 100;        // 1 USDC
-        uint256 agentCut = total * 70 / 100;        // 14 USDC
-        uint256 bettors  = total - platform - agentCut; // 5 USDC
+    function testAutonomousLimits_isView() public view {
+        registry.isAutonomousEligible(alice, 1 * 1e6);
+    }
 
-        uint256 agentABefore   = usdc.balanceOf(agentA);
-        uint256 treasuryBefore = usdc.balanceOf(treasury);
-        uint256 bettor1Before  = usdc.balanceOf(bettor1);
+    // ─── AgentTreasury ────────────────────────────────────────────────────────
 
-        // Agent A wins
-        arena.settleBattle(BATTLE_ID, 1, rubricPreimage, JUDGE_SCORE);
+    function testDeposit_and_balance() public {
+        vm.startPrank(alice);
+        usdc.approve(address(treasury), 20 * 1e6);
+        treasury.deposit(alice, 20 * 1e6);
+        vm.stopPrank();
+        assertEq(treasury.getBalance(alice), 20 * 1e6);
+    }
 
-        // Agent A gets 70%
-        assertEq(usdc.balanceOf(agentA), agentABefore + agentCut);
-        // Treasury gets 5%
-        assertEq(usdc.balanceOf(treasury), treasuryBefore + platform);
-        // Bettor1 (bet on A) gets their share of 25%
-        // Only bettor on winning side, so gets all 5 USDC
-        assertEq(usdc.balanceOf(bettor1), bettor1Before + bettors);
+    function testWithdraw() public {
+        vm.startPrank(alice);
+        usdc.approve(address(treasury), 20 * 1e6);
+        treasury.deposit(alice, 20 * 1e6);
+        uint256 balanceBefore = usdc.balanceOf(alice);
+        treasury.withdraw(10 * 1e6);
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(alice), balanceBefore + 10 * 1e6);
+        assertEq(treasury.getBalance(alice), 10 * 1e6);
+    }
+
+    function testWithdraw_insufficientBalance() public {
+        vm.prank(alice);
+        vm.expectRevert("Insufficient balance");
+        treasury.withdraw(1 * 1e6);
+    }
+
+    function testResearchBudgetCap() public {
+        // Give alice a treasury balance for the research spend test.
+        vm.startPrank(alice);
+        usdc.approve(address(treasury), 10 * 1e6);
+        treasury.deposit(alice, 10 * 1e6);
+        vm.stopPrank();
+
+        vm.startPrank(address(arena));
+        treasury.authorizedSpend(
+            alice, 400_000, address(0xDADA),
+            AgentTreasury.SpendPurpose.RESEARCH, BATTLE_ID, RESEARCH_CAP
+        );
+        vm.expectRevert("Research budget exceeded");
+        treasury.authorizedSpend(
+            alice, 200_000, address(0xDADA),
+            AgentTreasury.SpendPurpose.RESEARCH, BATTLE_ID, RESEARCH_CAP
+        );
+        vm.stopPrank();
+    }
+
+    // ─── ClashboardArena — create & betting ──────────────────────────────────
+
+    function testCreateBattle_success() public {
+        _createBattle();
+        ClashboardArena.Battle memory b = arena.getBattle(BATTLE_ID);
+        assertEq(b.agentA, alice);
+        assertEq(b.agentB, bob);
+        assertEq(b.topicHash, _topicHash(TOPIC));
+        assertEq(b.topic, TOPIC);
+        assertEq(uint8(b.state), uint8(ClashboardArena.BattleState.OPEN));
+        assertEq(b.fighterPoolA, ENTRY_FEE);
+        assertEq(b.fighterPoolB, ENTRY_FEE);
+        assertEq(b.totalRounds, 3);
+        assertEq(b.roundDuration, ROUND_DURATION);
+        // Phase 0 = betting window active
+        assertEq(arena.getBattlePhase(BATTLE_ID), 0);
+    }
+
+    function testCreateBattle_deductsEntryFees() public {
+        uint256 aliceBefore = usdc.balanceOf(alice);
+        uint256 bobBefore   = usdc.balanceOf(bob);
+        _createBattle();
+        assertEq(usdc.balanceOf(alice), aliceBefore - ENTRY_FEE);
+        assertEq(usdc.balanceOf(bob),   bobBefore   - ENTRY_FEE);
+    }
+
+    function testCreateBattle_bettingWindowEnforced() public {
+        vm.prank(scheduler);
+        vm.expectRevert("Betting window too short");
+        arena.createBattle(
+            BATTLE_ID, alice, bob, ENTRY_FEE, 60, ROUND_DURATION, RESEARCH_CAP,
+            _topicHash(TOPIC), TOPIC, keccak256("sports")
+        );
+    }
+
+    function testPhase_advancesAutomatically() public {
+        _createBattle();
+        // Read actual stored values — use absolute warp targets to avoid Foundry
+        // inline block.timestamp / constant evaluation quirks.
+        ClashboardArena.Battle memory b = arena.getBattle(BATTLE_ID);
+        uint256 dl  = b.bettingDeadline;  // 121 (1 + 120)
+        uint256 rd  = b.roundDuration;    // 60
+
+        assertEq(arena.getBattlePhase(BATTLE_ID), 0);           // betting open
+
+        vm.warp(dl + 1);
+        assertEq(arena.getBattlePhase(BATTLE_ID), 1);           // round 1
+
+        vm.warp(dl + rd + 1);
+        assertEq(arena.getBattlePhase(BATTLE_ID), 2);           // round 2
+
+        vm.warp(dl + 2 * rd + 1);
+        assertEq(arena.getBattlePhase(BATTLE_ID), 3);           // round 3
+
+        vm.warp(dl + 3 * rd + 1);
+        assertEq(arena.getBattlePhase(BATTLE_ID), 4);           // all rounds complete
+    }
+
+    function testPhaseTimeRemaining() public {
+        _createBattle();
+        uint256 remaining = arena.getPhaseTimeRemaining(BATTLE_ID);
+        assertApproxEqAbs(remaining, BETTING_WINDOW, 2);
+    }
+
+    function testPlaceBet_humanBettor() public {
+        _createBattle();
+        vm.startPrank(dave);
+        usdc.approve(address(arena), BET_AMOUNT);
+        arena.placeBet(BATTLE_ID, 1, BET_AMOUNT);
+        vm.stopPrank();
+        (, uint256 betAmount) = arena.getUserBet(BATTLE_ID, dave);
+        assertEq(betAmount, BET_AMOUNT);
+        ClashboardArena.Battle memory b = arena.getBattle(BATTLE_ID);
+        assertEq(b.spectatorPoolA, BET_AMOUNT);
+    }
+
+    function testPlaceBet_agentBettor() public {
+        _createBattle();
+        vm.prank(scheduler);
+        arena.agentPlaceBet(BATTLE_ID, carol, 2, 3 * 1e6);
+        (, uint256 betAmount) = arena.getUserBet(BATTLE_ID, carol);
+        assertEq(betAmount, 3 * 1e6);
+    }
+
+    function testPlaceBet_fighterCannotBet() public {
+        _createBattle();
+        vm.prank(scheduler);
+        vm.expectRevert("Fighter cannot bet on own battle");
+        arena.agentPlaceBet(BATTLE_ID, alice, 2, 1 * 1e6);
+    }
+
+    function testPlaceBet_afterBettingWindowClosed() public {
+        _createBattle();
+        vm.warp(block.timestamp + BETTING_WINDOW + 1);
+        vm.startPrank(dave);
+        usdc.approve(address(arena), BET_AMOUNT);
+        vm.expectRevert("Betting window closed");
+        arena.placeBet(BATTLE_ID, 1, BET_AMOUNT);
+        vm.stopPrank();
+    }
+
+    // ─── ClashboardArena — rubric ─────────────────────────────────────────────
+
+    function testCommitRubric_success() public {
+        _createBattle();
+        _commitRubric();
+        ClashboardArena.Battle memory b = arena.getBattle(BATTLE_ID);
+        assertTrue(b.rubricCommitted);
+        assertEq(b.rubricHash, RUBRIC_HASH);
+        // State is still OPEN — no manual start needed
+        assertEq(uint8(b.state), uint8(ClashboardArena.BattleState.OPEN));
+    }
+
+    function testCommitRubric_duplicate() public {
+        _createBattle();
+        _commitRubric();
+        vm.prank(scheduler);
+        vm.expectRevert("Rubric already committed");
+        arena.commitRubric(BATTLE_ID, RUBRIC_HASH);
+    }
+
+    // ─── ClashboardArena — argument submission ────────────────────────────────
+
+    function testSubmitArgument_round1() public {
+        _createBattle();
+        _commitRubric();
+        // Warp to round 1
+        vm.warp(block.timestamp + BETTING_WINDOW + 1);
+        assertEq(arena.getBattlePhase(BATTLE_ID), 1);
+
+        bytes32 hashA = keccak256("alice opening argument");
+        bytes32 hashB = keccak256("bob opening argument");
+
+        vm.startPrank(scheduler);
+        arena.submitArgument(BATTLE_ID, 1, hashA);
+        arena.submitArgument(BATTLE_ID, 2, hashB);
+        vm.stopPrank();
+
+        (bytes32 storedA, bool submittedA) = arena.getArgument(BATTLE_ID, 1, 1);
+        (bytes32 storedB, bool submittedB) = arena.getArgument(BATTLE_ID, 1, 2);
+        assertEq(storedA, hashA);
+        assertEq(storedB, hashB);
+        assertTrue(submittedA);
+        assertTrue(submittedB);
+    }
+
+    function testSubmitArgument_eachRound() public {
+        _createBattle();
+        _commitRubric();
+
+        uint256 ts = block.timestamp + BETTING_WINDOW + 1;
+
+        for (uint8 r = 1; r <= 3; r++) {
+            vm.warp(ts);
+            assertEq(arena.getBattlePhase(BATTLE_ID), r);
+            vm.startPrank(scheduler);
+            arena.submitArgument(BATTLE_ID, 1, keccak256(abi.encode("alice", r)));
+            arena.submitArgument(BATTLE_ID, 2, keccak256(abi.encode("bob",   r)));
+            vm.stopPrank();
+            ts += ROUND_DURATION;
+        }
+
+        // All 3 rounds submitted — verify
+        for (uint8 r = 1; r <= 3; r++) {
+            (, bool sA) = arena.getArgument(BATTLE_ID, r, 1);
+            (, bool sB) = arena.getArgument(BATTLE_ID, r, 2);
+            assertTrue(sA);
+            assertTrue(sB);
+        }
+    }
+
+    function testSubmitArgument_wrongPhase_bettingStillOpen() public {
+        _createBattle();
+        vm.prank(scheduler);
+        vm.expectRevert("Betting window still open");
+        arena.submitArgument(BATTLE_ID, 1, keccak256("arg"));
+    }
+
+    function testSubmitArgument_wrongPhase_allRoundsComplete() public {
+        _createBattle();
+        _commitRubric();
+        _warpPastAllRounds();
+        vm.prank(scheduler);
+        vm.expectRevert("No active round");
+        arena.submitArgument(BATTLE_ID, 1, keccak256("late arg"));
+    }
+
+    function testSubmitArgument_duplicate() public {
+        _createBattle();
+        _commitRubric();
+        vm.warp(block.timestamp + BETTING_WINDOW + 1);
+        vm.startPrank(scheduler);
+        arena.submitArgument(BATTLE_ID, 1, keccak256("first"));
+        vm.expectRevert("Argument already submitted");
+        arena.submitArgument(BATTLE_ID, 1, keccak256("second"));
+        vm.stopPrank();
+    }
+
+    // ─── ClashboardArena — settlement ────────────────────────────────────────
+
+    function testSettleBattle_correctPayouts() public {
+        _createBattle();
+
+        // Dave ($20 on Alice, side A) and Carol agent ($10 on Bob, side B)
+        vm.startPrank(dave);
+        usdc.approve(address(arena), 20 * 1e6);
+        arena.placeBet(BATTLE_ID, 1, 20 * 1e6);
+        vm.stopPrank();
+        vm.prank(scheduler);
+        arena.agentPlaceBet(BATTLE_ID, carol, 2, 10 * 1e6);
+
+        _commitRubric();
+
+        uint256 platformBefore = usdc.balanceOf(platform);
+        uint256 aliceBefore    = usdc.balanceOf(alice);
+        uint256 daveBefore     = usdc.balanceOf(dave);
+
+        _warpPastAllRounds();
+
+        vm.prank(scheduler);
+        arena.settleBattle(BATTLE_ID, 1, RUBRIC_PREIMAGE, 875);
+
+        // Alice (winner) gets 70% of $4 fighter pool = $2.80, paid to her wallet directly.
+        uint256 fighterWinner = (4 * 1e6 * 7000) / 10000;
+        assertApproxEqAbs(usdc.balanceOf(alice), aliceBefore + fighterWinner, 1000);
+
+        // Platform receives fees
+        assertTrue(usdc.balanceOf(platform) > platformBefore);
+
+        // Dave (winning bettor) gets pro-rata share
+        assertTrue(usdc.balanceOf(dave) > daveBefore);
+
+        ClashboardArena.Battle memory b = arena.getBattle(BATTLE_ID);
+        assertEq(uint8(b.state), uint8(ClashboardArena.BattleState.SETTLED));
+        assertEq(b.winner, alice);
+    }
+
+    function testSettleBattle_beforeRoundsComplete() public {
+        _createBattle();
+        _commitRubric();
+        // Only warp past betting, not past all rounds
+        vm.warp(block.timestamp + BETTING_WINDOW + 1);
+        vm.prank(scheduler);
+        vm.expectRevert("Rounds not complete yet");
+        arena.settleBattle(BATTLE_ID, 1, RUBRIC_PREIMAGE, 875);
     }
 
     function testSettleBattle_rubricMismatch() public {
-        _setupLiveBattle();
-
-        vm.expectRevert("Rubric mismatch");
-        arena.settleBattle(BATTLE_ID, 1, "wrong-preimage", JUDGE_SCORE);
+        _createBattle();
+        _commitRubric();
+        _warpPastAllRounds();
+        vm.prank(scheduler);
+        vm.expectRevert("Rubric preimage mismatch");
+        arena.settleBattle(BATTLE_ID, 1, keccak256("wrong rubric"), 800);
     }
 
-    function testSettleBattle_notLive() public {
-        arena.createBattle(BATTLE_ID, agentA, agentB, 300);
+    function testSettleBattle_noWinningBettors() public {
+        _createBattle();
+        // Carol bets on losing side (B), alice wins
+        vm.prank(scheduler);
+        arena.agentPlaceBet(BATTLE_ID, carol, 2, 3 * 1e6);
 
-        vm.expectRevert("Not live");
-        arena.settleBattle(BATTLE_ID, 1, rubricPreimage, JUDGE_SCORE);
+        uint256 platformBefore = usdc.balanceOf(platform);
+        _commitRubric();
+        _warpPastAllRounds();
+        vm.prank(scheduler);
+        arena.settleBattle(BATTLE_ID, 1, RUBRIC_PREIMAGE, 900);
+        assertTrue(usdc.balanceOf(platform) > platformBefore);
     }
 
-    function testSettleBattle_cannotSettleTwice() public {
-        _setupLiveBattle();
-        arena.settleBattle(BATTLE_ID, 1, rubricPreimage, JUDGE_SCORE);
-
-        vm.expectRevert("Not live");
-        arena.settleBattle(BATTLE_ID, 1, rubricPreimage, JUDGE_SCORE);
+    function testSettleBattle_winnerReceivesDirectly() public {
+        _createBattle();
+        _commitRubric();
+        uint256 aliceBefore = usdc.balanceOf(alice);
+        _warpPastAllRounds();
+        vm.prank(scheduler);
+        arena.settleBattle(BATTLE_ID, 1, RUBRIC_PREIMAGE, 900);
+        // Winner's share (70% of fighter pool) lands directly in alice's wallet.
+        assertTrue(usdc.balanceOf(alice) > aliceBefore);
     }
 
-    // ─── Hot Take Rooms ───────────────────────────────────────────────────────
+    function testCancelBattle_refundsAll() public {
+        _createBattle();
+        vm.startPrank(dave);
+        usdc.approve(address(arena), BET_AMOUNT);
+        arena.placeBet(BATTLE_ID, 1, BET_AMOUNT);
+        vm.stopPrank();
 
-    function testHotTakeRoom_fullFlow() public {
-        bytes32 battleId = keccak256("room-battle");
+        uint256 aliceBefore = usdc.balanceOf(alice);
+        uint256 bobBefore   = usdc.balanceOf(bob);
+        uint256 daveBefore  = usdc.balanceOf(dave);
 
-        // Creator opens room
-        vm.prank(agentA);
-        arena.createRoom(ROOM_ID, STAKE);
+        vm.prank(scheduler);
+        arena.cancelBattle(BATTLE_ID);
 
-        (
-            ClashboardArena.RoomState state,
-            address creator,
-            address challenger,
-            uint256 stake,
-        ) = arena.rooms(ROOM_ID);
-
-        assertEq(uint8(state), uint8(ClashboardArena.RoomState.WAITING));
-        assertEq(creator,    agentA);
-        assertEq(challenger, address(0));
-        assertEq(stake,      STAKE);
-        assertEq(usdc.balanceOf(address(arena)), STAKE);
-
-        // Challenger accepts
-        vm.prank(agentB);
-        arena.acceptRoom(ROOM_ID, battleId);
-
-        (state, creator, challenger, stake,) = arena.rooms(ROOM_ID);
-        assertEq(uint8(state), uint8(ClashboardArena.RoomState.LOCKED));
-        assertEq(challenger, agentB);
-        assertEq(usdc.balanceOf(address(arena)), STAKE * 2);
+        assertEq(usdc.balanceOf(alice), aliceBefore + ENTRY_FEE);
+        assertEq(usdc.balanceOf(bob),   bobBefore   + ENTRY_FEE);
+        assertEq(usdc.balanceOf(dave),  daveBefore  + BET_AMOUNT);
     }
 
-    function testHotTakeRoom_noSelfChallenge() public {
-        vm.prank(agentA);
-        arena.createRoom(ROOM_ID, STAKE);
-
-        vm.prank(agentA);
-        vm.expectRevert("No self-challenge");
-        arena.acceptRoom(ROOM_ID, keccak256("battle"));
+    function testCancelBattle_walletIntegrity() public {
+        _createBattle();
+        uint256 aliceBefore = usdc.balanceOf(alice);
+        uint256 bobBefore   = usdc.balanceOf(bob);
+        vm.prank(scheduler);
+        arena.cancelBattle(BATTLE_ID);
+        // Both entry fees returned directly to wallets — treasury untouched.
+        assertEq(usdc.balanceOf(alice), aliceBefore + ENTRY_FEE);
+        assertEq(usdc.balanceOf(bob),   bobBefore   + ENTRY_FEE);
+        assertEq(usdc.balanceOf(address(treasury)), 20 * 1e6); // only carol's deposit
     }
 
-    function testHotTakeRoom_cannotAcceptTwice() public {
-        vm.prank(agentA);
-        arena.createRoom(ROOM_ID, STAKE);
+    // ─── ClashboardArena — HotTakeRooms path ─────────────────────────────────
 
-        vm.prank(agentB);
-        arena.acceptRoom(ROOM_ID, keccak256("battle"));
+    function testCreateBattleFromRoom_success() public {
+        bytes32 roomBattleId = keccak256("room-battle-001");
+        deal(address(usdc), address(rooms), STAKE * 2);
+        vm.startPrank(address(rooms));
+        usdc.transfer(address(arena), STAKE * 2);
+        arena.createBattleFromRoom(
+            roomBattleId, alice, bob, STAKE,
+            BETTING_WINDOW, ROUND_DURATION, RESEARCH_CAP,
+            _topicHash(TOPIC), TOPIC, keccak256("sports")
+        );
+        vm.stopPrank();
 
-        vm.prank(bettor1);
-        vm.expectRevert("Not open");
-        arena.acceptRoom(ROOM_ID, keccak256("battle"));
+        ClashboardArena.Battle memory b = arena.getBattle(roomBattleId);
+        assertEq(b.agentA, alice);
+        assertEq(b.agentB, bob);
+        assertEq(b.fighterPoolA, STAKE);
+        assertEq(b.fighterPoolB, STAKE);
+        assertEq(uint8(b.state), uint8(ClashboardArena.BattleState.OPEN));
+        assertEq(b.roundDuration, ROUND_DURATION);
+        assertEq(b.topicHash, _topicHash(TOPIC));
+        assertEq(b.topic, TOPIC);
     }
 
-    // ─── Agent Records ────────────────────────────────────────────────────────
-
-    function testAgentRecord_updatesOnSettle() public {
-        _setupLiveBattle();
-        arena.settleBattle(BATTLE_ID, 1, rubricPreimage, JUDGE_SCORE);
-
-        (uint256 wins, uint256 losses, uint256 total, uint256 avg) =
-            arena.getAgentRecord(agentA);
-
-        assertEq(wins,   1);
-        assertEq(losses, 0);
-        assertEq(total,  1);
-        assertEq(avg,    JUDGE_SCORE);
-
-        (wins, losses, total, avg) = arena.getAgentRecord(agentB);
-        assertEq(wins,   0);
-        assertEq(losses, 1);
-        assertEq(total,  1);
-        assertEq(avg,    JUDGE_SCORE);
+    function testCreateBattleFromRoom_onlyHotTakeRooms() public {
+        vm.prank(scheduler);
+        vm.expectRevert("Only HotTakeRooms");
+        arena.createBattleFromRoom(
+            keccak256("x"), alice, bob, STAKE,
+            BETTING_WINDOW, ROUND_DURATION, RESEARCH_CAP,
+            _topicHash(TOPIC), TOPIC, keccak256("sports")
+        );
     }
 
-    function testAgentRecord_multipleSettlements() public {
-        // Battle 1 — A wins
-        arena.createBattle(BATTLE_ID, agentA, agentB, 300);
-        vm.prank(bettor1); arena.depositBet(BATTLE_ID, 1, BET_AMOUNT);
-        arena.commitRubric(BATTLE_ID, rubricHash);
-        arena.settleBattle(BATTLE_ID, 1, rubricPreimage, 80);
+    function testCreateBattleFromRoom_doesNotTouchTreasury() public {
+        bytes32 roomBattleId = keccak256("room-battle-002");
+        uint256 aliceTreasBefore = treasury.getBalance(alice);
+        uint256 bobTreasBefore   = treasury.getBalance(bob);
 
-        // Battle 2 — B wins
-        bytes32 battle2 = keccak256("battle-002");
-        string memory preimage2 = "rubric-preimage-002";
-        bytes32 hash2 = keccak256(abi.encode(preimage2));
+        deal(address(usdc), address(rooms), STAKE * 2);
+        vm.startPrank(address(rooms));
+        usdc.transfer(address(arena), STAKE * 2);
+        arena.createBattleFromRoom(
+            roomBattleId, alice, bob, STAKE,
+            BETTING_WINDOW, ROUND_DURATION, RESEARCH_CAP,
+            _topicHash(TOPIC), TOPIC, keccak256("sports")
+        );
+        vm.stopPrank();
 
-        arena.createBattle(battle2, agentA, agentB, 300);
-        vm.prank(bettor1); arena.depositBet(battle2, 2, BET_AMOUNT);
-        arena.commitRubric(battle2, hash2);
-        arena.settleBattle(battle2, 2, preimage2, 90);
-
-        (uint256 wins, uint256 losses, uint256 total, uint256 avg) =
-            arena.getAgentRecord(agentA);
-
-        assertEq(wins,   1);
-        assertEq(losses, 1);
-        assertEq(total,  2);
-        assertEq(avg,    85); // (80 + 90) / 2
+        assertEq(treasury.getBalance(alice), aliceTreasBefore);
+        assertEq(treasury.getBalance(bob),   bobTreasBefore);
     }
 
-    // ─── View Functions ───────────────────────────────────────────────────────
+    // ─── HotTakeRooms ────────────────────────────────────────────────────────
 
-    function testGetBattlePool() public {
-        arena.createBattle(BATTLE_ID, agentA, agentB, 300);
+    function testIssueChallenge() public {
+        vm.startPrank(alice);
+        usdc.approve(address(rooms), STAKE);
+        rooms.issueChallenge(
+            ROOM_ID,
+            _topicHash("Messi is the GOAT over Ronaldo"),
+            "Messi is the GOAT over Ronaldo",
+            keccak256("sports"),
+            STAKE
+        );
+        vm.stopPrank();
 
-        vm.prank(bettor1); arena.depositBet(BATTLE_ID, 1, 10e6);
-        vm.prank(bettor2); arena.depositBet(BATTLE_ID, 2, 6e6);
-
-        (uint256 poolA, uint256 poolB, uint256 total) =
-            arena.getBattlePool(BATTLE_ID);
-
-        assertEq(poolA, 10e6);
-        assertEq(poolB, 6e6);
-        assertEq(total, 16e6);
+        HotTakeRooms.Room memory room = rooms.getRoom(ROOM_ID);
+        assertEq(room.creator, alice);
+        assertEq(room.stake, STAKE);
+        assertEq(uint8(room.state), uint8(HotTakeRooms.RoomState.OPEN));
     }
 
-    function testUpdateTreasury() public {
-        address newTreasury = makeAddr("newTreasury");
-        arena.updateTreasury(newTreasury);
-        assertEq(arena.platformTreasury(), newTreasury);
+    function testIssueChallenge_noAgent() public {
+        vm.startPrank(dave);
+        usdc.approve(address(rooms), STAKE);
+        vm.expectRevert("Must have an agent to issue challenge");
+        rooms.issueChallenge(
+            ROOM_ID, _topicHash("Topic preview"), "Topic preview", keccak256("sports"), STAKE
+        );
+        vm.stopPrank();
     }
 
-    function testUpdateTreasury_onlyOwner() public {
-        vm.prank(bettor1);
-        vm.expectRevert();
-        arena.updateTreasury(bettor1);
+    function testAcceptChallenge_createsBattle() public {
+        vm.startPrank(alice);
+        usdc.approve(address(rooms), STAKE);
+        rooms.issueChallenge(
+            ROOM_ID, _topicHash("Messi is the GOAT"), "Messi is the GOAT",
+            keccak256("sports"), STAKE
+        );
+        vm.stopPrank();
+
+        bytes32 battleId = keccak256("hot-take-battle-001");
+        vm.startPrank(bob);
+        usdc.approve(address(rooms), STAKE);
+        rooms.acceptChallenge(ROOM_ID, battleId, BETTING_WINDOW, ROUND_DURATION, RESEARCH_CAP);
+        vm.stopPrank();
+
+        HotTakeRooms.Room memory room = rooms.getRoom(ROOM_ID);
+        assertEq(uint8(room.state), uint8(HotTakeRooms.RoomState.LOCKED));
+        assertEq(room.challenger, bob);
+        assertEq(room.battleId, battleId);
+
+        ClashboardArena.Battle memory b = arena.getBattle(battleId);
+        assertEq(b.agentA, alice);
+        assertEq(b.agentB, bob);
+        assertEq(b.fighterPoolA, STAKE);
+        assertEq(b.fighterPoolB, STAKE);
+        assertEq(b.roundDuration, ROUND_DURATION);
+        assertEq(uint8(b.state), uint8(ClashboardArena.BattleState.OPEN));
+        assertEq(b.topicHash, _topicHash("Messi is the GOAT"));
+        assertEq(b.topic, "Messi is the GOAT");
+        // Phase 0 = betting window active immediately
+        assertEq(arena.getBattlePhase(battleId), 0);
+    }
+
+    function testAcceptChallenge_noDoubleFundingTreasury() public {
+        uint256 aliceBefore = treasury.getBalance(alice);
+        uint256 bobBefore   = treasury.getBalance(bob);
+
+        vm.startPrank(alice);
+        usdc.approve(address(rooms), STAKE);
+        rooms.issueChallenge(ROOM_ID, _topicHash("Preview"), "Preview", keccak256("cat"), STAKE);
+        vm.stopPrank();
+
+        vm.startPrank(bob);
+        usdc.approve(address(rooms), STAKE);
+        rooms.acceptChallenge(ROOM_ID, keccak256("btl"), BETTING_WINDOW, ROUND_DURATION, RESEARCH_CAP);
+        vm.stopPrank();
+
+        assertEq(treasury.getBalance(alice), aliceBefore);
+        assertEq(treasury.getBalance(bob),   bobBefore);
+    }
+
+    function testAcceptChallenge_cannotAcceptSelf() public {
+        vm.startPrank(alice);
+        usdc.approve(address(rooms), STAKE);
+        rooms.issueChallenge(ROOM_ID, _topicHash("p"), "p", keccak256("c"), STAKE);
+        usdc.approve(address(rooms), STAKE);
+        vm.expectRevert("Cannot challenge yourself");
+        rooms.acceptChallenge(ROOM_ID, keccak256("x"), BETTING_WINDOW, ROUND_DURATION, RESEARCH_CAP);
+        vm.stopPrank();
+    }
+
+    function testCancelChallenge_refunds() public {
+        vm.startPrank(alice);
+        usdc.approve(address(rooms), STAKE);
+        rooms.issueChallenge(ROOM_ID, _topicHash("Preview"), "Preview", keccak256("sports"), STAKE);
+        uint256 balanceBefore = usdc.balanceOf(alice);
+        rooms.cancelChallenge(ROOM_ID);
+        vm.stopPrank();
+        assertEq(usdc.balanceOf(alice), balanceBefore + STAKE);
+    }
+
+    function testExpireRoom() public {
+        vm.startPrank(alice);
+        usdc.approve(address(rooms), STAKE);
+        rooms.issueChallenge(ROOM_ID, _topicHash("Preview"), "Preview", keccak256("sports"), STAKE);
+        vm.stopPrank();
+
+        uint256 balanceBefore = usdc.balanceOf(alice);
+        vm.warp(block.timestamp + 49 hours);
+        rooms.expireRoom(ROOM_ID);
+        assertEq(usdc.balanceOf(alice), balanceBefore + STAKE);
+    }
+
+    // ─── Reputation ───────────────────────────────────────────────────────────
+
+    function testReputation_updatedOnSettle() public {
+        _createBattle();
+        _commitRubric();
+        _warpPastAllRounds();
+        vm.prank(scheduler);
+        arena.settleBattle(BATTLE_ID, 1, RUBRIC_PREIMAGE, 900);
+
+        (, AgentRegistry.Reputation memory rep) = registry.getAgent(alice);
+        assertEq(rep.wins, 1);
+        assertEq(rep.losses, 0);
+        assertEq(rep.totalBattles, 1);
+
+        (, AgentRegistry.Reputation memory repBob) = registry.getAgent(bob);
+        assertEq(repBob.losses, 1);
     }
 }

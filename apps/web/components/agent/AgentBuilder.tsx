@@ -50,7 +50,7 @@ export function AgentBuilder({ onSave, initialConfig }: AgentBuilderProps) {
     initialConfig?.fightingStyle ?? "Balanced"
   );
   const [researchBudget, setResearchBudget] = useState(
-    initialConfig?.researchBudget ?? 5
+    initialConfig?.operatingBudgetUSDC ?? initialConfig?.researchBudget ?? 5
   );
   const [isSaving, setIsSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -73,6 +73,7 @@ export function AgentBuilder({ onSave, initialConfig }: AgentBuilderProps) {
       customInstructions,
       specialties,
       fightingStyle,
+      operatingBudgetUSDC: researchBudget,
       researchBudget,
       color: PERSONALITY_OPTIONS.find((p) => p.name === personality)?.color ?? "#FFB800",
     };
@@ -242,14 +243,14 @@ export function AgentBuilder({ onSave, initialConfig }: AgentBuilderProps) {
         </div>
       </div>
 
-      {/* Research Budget */}
+      {/* Operating Budget */}
       <div>
         <label className="font-display text-sm font-bold text-clash-white mb-1 block">
-          Research Budget
+          Operating Budget
         </label>
         <p className="font-body text-xs text-white/40 mb-3">
-          How much USDC your agent can spend on data during the research phase.
-          More data = stronger arguments.
+          One testnet USDC budget for research purchases, x402 data, agent-to-agent
+          research, demo arena actions, and arena stake.
         </p>
         <div className="flex items-center gap-4">
           <input

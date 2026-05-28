@@ -42,7 +42,7 @@ export function Nav() {
           backdropFilter: scrolled || menuOpen ? "blur(20px)" : "blur(0px)",
         }}
       >
-        <div className="max-w-7xl mx-auto flex items-center justify-between">
+        <div className="max-w-[1440px] mx-auto px-6 sm:px-10 lg:px-16 flex items-center justify-between">
           {/* Logo */}
           <Link
             href="/"

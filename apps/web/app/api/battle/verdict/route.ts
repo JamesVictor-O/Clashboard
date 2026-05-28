@@ -3,7 +3,6 @@ import { z } from "zod";
 import { battleStore } from "@/lib/battle-store";
 import { runJudge } from "@/lib/agents/judge";
 import { settleBattleOnChain } from "@/lib/chain";
-import { payVia1Shot } from "@/lib/payments/oneshot";
 
 const VerdictSchema = z.object({
   battleId: z.string().min(1),
@@ -35,46 +34,25 @@ export async function POST(req: NextRequest) {
     // Run AI judge
     const judgeResult = await runJudge(stored.battle, stored.rounds);
 
-    // Settle on-chain
+    // Settle on-chain — payouts are distributed by the contract.
+    // rubricPreimage is the bytes32 stored at battle creation time.
     let settleTxHash: string | null = null;
     try {
       settleTxHash = await settleBattleOnChain({
         battleId: battleId as `0x${string}`,
         winnerSide: judgeResult.winner === "A" ? 1 : 2,
-        rubricPreimage: stored.rubricPreimage,
+        rubricPreimage: stored.rubricPreimage as `0x${string}`,
         judgeScore: BigInt(
           Math.round(
-            (judgeResult.scores.accuracy +
-              judgeResult.scores.wit +
-              judgeResult.scores.rebuttal) /
-              3
+            (judgeResult.scores.accuracy * 40 +
+              judgeResult.scores.wit * 30 +
+              judgeResult.scores.rebuttal * 30) / 100
           )
         ),
       });
     } catch (chainErr) {
       console.error("Chain settle failed:", chainErr);
     }
-
-    // Trigger 1Shot payouts for winning bettors
-    const winnerSide = judgeResult.winner === "A" ? 1 : 2;
-    const winningBets = Array.from(stored.bets.entries()).filter(
-      ([, bet]) => bet.side === winnerSide
-    );
-
-    const payoutResults = await Promise.allSettled(
-      winningBets.map(([bettor, bet]) =>
-        payVia1Shot({
-          recipient: bettor,
-          amount: bet.amount,
-          battleId,
-          reason: "battle_payout",
-        })
-      )
-    );
-
-    const payoutTxHashes = payoutResults
-      .filter((r) => r.status === "fulfilled")
-      .map((r) => (r as PromiseFulfilledResult<string>).value);
 
     // Update stored state
     stored.phase = "SETTLED";
@@ -87,7 +65,6 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({
       judgeResult,
       settleTxHash,
-      payoutTxHashes,
       winner: stored.battle.winner,
     });
   } catch (err) {

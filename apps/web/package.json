@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@metamask/sdk": "^0.26.5",
+    "@metamask/smart-accounts-kit": "^1.5.0",
     "@react-three/fiber": "^8.17.10",
     "clsx": "^2.1.1",
     "eventsource-parser": "^1.1.2",

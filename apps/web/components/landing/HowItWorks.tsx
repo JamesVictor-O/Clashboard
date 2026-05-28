@@ -36,7 +36,7 @@ const STEPS = [
     title: "THE ARENA",
     sub: "Place your bet",
     description:
-      "Pick a battle. Lock your stake. Watch your agent buy data, build arguments, and roast opponents live — powered by Venice AI, scored by an impartial judge, paid out on Celo.",
+      "Pick a battle. Lock your stake. Watch your agent buy data, build arguments, and roast opponents live — powered by Venice AI, scored by an impartial judge, paid out on Base.",
     accentA: "#1A3FBE",
     accentB: "#00C3FF",
     glowColor: "rgba(26,63,190,0.2)",

@@ -8,6 +8,7 @@
  */
 
 const ONESHOT_BASE_URL = "https://api.1shot.so/v1";
+const MOCK_TX_HASH = "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
 
 interface PayVia1ShotParams {
   recipient: string;
@@ -23,10 +24,100 @@ interface RedeemDelegationParams {
   delegationData: string; // ERC-7710 delegation calldata
 }
 
+export interface OneShotExecutionResult {
+  status: "submitted" | "mocked";
+  txHash?: `0x${string}`;
+}
+
+export interface OneShotPermissionContext {
+  context: `0x${string}`;
+  delegationManager: `0x${string}`;
+  sessionAddress: `0x${string}`;
+  walletAddress: `0x${string}`;
+  chainId: number;
+}
+
+interface ExecuteWith1ShotParams {
+  permissionContext: OneShotPermissionContext;
+  amountUSDC: string;
+  recipient: `0x${string}`;
+  chainId: number;
+  actionData: Record<string, unknown>;
+}
+
 function getApiKey(): string {
   const key = process.env.ONESHOTAPI_KEY;
   if (!key) throw new Error("ONESHOTAPI_KEY is not set");
   return key;
+}
+
+async function postOneShot(path: string, body: Record<string, unknown>): Promise<OneShotExecutionResult> {
+  if (!process.env.ONESHOTAPI_KEY) {
+    return { status: "mocked", txHash: MOCK_TX_HASH };
+  }
+
+  const response = await fetch(`${ONESHOT_BASE_URL}${path}`, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${getApiKey()}`,
+    },
+    body: JSON.stringify(body),
+  });
+
+  if (!response.ok) {
+    const error = await response.text();
+    throw new Error(`1Shot execution failed: ${response.status} — ${error}`);
+  }
+
+  const data = (await response.json()) as { txHash?: `0x${string}`; status?: string };
+  return { status: "submitted", txHash: data.txHash };
+}
+
+export async function executeArenaActionWith1Shot(
+  params: ExecuteWith1ShotParams
+): Promise<OneShotExecutionResult> {
+  // TODO(hackathon): replace this generic relay payload with the final 1Shot
+  // ERC-7710 schema once their production API details are locked.
+  return postOneShot("/relay", {
+    type: "ARENA_ACTION",
+    permissionContext: params.permissionContext,
+    recipient: params.recipient,
+    amountUSDC: params.amountUSDC,
+    token: process.env.NEXT_PUBLIC_USDC_ADDRESS,
+    chainId: params.chainId,
+    actionData: params.actionData,
+  });
+}
+
+export async function payResearchWith1Shot(
+  params: ExecuteWith1ShotParams
+): Promise<OneShotExecutionResult> {
+  // TODO(hackathon): wire exact x402 + 1Shot settlement receipt fields.
+  return postOneShot("/relay", {
+    type: "RESEARCH_PURCHASE",
+    permissionContext: params.permissionContext,
+    recipient: params.recipient,
+    amountUSDC: params.amountUSDC,
+    token: process.env.NEXT_PUBLIC_USDC_ADDRESS,
+    chainId: params.chainId,
+    actionData: params.actionData,
+  });
+}
+
+export async function payAgentResearchWith1Shot(
+  params: ExecuteWith1ShotParams
+): Promise<OneShotExecutionResult> {
+  // TODO(hackathon): replace with final ERC-7710 transfer/delegation payload.
+  return postOneShot("/relay", {
+    type: "AGENT_RESEARCH_PURCHASE",
+    permissionContext: params.permissionContext,
+    recipient: params.recipient,
+    amountUSDC: params.amountUSDC,
+    token: process.env.NEXT_PUBLIC_USDC_ADDRESS,
+    chainId: params.chainId,
+    actionData: params.actionData,
+  });
 }
 
 /**

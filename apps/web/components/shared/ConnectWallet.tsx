@@ -2,68 +2,90 @@
 
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { connectWallet, switchToCelo } from "@/lib/metamask";
+
+type EthProvider = {
+  request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+  on: (event: string, handler: (...args: unknown[]) => void) => void;
+  removeListener: (event: string, handler: (...args: unknown[]) => void) => void;
+};
+
+function getEthereum(): EthProvider | undefined {
+  if (typeof window === "undefined") return undefined;
+  return (window as unknown as { ethereum?: EthProvider }).ethereum;
+}
 
 /**
- * MetaMask SDK connect button.
- * Shows truncated address when connected.
- * Handles chain switching to Celo.
+ * Wallet connect button that uses window.ethereum directly.
+ * The MetaMask SDK wraps window.ethereum but shows an "choose extension" modal
+ * when multiple wallets are installed — bypassing it avoids that popup.
  */
 export function ConnectWallet() {
   const [address, setAddress] = useState<string | null>(null);
   const [isConnecting, setIsConnecting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  // Check if already connected on mount
   useEffect(() => {
-    if (typeof window === "undefined") return;
+    const eth = getEthereum();
+    if (!eth) return;
 
-    const checkConnection = async () => {
-      try {
-        const { getProvider } = await import("@/lib/metamask");
-        const provider = getProvider();
-        if (!provider) return;
+    // eth_accounts never pops a prompt — returns already-connected accounts
+    eth.request({ method: "eth_accounts" }).then((accs) => {
+      const list = accs as string[];
+      if (list[0]) setAddress(list[0]);
+    }).catch(() => {});
 
-        const accounts = (await provider.request({
-          method: "eth_accounts",
-        })) as string[];
-
-        if (accounts.length > 0) {
-          setAddress(accounts[0]);
-        }
-      } catch {
-        // Not connected
-      }
+    // Keep UI in sync when user switches or disconnects in MetaMask
+    const onAccountsChanged = (accs: unknown) => {
+      const list = accs as string[];
+      setAddress(list[0] ?? null);
     };
-
-    checkConnection();
+    eth.on("accountsChanged", onAccountsChanged);
+    return () => eth.removeListener("accountsChanged", onAccountsChanged);
   }, []);
 
   const handleConnect = async () => {
     setIsConnecting(true);
     setError(null);
-
     try {
-      const accounts = await connectWallet();
-      if (accounts.length > 0) {
-        setAddress(accounts[0]);
-        // Switch to Celo
-        try {
-          await switchToCelo();
-        } catch {
-          // Non-fatal — user can switch manually
+      const eth = getEthereum();
+      if (!eth) throw new Error("No wallet detected. Install MetaMask Flask.");
+
+      // eth_requestAccounts asks the user to connect — no MetaMask SDK modal
+      const accounts = (await eth.request({ method: "eth_requestAccounts" })) as string[];
+      if (!accounts[0]) throw new Error("No accounts returned");
+      setAddress(accounts[0]);
+
+      // Switch to the target chain
+      const chainId = process.env.NEXT_PUBLIC_CHAIN_ID ?? "84532";
+      const hex = `0x${parseInt(chainId).toString(16)}`;
+      try {
+        await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: hex }] });
+      } catch (switchErr) {
+        if ((switchErr as { code?: number }).code === 4902) {
+          await eth.request({
+            method: "wallet_addEthereumChain",
+            params: [{
+              chainId: hex,
+              chainName: "Base Sepolia",
+              nativeCurrency: { name: "Ether", symbol: "ETH", decimals: 18 },
+              rpcUrls: ["https://sepolia.base.org"],
+              blockExplorerUrls: ["https://sepolia.basescan.org"],
+            }],
+          });
         }
+        // ignore other switch errors (e.g. user rejected chain switch)
       }
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Connection failed");
+      if ((err as { code?: number }).code !== 4001) {
+        // 4001 = user rejected — don't show an error for that
+        setError(err instanceof Error ? err.message : "Connection failed");
+      }
     } finally {
       setIsConnecting(false);
     }
   };
 
-  const handleDisconnect = () => {
-    setAddress(null);
-  };
+  const handleDisconnect = () => setAddress(null);
 
   const shortAddress = address
     ? `${address.slice(0, 6)}...${address.slice(-4)}`
@@ -111,7 +133,6 @@ export function ConnectWallet() {
         )}
       </AnimatePresence>
 
-      {/* Error tooltip */}
       <AnimatePresence>
         {error && (
           <motion.div

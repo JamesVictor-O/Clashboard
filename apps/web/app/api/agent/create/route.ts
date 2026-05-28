@@ -15,10 +15,11 @@ const AgentConfigSchema = z.object({
   customInstructions: z.string().max(500).optional(),
   specialties: z.array(z.string()).max(5),
   fightingStyle: z.enum(["Methodical", "Aggressive", "Witty", "Defensive", "Balanced"]),
-  researchBudget: z.number().min(1).max(20),
+  operatingBudgetUSDC: z.number().min(1).max(50).optional(),
+  researchBudget: z.number().min(1).max(50).optional(),
 });
 
-// In-memory store for scaffold — replace with DB (Postgres, Redis, etc.)
+
 const agentConfigs = new Map<string, z.infer<typeof AgentConfigSchema>>();
 
 export async function POST(req: NextRequest) {
@@ -34,8 +35,6 @@ export async function POST(req: NextRequest) {
     }
 
     const config = parsed.data;
-
-    // Check if agent already exists for this wallet
     const existing = agentConfigs.get(config.walletAddress);
     if (existing) {
       // Update existing config

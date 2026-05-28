@@ -66,8 +66,8 @@ export function HeroSection() {
       </div>
 
       {/* ── Content ──────────────────────────────────────────────────────── */}
-      <div className="relative z-10 max-w-7xl mx-auto w-full px-4 sm:px-6 pt-20 sm:pt-24 pb-12 sm:pb-16">
-        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 lg:gap-12 items-center">
+      <div className="relative z-10 w-full px-4 sm:px-8 lg:px-12 pt-20 sm:pt-24 pb-12 sm:pb-16">
+        <div className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-6 lg:gap-10 items-center">
 
           {/* 3D Canvas — shows ABOVE text on mobile, right side on desktop */}
           <motion.div
@@ -125,27 +125,24 @@ export function HeroSection() {
             </motion.p>
 
             {/* Hero heading */}
-            <div className="overflow-hidden mb-4 sm:mb-6">
+            <div className="mb-4 sm:mb-6">
               {["ENTER", "THE", "ARENA"].map((word, i) => (
-                <motion.div
-                  key={word}
-                  initial={{ y: "100%" }}
-                  animate={{ y: 0 }}
-                  transition={{ delay: 0.3 + i * 0.1, duration: 0.65, ease: [0.16, 1, 0.3, 1] }}
-                  className="block"
-                >
-                  <span
+                <div key={word} className="overflow-hidden w-fit">
+                  <motion.span
+                    initial={{ y: "100%" }}
+                    animate={{ y: 0 }}
+                    transition={{ delay: 0.3 + i * 0.1, duration: 0.65, ease: [0.16, 1, 0.3, 1] }}
                     className="font-display font-extrabold uppercase block leading-[0.88]"
                     style={{
-                      fontSize: "clamp(3.2rem, 13vw, 8.5rem)",
+                      fontSize: "clamp(3rem, 10vw, 7.5rem)",
                       color: word === "THE" ? "transparent" : "#F5F5F0",
                       WebkitTextStroke: word === "THE" ? "2px #FFB800" : "none",
                       textShadow: word === "ARENA" ? "0 0 80px rgba(255,184,0,0.15)" : "none",
                     }}
                   >
                     {word}
-                  </span>
-                </motion.div>
+                  </motion.span>
+                </div>
               ))}
             </div>
 

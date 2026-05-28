@@ -2,7 +2,11 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { keccak256, encodeAbiParameters, parseAbiParameters } from "viem";
-import { createBattleOnChain } from "@/lib/chain";
+import {
+  createBattleOnChain,
+  commitRubricOnChain,
+  buildRubricCommitment,
+} from "@/lib/chain";
 import { battleStore } from "@/lib/battle-store";
 import type { Battle } from "@/lib/types";
 
@@ -10,7 +14,9 @@ const StartBattleSchema = z.object({
   topic: z.string().min(1).max(280),
   agentAAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
   agentBAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
-  bettingDurationSeconds: z.number().int().min(60).max(3600).default(300),
+  bettingDurationSeconds: z.number().int().min(120).max(3600).default(300),
+  roundDurationSeconds: z.number().int().min(30).max(600).default(60),
+  categoryHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
 });
 
 export async function POST(req: NextRequest) {
@@ -25,15 +31,20 @@ export async function POST(req: NextRequest) {
       );
     }
 
-    const { topic, agentAAddress, agentBAddress, bettingDurationSeconds } =
-      parsed.data;
+    const {
+      topic,
+      agentAAddress,
+      agentBAddress,
+      bettingDurationSeconds,
+      roundDurationSeconds,
+      categoryHash,
+    } = parsed.data;
 
-    // Generate battle ID
     const battleId = `0x${uuidv4().replace(/-/g, "")}` as `0x${string}`;
 
-    // Build rubric — the judge criteria committed before the battle starts
-    // This prevents the platform from changing scoring criteria post-hoc
-    const rubricPreimage = JSON.stringify({
+    // Build the judge rubric JSON. This is revealed at settlement to prove
+    // the scoring criteria weren't changed after the battle started.
+    const rubricJson = JSON.stringify({
       topic,
       criteria: ["accuracy", "wit", "rebuttal"],
       weights: [0.4, 0.3, 0.3],
@@ -41,25 +52,45 @@ export async function POST(req: NextRequest) {
       battleId,
     });
 
-    const rubricHash = keccak256(
-      encodeAbiParameters(parseAbiParameters("string"), [rubricPreimage])
-    );
+    // Two-step commitment: preimage = keccak(rubricJson), hash = keccak(preimage).
+    // The contract verifies: keccak256(abi.encode(preimage)) == committed hash.
+    const { preimage: rubricPreimage, hash: rubricHash } =
+      buildRubricCommitment(rubricJson);
 
-    // Commit to chain
+    const resolvedCategoryHash =
+      (categoryHash as `0x${string}`) ??
+      (keccak256(
+        encodeAbiParameters(parseAbiParameters("string"), ["general"])
+      ) as `0x${string}`);
+    const topicHash = keccak256(
+      encodeAbiParameters(parseAbiParameters("string"), [topic])
+    ) as `0x${string}`;
+
     let txHash: string | null = null;
+    let commitTxHash: string | null = null;
+
     try {
       txHash = await createBattleOnChain({
-        battleId: battleId as `0x${string}`,
+        battleId,
         agentA: agentAAddress as `0x${string}`,
         agentB: agentBAddress as `0x${string}`,
+        entryFee: 0n,
         bettingDuration: BigInt(bettingDurationSeconds),
-        rubricHash: rubricHash as `0x${string}`,
+        roundDuration: BigInt(roundDurationSeconds),
+        maxResearch: 500_000n, // $0.50 USDC research cap
+        topicHash,
+        topic,
+        categoryHash: resolvedCategoryHash,
+      });
+
+      commitTxHash = await commitRubricOnChain({
+        battleId,
+        rubricHash,
       });
     } catch (chainErr) {
-      console.error("Chain commit failed (non-fatal in dev):", chainErr);
+      console.error("Chain call failed (non-fatal in dev):", chainErr);
     }
 
-    // Store in memory
     const battle: Battle = {
       id: battleId,
       topic,
@@ -85,12 +116,14 @@ export async function POST(req: NextRequest) {
       bettingDeadline: BigInt(
         Math.floor(Date.now() / 1000) + bettingDurationSeconds
       ),
+      roundDuration: roundDurationSeconds,
       rubricHash,
       winner: null,
       bettorCount: 0,
       createdAt: Date.now(),
     };
 
+    // rubricPreimage (bytes32 hex) is stored for settlement verification
     battleStore.set(battleId, {
       battle,
       rubricPreimage,
@@ -103,7 +136,9 @@ export async function POST(req: NextRequest) {
       battleId,
       rubricHash,
       txHash,
+      commitTxHash,
       bettingDeadline: battle.bettingDeadline.toString(),
+      roundDuration: roundDurationSeconds,
     });
   } catch (err) {
     console.error("battle/start error:", err);

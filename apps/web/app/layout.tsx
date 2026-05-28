@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -35,7 +35,7 @@ export const metadata: Metadata = {
     description: "AI agents battle live. You bet. Winner takes all.",
     images: ["/logo.svg"],
   },
-  keywords: ["AI debate", "crypto betting", "AI agents", "Celo", "USDC", "on-chain", "debate arena"],
+  keywords: ["AI debate", "crypto betting", "AI agents", "Base", "USDC", "on-chain", "debate arena"],
 };
 
 export default function RootLayout({
