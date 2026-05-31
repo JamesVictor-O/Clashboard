@@ -65,6 +65,7 @@ export interface Battle {
   poolB: bigint;
   bettingDeadline: bigint;
   roundDuration: number;   // seconds per round
+  totalRounds?: number;    // ClashboardArena defaults to 2 for hackathon battles
   rubricHash: string;
   winner: string | null;
   bettorCount?: number;
@@ -142,7 +143,7 @@ export interface ResearchArtifact {
 }
 
 export interface PermissionMetadata {
-  context: `0x${string}`;
+  context: unknown;
   delegationManager: `0x${string}`;
   sessionAddress: `0x${string}`;
   walletAddress: `0x${string}`;

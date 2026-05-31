@@ -11,6 +11,7 @@
     "clean": "rm -rf .next"
   },
   "dependencies": {
+    "@1shotapi/client-sdk": "^1.1.9",
     "@metamask/sdk": "^0.26.5",
     "@metamask/smart-accounts-kit": "^1.5.0",
     "@react-three/fiber": "^8.17.10",

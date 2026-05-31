@@ -485,6 +485,22 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
       });
 
       storePermissionContext(account, result);
+
+      const executor = process.env.NEXT_PUBLIC_ONESHOT_EXECUTOR_ADDRESS as `0x${string}` | undefined;
+      const rooms = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}` | undefined;
+      if (executor && rooms) {
+        const { HOTTAKEROOMS_ABI } = await import("@/lib/chain");
+        const { writeUserContract, waitForTx } = await import("@/lib/wallet-contract");
+        const txHash = await writeUserContract({
+          address: rooms,
+          abi: HOTTAKEROOMS_ABI,
+          functionName: "authorizeExecutor",
+          args: [executor, true],
+          account,
+        });
+        await waitForTx(txHash);
+      }
+
       setPermExpiry(expiry);
       setActiveBudget(result.budgetUSDC);
       setReleased(true);
@@ -562,7 +578,8 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
           <p className="font-body text-xs text-white/35 leading-relaxed">
             This one operating budget covers research purchases, x402 data,
             agent-to-agent research, demo arena actions, and arena stake. Your
-            fighter will not ask for a new budget when entering a battle.
+            fighter will not ask for a new budget when entering a battle. Release
+            also authorizes the 1Shot executor for autonomous challenge actions.
           </p>
 
           {/* Daily limit */}

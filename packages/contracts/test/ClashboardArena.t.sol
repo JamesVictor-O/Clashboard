@@ -42,9 +42,9 @@ contract ClashboardTest is Test {
     uint256 constant BETTING_WINDOW = 120;        // 2 min minimum
     uint256 constant ROUND_DURATION = 60;         // 60 seconds per round
 
-    // Total battle duration after betting closes = 3 * 60 = 180 seconds
+    // Hackathon default: 2 rounds after betting closes.
     uint256 constant BATTLE_DURATION = BETTING_WINDOW + TOTAL_ROUND_TIME;
-    uint256 constant TOTAL_ROUND_TIME = 3 * ROUND_DURATION;
+    uint256 constant TOTAL_ROUND_TIME = 2 * ROUND_DURATION;
 
     bytes32 constant BATTLE_ID = keccak256("battle-001");
     bytes32 constant ROOM_ID   = keccak256("room-001");
@@ -91,6 +91,7 @@ contract ClashboardTest is Test {
         vm.startPrank(carol);
         usdc.approve(address(treasury), 20 * 1e6);
         treasury.deposit(carol, 20 * 1e6);
+        usdc.approve(address(arena), 50 * 1e6);
         vm.stopPrank();
     }
 
@@ -105,6 +106,15 @@ contract ClashboardTest is Test {
         );
     }
 
+    function _createBattleWithRounds(uint8 totalRounds) internal {
+        vm.prank(scheduler);
+        arena.createBattle(
+            BATTLE_ID, alice, bob, ENTRY_FEE,
+            BETTING_WINDOW, ROUND_DURATION, totalRounds, RESEARCH_CAP,
+            _topicHash(TOPIC), TOPIC, keccak256("sports")
+        );
+    }
+
     function _topicHash(string memory topic) internal pure returns (bytes32) {
         return keccak256(abi.encode(topic));
     }
@@ -114,9 +124,26 @@ contract ClashboardTest is Test {
         arena.commitRubric(BATTLE_ID, RUBRIC_HASH);
     }
 
-    /// Warp past the entire battle (betting + all 3 rounds).
+    /// Warp past the entire battle (betting + all configured rounds).
     function _warpPastAllRounds() internal {
         vm.warp(block.timestamp + BATTLE_DURATION + 1);
+    }
+
+    function _warpToRound(uint8 round) internal {
+        ClashboardArena.Battle memory b = arena.getBattle(BATTLE_ID);
+        vm.warp(b.bettingDeadline + uint256(round - 1) * b.roundDuration + 1);
+    }
+
+    function _submitAllRequiredArguments() internal {
+        ClashboardArena.Battle memory b = arena.getBattle(BATTLE_ID);
+        for (uint8 r = 1; r <= b.totalRounds; r++) {
+            _warpToRound(r);
+            vm.startPrank(scheduler);
+            arena.submitArgument(BATTLE_ID, 1, keccak256(abi.encode("alice", r)));
+            arena.submitArgument(BATTLE_ID, 2, keccak256(abi.encode("bob", r)));
+            vm.stopPrank();
+        }
+        _warpPastAllRounds();
     }
 
     // ─── AgentRegistry ────────────────────────────────────────────────────────
@@ -146,44 +173,76 @@ contract ClashboardTest is Test {
         registry.forge("X", keccak256("meta"));
     }
 
-    function testSetAutonomousLimits() public {
-        vm.prank(alice);
-        registry.setAutonomousLimits(
-            true, 2 * 1e6, 500_000, 5,
-            block.timestamp + 7 days,
-            keccak256("sports,music")
-        );
-        (bool eligible,) = registry.isAutonomousEligible(alice, 1 * 1e6);
-        assertTrue(eligible);
+    function testForge_nameMaxLength() public {
+        // 28-char name is allowed; 29-char is not
+        string memory long28 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ12"; // 28 chars
+        vm.prank(dave);
+        registry.forge(long28, keccak256("meta-long"));
+        assertTrue(registry.agentExists_(dave));
+
+        address eve = makeAddr("eve");
+        string memory long29 = "ABCDEFGHIJKLMNOPQRSTUVWXYZ123"; // 29 chars
+        vm.prank(eve);
+        vm.expectRevert("Name too long");
+        registry.forge(long29, keccak256("meta-eve"));
     }
 
-    function testAutonomousLimits_expiry() public {
-        vm.prank(alice);
-        registry.setAutonomousLimits(
-            true, 2 * 1e6, 500_000, 5,
-            block.timestamp + 1 hours,
-            keccak256("sports")
-        );
-        vm.warp(block.timestamp + 2 hours);
-        (bool eligible, string memory reason) = registry.isAutonomousEligible(alice, 1 * 1e6);
-        assertFalse(eligible);
-        assertEq(reason, "Permission expired");
+    function testAgentExists_unregistered() public view {
+        assertFalse(registry.agentExists_(dave));
     }
 
-    function testAutonomousLimits_feeTooHigh() public {
-        vm.prank(alice);
-        registry.setAutonomousLimits(
-            true, 1 * 1e6, 500_000, 5,
-            block.timestamp + 7 days,
-            keccak256("sports")
-        );
-        (bool eligible, string memory reason) = registry.isAutonomousEligible(alice, 2 * 1e6);
-        assertFalse(eligible);
-        assertEq(reason, "Entry fee exceeds limit");
+    function testAgentExists_registered() public view {
+        assertTrue(registry.agentExists_(alice));
     }
 
-    function testAutonomousLimits_isView() public view {
-        registry.isAutonomousEligible(alice, 1 * 1e6);
+    function testUpdateMetadata() public {
+        bytes32 newHash = keccak256("updated-meta");
+        vm.prank(alice);
+        registry.updateMetadata(newHash);
+        (AgentRegistry.Agent memory agent,) = registry.getAgent(alice);
+        assertEq(agent.metadataHash, newHash);
+    }
+
+    function testUpdateMetadata_noAgent_reverts() public {
+        vm.prank(dave);
+        vm.expectRevert("Agent does not exist");
+        registry.updateMetadata(keccak256("fail"));
+    }
+
+    function testUpdateReputation_onlyAuthorised() public {
+        vm.prank(alice); // alice is not authorised
+        vm.expectRevert("Not authorised");
+        registry.updateReputation(alice, true, 850, 1 * 1e6);
+    }
+
+    function testUpdateReputation_win() public {
+        // owner() (this test contract) is authorised by default
+        registry.updateReputation(alice, true, 900, 2 * 1e6);
+        (, AgentRegistry.Reputation memory rep) = registry.getAgent(alice);
+        assertEq(rep.wins, 1);
+        assertEq(rep.losses, 0);
+        assertEq(rep.totalBattles, 1);
+        assertEq(rep.earningsTotal, 2 * 1e6);
+        assertEq(registry.getAvgScore(alice), 900);
+    }
+
+    function testUpdateReputation_loss() public {
+        registry.updateReputation(alice, false, 400, 0);
+        (, AgentRegistry.Reputation memory rep) = registry.getAgent(alice);
+        assertEq(rep.wins, 0);
+        assertEq(rep.losses, 1);
+        assertEq(rep.totalBattles, 1);
+    }
+
+    function testGetAvgScore_noFights() public view {
+        assertEq(registry.getAvgScore(dave), 0);
+    }
+
+    function testTotalAgents_increments() public {
+        uint256 before = registry.totalAgents();
+        vm.prank(dave);
+        registry.forge("DaveBot", keccak256("dave-meta"));
+        assertEq(registry.totalAgents(), before + 1);
     }
 
     // ─── AgentTreasury ────────────────────────────────────────────────────────
@@ -245,10 +304,25 @@ contract ClashboardTest is Test {
         assertEq(uint8(b.state), uint8(ClashboardArena.BattleState.OPEN));
         assertEq(b.fighterPoolA, ENTRY_FEE);
         assertEq(b.fighterPoolB, ENTRY_FEE);
-        assertEq(b.totalRounds, 3);
+        assertEq(b.totalRounds, 2);
         assertEq(b.roundDuration, ROUND_DURATION);
-        // Phase 0 = betting window active
-        assertEq(arena.getBattlePhase(BATTLE_ID), 0);
+        assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), uint8(ClashboardArena.BattlePhase.BETTING));
+    }
+
+    function testCreateBattle_configurableThreeRounds() public {
+        _createBattleWithRounds(3);
+        ClashboardArena.Battle memory b = arena.getBattle(BATTLE_ID);
+        assertEq(b.totalRounds, 3);
+    }
+
+    function testCreateBattle_invalidRounds() public {
+        vm.prank(scheduler);
+        vm.expectRevert("Invalid rounds");
+        arena.createBattle(
+            BATTLE_ID, alice, bob, ENTRY_FEE,
+            BETTING_WINDOW, ROUND_DURATION, 1, RESEARCH_CAP,
+            _topicHash(TOPIC), TOPIC, keccak256("sports")
+        );
     }
 
     function testCreateBattle_deductsEntryFees() public {
@@ -276,19 +350,18 @@ contract ClashboardTest is Test {
         uint256 dl  = b.bettingDeadline;  // 121 (1 + 120)
         uint256 rd  = b.roundDuration;    // 60
 
-        assertEq(arena.getBattlePhase(BATTLE_ID), 0);           // betting open
+        assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), uint8(ClashboardArena.BattlePhase.BETTING));
+        assertTrue(arena.isBettingOpen(BATTLE_ID));
 
         vm.warp(dl + 1);
-        assertEq(arena.getBattlePhase(BATTLE_ID), 1);           // round 1
+        assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), uint8(ClashboardArena.BattlePhase.ROUND_1));
 
         vm.warp(dl + rd + 1);
-        assertEq(arena.getBattlePhase(BATTLE_ID), 2);           // round 2
+        assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), uint8(ClashboardArena.BattlePhase.ROUND_2));
 
         vm.warp(dl + 2 * rd + 1);
-        assertEq(arena.getBattlePhase(BATTLE_ID), 3);           // round 3
-
-        vm.warp(dl + 3 * rd + 1);
-        assertEq(arena.getBattlePhase(BATTLE_ID), 4);           // all rounds complete
+        assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), uint8(ClashboardArena.BattlePhase.JUDGING_READY));
+        assertTrue(arena.isJudgingReady(BATTLE_ID));
     }
 
     function testPhaseTimeRemaining() public {
@@ -312,7 +385,7 @@ contract ClashboardTest is Test {
     function testPlaceBet_agentBettor() public {
         _createBattle();
         vm.prank(scheduler);
-        arena.agentPlaceBet(BATTLE_ID, carol, 2, 3 * 1e6);
+        arena.placeBetFor(carol, BATTLE_ID, 2, 3 * 1e6);
         (, uint256 betAmount) = arena.getUserBet(BATTLE_ID, carol);
         assertEq(betAmount, 3 * 1e6);
     }
@@ -321,7 +394,31 @@ contract ClashboardTest is Test {
         _createBattle();
         vm.prank(scheduler);
         vm.expectRevert("Fighter cannot bet on own battle");
-        arena.agentPlaceBet(BATTLE_ID, alice, 2, 1 * 1e6);
+        arena.placeBetFor(alice, BATTLE_ID, 2, 1 * 1e6);
+    }
+
+    function testPlaceBet_invalidSide() public {
+        _createBattle();
+        vm.startPrank(dave);
+        usdc.approve(address(arena), BET_AMOUNT);
+        vm.expectRevert("Invalid side");
+        arena.placeBet(BATTLE_ID, 3, BET_AMOUNT);
+        vm.stopPrank();
+    }
+
+    function testPlaceBetFor_delegatedBettor() public {
+        _createBattle();
+        address erin = makeAddr("erin");
+        usdc.mint(erin, BET_AMOUNT);
+        vm.prank(erin);
+        usdc.approve(address(arena), BET_AMOUNT);
+
+        vm.prank(scheduler);
+        arena.placeBetFor(erin, BATTLE_ID, 1, BET_AMOUNT);
+
+        (uint8 side, uint256 amount) = arena.getUserBet(BATTLE_ID, erin);
+        assertEq(side, 1);
+        assertEq(amount, BET_AMOUNT);
     }
 
     function testPlaceBet_afterBettingWindowClosed() public {
@@ -361,7 +458,7 @@ contract ClashboardTest is Test {
         _commitRubric();
         // Warp to round 1
         vm.warp(block.timestamp + BETTING_WINDOW + 1);
-        assertEq(arena.getBattlePhase(BATTLE_ID), 1);
+        assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), uint8(ClashboardArena.BattlePhase.ROUND_1));
 
         bytes32 hashA = keccak256("alice opening argument");
         bytes32 hashB = keccak256("bob opening argument");
@@ -385,9 +482,9 @@ contract ClashboardTest is Test {
 
         uint256 ts = block.timestamp + BETTING_WINDOW + 1;
 
-        for (uint8 r = 1; r <= 3; r++) {
+        for (uint8 r = 1; r <= 2; r++) {
             vm.warp(ts);
-            assertEq(arena.getBattlePhase(BATTLE_ID), r);
+            assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), r);
             vm.startPrank(scheduler);
             arena.submitArgument(BATTLE_ID, 1, keccak256(abi.encode("alice", r)));
             arena.submitArgument(BATTLE_ID, 2, keccak256(abi.encode("bob",   r)));
@@ -395,8 +492,8 @@ contract ClashboardTest is Test {
             ts += ROUND_DURATION;
         }
 
-        // All 3 rounds submitted — verify
-        for (uint8 r = 1; r <= 3; r++) {
+        // All required rounds submitted — verify
+        for (uint8 r = 1; r <= 2; r++) {
             (, bool sA) = arena.getArgument(BATTLE_ID, r, 1);
             (, bool sB) = arena.getArgument(BATTLE_ID, r, 2);
             assertTrue(sA);
@@ -431,6 +528,15 @@ contract ClashboardTest is Test {
         vm.stopPrank();
     }
 
+    function testSubmitArgument_invalidSide() public {
+        _createBattle();
+        _commitRubric();
+        vm.warp(block.timestamp + BETTING_WINDOW + 1);
+        vm.prank(scheduler);
+        vm.expectRevert("Invalid side");
+        arena.submitArgument(BATTLE_ID, 3, keccak256("bad side"));
+    }
+
     // ─── ClashboardArena — settlement ────────────────────────────────────────
 
     function testSettleBattle_correctPayouts() public {
@@ -442,15 +548,14 @@ contract ClashboardTest is Test {
         arena.placeBet(BATTLE_ID, 1, 20 * 1e6);
         vm.stopPrank();
         vm.prank(scheduler);
-        arena.agentPlaceBet(BATTLE_ID, carol, 2, 10 * 1e6);
+        arena.placeBetFor(carol, BATTLE_ID, 2, 10 * 1e6);
 
         _commitRubric();
+        _submitAllRequiredArguments();
 
         uint256 platformBefore = usdc.balanceOf(platform);
         uint256 aliceBefore    = usdc.balanceOf(alice);
         uint256 daveBefore     = usdc.balanceOf(dave);
-
-        _warpPastAllRounds();
 
         vm.prank(scheduler);
         arena.settleBattle(BATTLE_ID, 1, RUBRIC_PREIMAGE, 875);
@@ -476,38 +581,59 @@ contract ClashboardTest is Test {
         // Only warp past betting, not past all rounds
         vm.warp(block.timestamp + BETTING_WINDOW + 1);
         vm.prank(scheduler);
-        vm.expectRevert("Rounds not complete yet");
+        vm.expectRevert("Judging not ready");
         arena.settleBattle(BATTLE_ID, 1, RUBRIC_PREIMAGE, 875);
     }
 
     function testSettleBattle_rubricMismatch() public {
         _createBattle();
         _commitRubric();
-        _warpPastAllRounds();
+        _submitAllRequiredArguments();
         vm.prank(scheduler);
         vm.expectRevert("Rubric preimage mismatch");
         arena.settleBattle(BATTLE_ID, 1, keccak256("wrong rubric"), 800);
+    }
+
+    function testSettleBattle_rejectsIncompleteArguments() public {
+        _createBattle();
+        _commitRubric();
+        _warpPastAllRounds();
+        vm.prank(scheduler);
+        vm.expectRevert("Arguments incomplete");
+        arena.settleBattle(BATTLE_ID, 1, RUBRIC_PREIMAGE, 800);
     }
 
     function testSettleBattle_noWinningBettors() public {
         _createBattle();
         // Carol bets on losing side (B), alice wins
         vm.prank(scheduler);
-        arena.agentPlaceBet(BATTLE_ID, carol, 2, 3 * 1e6);
+        arena.placeBetFor(carol, BATTLE_ID, 2, 3 * 1e6);
 
         uint256 platformBefore = usdc.balanceOf(platform);
         _commitRubric();
-        _warpPastAllRounds();
+        _submitAllRequiredArguments();
         vm.prank(scheduler);
         arena.settleBattle(BATTLE_ID, 1, RUBRIC_PREIMAGE, 900);
         assertTrue(usdc.balanceOf(platform) > platformBefore);
+    }
+
+    function testSettleBattle_platformFeePaid() public {
+        _createBattle();
+        _commitRubric();
+        _submitAllRequiredArguments();
+        uint256 platformBefore = usdc.balanceOf(platform);
+
+        vm.prank(scheduler);
+        arena.settleBattle(BATTLE_ID, 1, RUBRIC_PREIMAGE, 900);
+
+        assertGt(usdc.balanceOf(platform), platformBefore);
     }
 
     function testSettleBattle_winnerReceivesDirectly() public {
         _createBattle();
         _commitRubric();
         uint256 aliceBefore = usdc.balanceOf(alice);
-        _warpPastAllRounds();
+        _submitAllRequiredArguments();
         vm.prank(scheduler);
         arena.settleBattle(BATTLE_ID, 1, RUBRIC_PREIMAGE, 900);
         // Winner's share (70% of fighter pool) lands directly in alice's wallet.
@@ -543,6 +669,27 @@ contract ClashboardTest is Test {
         assertEq(usdc.balanceOf(alice), aliceBefore + ENTRY_FEE);
         assertEq(usdc.balanceOf(bob),   bobBefore   + ENTRY_FEE);
         assertEq(usdc.balanceOf(address(treasury)), 20 * 1e6); // only carol's deposit
+    }
+
+    function testBettorCap_enforced() public {
+        _createBattle();
+
+        for (uint256 i = 0; i < arena.MAX_BETTORS_PER_SIDE(); i++) {
+            address bettor = address(uint160(10_000 + i));
+            usdc.mint(bettor, BET_AMOUNT);
+            vm.startPrank(bettor);
+            usdc.approve(address(arena), BET_AMOUNT);
+            arena.placeBet(BATTLE_ID, 1, BET_AMOUNT);
+            vm.stopPrank();
+        }
+
+        address overflowBettor = address(uint160(99_999));
+        usdc.mint(overflowBettor, BET_AMOUNT);
+        vm.startPrank(overflowBettor);
+        usdc.approve(address(arena), BET_AMOUNT);
+        vm.expectRevert("Side A full");
+        arena.placeBet(BATTLE_ID, 1, BET_AMOUNT);
+        vm.stopPrank();
     }
 
     // ─── ClashboardArena — HotTakeRooms path ─────────────────────────────────
@@ -658,8 +805,8 @@ contract ClashboardTest is Test {
         assertEq(uint8(b.state), uint8(ClashboardArena.BattleState.OPEN));
         assertEq(b.topicHash, _topicHash("Messi is the GOAT"));
         assertEq(b.topic, "Messi is the GOAT");
-        // Phase 0 = betting window active immediately
-        assertEq(arena.getBattlePhase(battleId), 0);
+        assertEq(b.totalRounds, 2);
+        assertEq(uint8(arena.getBattlePhase(battleId)), uint8(ClashboardArena.BattlePhase.BETTING));
     }
 
     function testAcceptChallenge_noDoubleFundingTreasury() public {
@@ -717,7 +864,7 @@ contract ClashboardTest is Test {
     function testReputation_updatedOnSettle() public {
         _createBattle();
         _commitRubric();
-        _warpPastAllRounds();
+        _submitAllRequiredArguments();
         vm.prank(scheduler);
         arena.settleBattle(BATTLE_ID, 1, RUBRIC_PREIMAGE, 900);
 

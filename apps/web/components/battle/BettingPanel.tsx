@@ -4,6 +4,8 @@ import { useState } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import clsx from "clsx";
 import type { Battle, BattlePhase } from "@/lib/types";
+import { getConnectedWalletAccount, placeUserArenaStake } from "@/lib/wallet-contract";
+import { executePlaceBet } from "@/lib/autonomy/executor";
 
 interface BettingPanelProps {
   battle: Battle;
@@ -31,9 +33,12 @@ export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) 
   const oddsB = totalPool > 0 ? poolB / totalPool : 0.5;
 
   // Potential payout calculation (parimutuel)
+  const selectedSidePool = selectedSide === 1 ? poolA : selectedSide === 2 ? poolB : 0;
+  const projectedSidePool = selectedSidePool + selectedStake;
+  const projectedTotalPool = totalPool + selectedStake;
   const potentialWin =
-    selectedSide && totalPool > 0
-      ? selectedStake * (totalPool / (selectedSide === 1 ? poolA : poolB))
+    selectedSide && projectedSidePool > 0
+      ? (selectedStake / projectedSidePool) * projectedTotalPool * 0.95
       : selectedStake * 2;
 
   const isBettingOpen = phase === "BETTING";
@@ -44,26 +49,34 @@ export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) 
     setError(null);
 
     try {
-      const res = await fetch("/api/battle/bet", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          battleId: battle.id,
-          side: selectedSide,
-          amount: selectedStake,
-          bettorAddress: "0x0000000000000000000000000000000000000000", // Replace with connected wallet
-        }),
+      if (!battle.id.startsWith("0x")) {
+        throw new Error("This demo battle does not accept on-chain stakes");
+      }
+
+      const account = await getConnectedWalletAccount();
+      const execution = await executePlaceBet({
+        agentOwner: account,
+        battleId: battle.id as `0x${string}`,
+        side: selectedSide,
+        amountUsdc: selectedStake,
+        isAgentTriggered: false,
       });
 
-      if (!res.ok) {
-        const data = await res.json();
-        throw new Error(data.error ?? "Bet failed");
+      if (execution.policyError) throw new Error(execution.policyError);
+
+      if (execution.mode !== "autonomous_oneshot") {
+        await placeUserArenaStake({
+          account,
+          battleId: battle.id as `0x${string}`,
+          side: selectedSide,
+          amountUSDC: selectedStake,
+        });
       }
 
       setBetPlaced(true);
       onBetPlaced(selectedSide, selectedStake);
     } catch (err) {
-      setError(err instanceof Error ? err.message : "Bet failed");
+      setError(err instanceof Error ? err.message : "Stake failed");
     } finally {
       setIsSubmitting(false);
     }
@@ -72,7 +85,7 @@ export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) 
   return (
     <div className="card space-y-4 sticky top-4">
       <h3 className="font-display text-lg font-bold text-clash-white">
-        Place Your Bet
+        Stake Arena
       </h3>
 
       {/* Phase gate */}
@@ -210,7 +223,7 @@ export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) 
                 Locking in...
               </span>
             ) : (
-              `Lock In Bet${selectedSide ? ` — $${selectedStake}` : ""}`
+              `Lock In Stake${selectedSide ? ` — $${selectedStake}` : ""}`
             )}
           </button>
         </>
@@ -225,7 +238,7 @@ export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) 
         >
           <div className="text-4xl mb-2">🎯</div>
           <div className="font-display text-lg font-bold text-clash-gold">
-            Bet Locked In
+            Stake Locked In
           </div>
           <div className="font-body text-sm text-white/50 mt-1">
             ${selectedStake} on{" "}

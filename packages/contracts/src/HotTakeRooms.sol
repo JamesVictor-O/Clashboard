@@ -14,9 +14,38 @@ import "./ClashboardArena.sol";
  * @notice 1v1 challenge escrow. Issue a hot take, lock a stake,
  *         wait for a challenger. Once accepted, battle is created in Arena.
  *
- * @dev Separation of concerns:
- *      HotTakeRooms handles the pre-battle setup and stake locking.
- *      ClashboardArena handles the actual battle and payout.
+ * @dev Two execution paths coexist:
+ *
+ *      DIRECT (user signs tx):
+ *        issueChallenge(...)   — msg.sender must have agent; USDC from msg.sender's wallet
+ *        acceptChallenge(...)  — msg.sender must have agent; USDC from msg.sender's wallet
+ *
+ *      DELEGATED (autonomous / 1Shot, no wallet popup):
+ *        issueChallengeFor(agentOwner, ...)  — caller must be authorized executor;
+ *        acceptChallengeFor(agentOwner, ...) —   USDC from agentOwner's wallet via pre-approval
+ *
+ *      ERC-7715 wallet-level spending model:
+ *        The delegated path does NOT require a pre-funded AgentTreasury.
+ *        Instead, the 1Shot bundle includes a USDC.approve call executed from the
+ *        user's smart account (via ERC-7710 delegation), followed by the challenge
+ *        call. This mirrors exactly how placeBet works autonomously:
+ *
+ *          bundle call 1: USDC.approve(hotTakeRooms, stake)   ← from smart account
+ *          bundle call 2: issueChallengeFor(agentOwner, ...)  ← calls transferFrom(agentOwner)
+ *
+ *        The ERC-7715 erc20-token-periodic caveat enforces the daily USDC spend cap.
+ *        Funds stay in the user's wallet until the moment of execution. No escrow needed.
+ *
+ *      Authorization hierarchy (checked in isAuthorizedExecutor):
+ *        1. delegationManager — the ERC-7710 DelegationManager address, set by owner.
+ *           Trusted globally for all agents. 1Shot redeems via this contract.
+ *        2. authorizedExecutors[agentOwner][executor] — per-agent whitelist.
+ *           Agents can authorize additional executors (e.g. scheduler key).
+ *
+ *      PRODUCTION NOTE: For mainnet, require a cryptographic proof that the
+ *      executor holds a valid ERC-7715 delegation from agentOwner, rather than
+ *      relying on a global trust list. This mapping approach is acceptable for
+ *      hackathon/demo where the DelegationManager is a known controlled address.
  */
 contract HotTakeRooms is Ownable, ReentrancyGuard {
     using SafeERC20 for IERC20;
@@ -48,6 +77,21 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
     mapping(bytes32 => Room) public rooms;
     uint256 public totalRooms;
 
+    /**
+     * @notice ERC-7710 DelegationManager — globally trusted executor.
+     * When 1Shot redeems a delegation, the DelegationManager is msg.sender
+     * for the inner call to issueChallengeFor / acceptChallengeFor.
+     */
+    address public delegationManager;
+
+    /**
+     * @notice Per-agent executor whitelist.
+     * authorizedExecutors[agentOwner][executor] = true
+     * Allows individual agents to authorize specific addresses (e.g. scheduler)
+     * in addition to the global DelegationManager.
+     */
+    mapping(address => mapping(address => bool)) public authorizedExecutors;
+
     // Max time a room can stay open without being accepted (48 hours)
     uint256 public constant MAX_ROOM_DURATION = 48 hours;
 
@@ -72,6 +116,8 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
     event RoomCancelled(bytes32 indexed roomId, address indexed by);
     event RoomExpired(bytes32 indexed roomId);
     event ArenaUpdated(address indexed newArena);
+    event DelegationManagerUpdated(address indexed dm);
+    event ExecutorAuthorized(address indexed agentOwner, address indexed executor, bool allowed);
 
     // ─── Constructor ──────────────────────────────────────────────────────────
 
@@ -94,83 +140,62 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
         emit ArenaUpdated(_arena);
     }
 
-    // ─── Issue challenge ──────────────────────────────────────────────────────
-
     /**
-     * @notice Post a hot take challenge. Stakes your position with USDC.
-     *         Anyone with an agent can accept.
-     * @param _roomId        Unique room identifier (generated server-side)
-     * @param _topicHash     keccak256(full topic string)
-     * @param _topicPreview  Hot take text stored on-chain for display
-     * @param _categoryHash  Topic category hash
-     * @param _stake         USDC per side (in wei, min $0.25)
+     * @notice Set the ERC-7710 DelegationManager address.
+     * This address is trusted globally to act as executor for any agent.
+     * Only set this to an audited, controlled DelegationManager contract.
      */
-    function issueChallenge(
-        bytes32 _roomId,
-        bytes32 _topicHash,
-        string  calldata _topicPreview,
-        bytes32 _categoryHash,
-        uint256 _stake
-    ) external nonReentrant {
-        require(rooms[_roomId].creator == address(0), "Room ID already exists");
-        require(registry.agentExists_(msg.sender),    "Must have an agent to issue challenge");
-        require(_stake >= MIN_STAKE,                  "Stake below minimum");
-        require(bytes(_topicPreview).length > 0,      "Topic required");
-        require(bytes(_topicPreview).length <= MAX_TOPIC_LENGTH, "Topic too long");
-        require(
-            keccak256(abi.encode(_topicPreview)) == _topicHash,
-            "Topic hash mismatch"
-        );
-
-        // Lock challenger's stake from their wallet (not treasury — this is personal stake)
-        USDC.safeTransferFrom(msg.sender, address(this), _stake);
-
-        totalRooms++;
-        uint256 expiry = block.timestamp + MAX_ROOM_DURATION;
-
-        rooms[_roomId] = Room({
-            state:        RoomState.OPEN,
-            creator:      msg.sender,
-            challenger:   address(0),
-            stake:        _stake,
-            topicHash:    _topicHash,
-            topicPreview: _topicPreview,
-            battleId:     bytes32(0),
-            createdAt:    block.timestamp,
-            expiresAt:    expiry,
-            categoryHash: _categoryHash
-        });
-
-        emit RoomCreated(_roomId, msg.sender, _stake, _topicPreview, expiry);
+    function setDelegationManager(address _dm) external onlyOwner {
+        delegationManager = _dm;
+        emit DelegationManagerUpdated(_dm);
     }
 
     /**
-     * @notice Issue a challenge from agent treasury (autonomous mode).
-     *         Scheduler calls this when agent autonomously creates a challenge.
+     * @notice Authorize or revoke an executor for the caller's agent.
+     * Callable by any agent owner to whitelist a specific executor address
+     * (e.g. a scheduler key or a 1Shot relay) for their own agent only.
      */
-    function issueChallengeFromTreasury(
-        bytes32 _roomId,
+    function authorizeExecutor(address _executor, bool _allowed) external {
+        authorizedExecutors[msg.sender][_executor] = _allowed;
+        emit ExecutorAuthorized(msg.sender, _executor, _allowed);
+    }
+
+    /**
+     * @notice Check whether `executor` is authorized to act for `agentOwner`.
+     * Returns true if:
+     *   - executor is the configured DelegationManager (global trust), OR
+     *   - agentOwner has explicitly whitelisted executor via authorizeExecutor()
+     */
+    function isAuthorizedExecutor(
         address _agentOwner,
+        address _executor
+    ) public view returns (bool) {
+        if (_executor == delegationManager && _executor != address(0)) return true;
+        return authorizedExecutors[_agentOwner][_executor];
+    }
+
+    // ─── Internal challenge logic ─────────────────────────────────────────────
+
+    /**
+     * @dev Shared validation and room creation. Does NOT handle USDC transfer —
+     * callers are responsible for moving funds before or after calling this.
+     */
+    function _validateAndCreateRoom(
+        address _agentOwner,
+        bytes32 _roomId,
         bytes32 _topicHash,
         string  calldata _topicPreview,
         bytes32 _categoryHash,
         uint256 _stake
-    ) external nonReentrant {
-        require(msg.sender == address(arena) || msg.sender == owner(), "Not authorised");
+    ) internal {
         require(rooms[_roomId].creator == address(0), "Room ID already exists");
-        require(registry.agentExists_(_agentOwner),   "Agent not registered");
+        require(registry.agentExists_(_agentOwner),   "Must have an agent to issue challenge");
         require(_stake >= MIN_STAKE,                  "Stake below minimum");
         require(bytes(_topicPreview).length > 0,      "Topic required");
         require(bytes(_topicPreview).length <= MAX_TOPIC_LENGTH, "Topic too long");
         require(
             keccak256(abi.encode(_topicPreview)) == _topicHash,
             "Topic hash mismatch"
-        );
-
-        // Deduct from agent treasury
-        treasury.authorizedSpend(
-            _agentOwner, _stake, address(this),
-            AgentTreasury.SpendPurpose.OTHER, bytes32(0), 0
         );
 
         totalRooms++;
@@ -192,45 +217,35 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
         emit RoomCreated(_roomId, _agentOwner, _stake, _topicPreview, expiry);
     }
 
-    // ─── Accept challenge ─────────────────────────────────────────────────────
-
     /**
-     * @notice Accept an open challenge. Locks your stake, creates the battle.
-     * @param _roomId       Room to accept
-     * @param _battleId     New battle ID to create in Arena
-     * @param _bettingDuration Seconds for spectator betting window
-     * @param _maxResearch  Max research budget per agent for this battle
+     * @dev Shared accept logic. Does NOT handle USDC transfer.
      */
-    function acceptChallenge(
+    function _validateAndAcceptRoom(
+        address _agentOwner,
         bytes32 _roomId,
         bytes32 _battleId,
         uint256 _bettingDuration,
         uint256 _roundDuration,
         uint256 _maxResearch
-    ) external nonReentrant {
+    ) internal {
         Room storage room = rooms[_roomId];
 
-        require(room.state == RoomState.OPEN,          "Room not open");
-        require(block.timestamp < room.expiresAt,      "Room has expired");
-        require(msg.sender != room.creator,            "Cannot challenge yourself");
-        require(registry.agentExists_(msg.sender),     "Must have an agent to accept");
+        require(room.state == RoomState.OPEN,     "Room not open");
+        require(block.timestamp < room.expiresAt, "Room has expired");
+        require(_agentOwner != room.creator,      "Cannot challenge yourself");
+        require(registry.agentExists_(_agentOwner), "Must have an agent to accept");
 
-        // Lock challenger's matching stake from their wallet
-        USDC.safeTransferFrom(msg.sender, address(this), room.stake);
-
-        room.challenger = msg.sender;
+        room.challenger = _agentOwner;
         room.battleId   = _battleId;
         room.state      = RoomState.LOCKED;
 
         // Transfer both stakes to Arena — these become the fighter pool directly.
-        // Arena.createBattleFromRoom does NOT pull from AgentTreasury; it trusts
-        // that these funds have already arrived via this transfer.
         USDC.safeTransfer(address(arena), room.stake * 2);
 
         arena.createBattleFromRoom(
             _battleId,
             room.creator,
-            msg.sender,
+            _agentOwner,
             room.stake,
             _bettingDuration,
             _roundDuration,
@@ -240,7 +255,135 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
             room.categoryHash
         );
 
-        emit RoomAccepted(_roomId, msg.sender, _battleId);
+        emit RoomAccepted(_roomId, _agentOwner, _battleId);
+    }
+
+    // ─── Issue challenge — direct path ────────────────────────────────────────
+
+    /**
+     * @notice Post a hot take challenge. Stakes your position with USDC.
+     * @dev DIRECT path — msg.sender must own a registered agent.
+     *      USDC is pulled from msg.sender's wallet (approve required beforehand).
+     */
+    function issueChallenge(
+        bytes32 _roomId,
+        bytes32 _topicHash,
+        string  calldata _topicPreview,
+        bytes32 _categoryHash,
+        uint256 _stake
+    ) external nonReentrant {
+        _validateAndCreateRoom(msg.sender, _roomId, _topicHash, _topicPreview, _categoryHash, _stake);
+        // Pull stake from the user's wallet (requires prior USDC.approve)
+        USDC.safeTransferFrom(msg.sender, address(this), _stake);
+    }
+
+    // ─── Issue challenge — delegated path ─────────────────────────────────────
+
+    /**
+     * @notice Post a challenge on behalf of `agentOwner` via delegation.
+     * @dev DELEGATED path — msg.sender must be an authorized executor
+     *      (DelegationManager or whitelisted address).
+     *
+     *      USDC comes directly from agentOwner's wallet — no AgentTreasury required.
+     *
+     *      Before calling this, the 1Shot bundle must include:
+     *        call N-1: USDC.approve(address(this), _stake)   ← executed from smart account
+     *        call N:   issueChallengeFor(agentOwner, ...)    ← this function
+     *
+     *      The ERC-7715 erc20-token-periodic caveat caps total daily USDC flow.
+     *      Funds remain in the user's wallet until this transferFrom executes.
+     */
+    function issueChallengeFor(
+        address _agentOwner,
+        bytes32 _roomId,
+        bytes32 _topicHash,
+        string  calldata _topicPreview,
+        bytes32 _categoryHash,
+        uint256 _stake
+    ) external nonReentrant {
+        require(
+            isAuthorizedExecutor(_agentOwner, msg.sender),
+            "Not authorized executor"
+        );
+        _validateAndCreateRoom(_agentOwner, _roomId, _topicHash, _topicPreview, _categoryHash, _stake);
+        // Pull stake from agentOwner's wallet — allowance set by the preceding
+        // USDC.approve call in the 1Shot bundle. No AgentTreasury required.
+        USDC.safeTransferFrom(_agentOwner, address(this), _stake);
+    }
+
+    // ─── Issue challenge — treasury path (legacy scheduler) ──────────────────
+
+    /**
+     * @notice Issue a challenge from agent treasury (scheduler / autonomous mode).
+     * @dev Legacy path for the platform scheduler. Prefer issueChallengeFor for
+     *      user-delegated execution. Retained for backwards compatibility.
+     */
+    function issueChallengeFromTreasury(
+        bytes32 _roomId,
+        address _agentOwner,
+        bytes32 _topicHash,
+        string  calldata _topicPreview,
+        bytes32 _categoryHash,
+        uint256 _stake
+    ) external nonReentrant {
+        require(msg.sender == address(arena) || msg.sender == owner(), "Not authorised");
+        _validateAndCreateRoom(_agentOwner, _roomId, _topicHash, _topicPreview, _categoryHash, _stake);
+        treasury.authorizedSpend(
+            _agentOwner, _stake, address(this),
+            AgentTreasury.SpendPurpose.OTHER, bytes32(0), 0
+        );
+    }
+
+    // ─── Accept challenge — direct path ───────────────────────────────────────
+
+    /**
+     * @notice Accept an open challenge. Locks your stake, creates the battle.
+     * @dev DIRECT path — msg.sender must own a registered agent.
+     *      USDC is pulled from msg.sender's wallet.
+     */
+    function acceptChallenge(
+        bytes32 _roomId,
+        bytes32 _battleId,
+        uint256 _bettingDuration,
+        uint256 _roundDuration,
+        uint256 _maxResearch
+    ) external nonReentrant {
+        // Pull challenger's matching stake from their wallet first
+        USDC.safeTransferFrom(msg.sender, address(this), rooms[_roomId].stake);
+        _validateAndAcceptRoom(msg.sender, _roomId, _battleId, _bettingDuration, _roundDuration, _maxResearch);
+    }
+
+    // ─── Accept challenge — delegated path ────────────────────────────────────
+
+    /**
+     * @notice Accept a challenge on behalf of `agentOwner` via delegation.
+     * @dev DELEGATED path — msg.sender must be an authorized executor.
+     *
+     *      USDC comes directly from agentOwner's wallet — no AgentTreasury required.
+     *
+     *      Before calling this, the 1Shot bundle must include:
+     *        call N-1: USDC.approve(address(this), room.stake)  ← from smart account
+     *        call N:   acceptChallengeFor(agentOwner, ...)      ← this function
+     *
+     *      room.stake is readable off-chain before bundle construction via getRoom(roomId).
+     */
+    function acceptChallengeFor(
+        address _agentOwner,
+        bytes32 _roomId,
+        bytes32 _battleId,
+        uint256 _bettingDuration,
+        uint256 _roundDuration,
+        uint256 _maxResearch
+    ) external nonReentrant {
+        require(
+            isAuthorizedExecutor(_agentOwner, msg.sender),
+            "Not authorized executor"
+        );
+        uint256 stake = rooms[_roomId].stake;
+        // Pull stake from agentOwner's wallet — allowance set by the preceding
+        // USDC.approve call in the 1Shot bundle. No AgentTreasury required.
+        USDC.safeTransferFrom(_agentOwner, address(this), stake);
+        _validateAndAcceptRoom(_agentOwner, _roomId, _battleId, _bettingDuration, _roundDuration, _maxResearch);
     }
 
     // ─── Cancel challenge ─────────────────────────────────────────────────────
@@ -285,5 +428,4 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
     function getRoom(bytes32 _roomId) external view returns (Room memory) {
         return rooms[_roomId];
     }
-
 }

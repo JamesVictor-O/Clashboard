@@ -78,7 +78,7 @@ export interface AgentSession {
  * the session private key, which lives exclusively in AgentSession.
  */
 export interface GrantedPermission {
-  context: `0x${string}`;
+  context: unknown;
   delegationManager: `0x${string}`;
   sessionAddress: `0x${string}`;
   walletAddress: `0x${string}`;
@@ -163,6 +163,43 @@ function getActiveChain() {
   return chainId === 8453 ? base : baseSepolia;
 }
 
+async function getOneShotRelayerTargetAddress(chainId: number): Promise<`0x${string}`> {
+  const relayerUrl =
+    process.env.NEXT_PUBLIC_ONESHOT_RELAYER_URL ??
+    (chainId === 84532 || chainId === 11155111
+      ? "https://relayer.1shotapi.dev/relayers"
+      : "https://relayer.1shotapi.com/relayers");
+
+  const res = await fetch(relayerUrl, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      jsonrpc: "2.0",
+      id: Date.now(),
+      method: "relayer_getCapabilities",
+      params: [String(chainId)],
+    }),
+  });
+
+  if (!res.ok) {
+    throw new Error(`Unable to load 1Shot relayer capabilities: ${res.status}`);
+  }
+
+  const data = (await res.json()) as {
+    result?: Record<string, { targetAddress?: `0x${string}` }>;
+    error?: { message?: string };
+  };
+  if (data.error) {
+    throw new Error(data.error.message ?? "1Shot relayer capability lookup failed");
+  }
+
+  const targetAddress = data.result?.[String(chainId)]?.targetAddress;
+  if (!targetAddress) {
+    throw new Error(`1Shot relayer does not advertise a target address for chain ${chainId}`);
+  }
+  return targetAddress;
+}
+
 // ─── ERC-7715 Permissions ─────────────────────────────────────────────────────
 
 const REQUIRED_PERMISSION_TYPE = "erc20-token-periodic" as const;
@@ -176,7 +213,7 @@ const REQUIRED_PERMISSION_TYPE = "erc20-token-periodic" as const;
  *      wallet_grantPermissions with -32601 when called through its wrapper.
  *   2. Call getSupportedExecutionPermissions (best-effort) to verify that
  *      erc20-token-periodic is available before showing the Flask UI.
- *   3. Call requestExecutionPermissions targeting the agent's session EOA.
+ *   3. Call requestExecutionPermissions targeting 1Shot relayer targetAddress.
  *   4. Return only permission metadata (GrantedPermission).
  *      The session private key stays in AgentSession — it never appears here.
  */
@@ -230,8 +267,9 @@ export async function grantPermissions(
     // Otherwise getSupportedExecutionPermissions is absent on this build — proceed.
   }
 
-  // ── Step 2: resolve agent session (creates one if this is a new fighter) ──
-  const session = getOrCreateAgentSession(params.account);
+  // ── Step 2: resolve agent session and 1Shot public relayer target ────────
+  getOrCreateAgentSession(params.account);
+  const relayerTargetAddress = await getOneShotRelayerTargetAddress(chain.id);
 
   const usdcAddress = process.env.NEXT_PUBLIC_USDC_ADDRESS as `0x${string}`;
   if (!usdcAddress) throw new Error("NEXT_PUBLIC_USDC_ADDRESS is not configured");
@@ -243,7 +281,9 @@ export async function grantPermissions(
     {
       chainId: chain.id,
       expiry: params.expiry,
-      to: session.sessionAddress,
+      // The public relayer redeems grants scoped to its advertised targetAddress.
+      // The local session key remains stored for demo agent identity only.
+      to: relayerTargetAddress,
       permission: {
         type: REQUIRED_PERMISSION_TYPE,
         data: {
@@ -266,9 +306,9 @@ export async function grantPermissions(
 
   // ── Step 4: return metadata only — private key stays in AgentSession ───────
   return {
-    context: grant.context as `0x${string}`,
+    context: grant.context,
     delegationManager: grant.delegationManager as `0x${string}`,
-    sessionAddress: session.sessionAddress,
+    sessionAddress: relayerTargetAddress,
     walletAddress: params.account as `0x${string}`,
     expiry: params.expiry,
     budgetUSDC: params.budgetUSDC,

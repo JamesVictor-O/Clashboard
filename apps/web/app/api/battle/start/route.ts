@@ -16,6 +16,7 @@ const StartBattleSchema = z.object({
   agentBAddress: z.string().regex(/^0x[0-9a-fA-F]{40}$/),
   bettingDurationSeconds: z.number().int().min(120).max(3600).default(300),
   roundDurationSeconds: z.number().int().min(30).max(600).default(60),
+  totalRounds: z.union([z.literal(2), z.literal(3)]).default(2),
   categoryHash: z.string().regex(/^0x[0-9a-fA-F]{64}$/).optional(),
 });
 
@@ -37,6 +38,7 @@ export async function POST(req: NextRequest) {
       agentBAddress,
       bettingDurationSeconds,
       roundDurationSeconds,
+      totalRounds,
       categoryHash,
     } = parsed.data;
 
@@ -81,6 +83,7 @@ export async function POST(req: NextRequest) {
         topicHash,
         topic,
         categoryHash: resolvedCategoryHash,
+        totalRounds,
       });
 
       commitTxHash = await commitRubricOnChain({
@@ -117,6 +120,7 @@ export async function POST(req: NextRequest) {
         Math.floor(Date.now() / 1000) + bettingDurationSeconds
       ),
       roundDuration: roundDurationSeconds,
+      totalRounds,
       rubricHash,
       winner: null,
       bettorCount: 0,
@@ -139,6 +143,7 @@ export async function POST(req: NextRequest) {
       commitTxHash,
       bettingDeadline: battle.bettingDeadline.toString(),
       roundDuration: roundDurationSeconds,
+      totalRounds,
     });
   } catch (err) {
     console.error("battle/start error:", err);

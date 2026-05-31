@@ -57,6 +57,7 @@ export const baseMainnet: Chain = {
 export const ARENA_ABI = parseAbi([
   // Battle lifecycle (scheduler only)
   "function createBattle(bytes32 battleId, address agentA, address agentB, uint256 entryFee, uint256 bettingDuration, uint256 roundDuration, uint256 maxResearch, bytes32 topicHash, string topic, bytes32 categoryHash) external",
+  "function createBattle(bytes32 battleId, address agentA, address agentB, uint256 entryFee, uint256 bettingDuration, uint256 roundDuration, uint256 maxResearch, bytes32 topicHash, string topic, bytes32 categoryHash, uint8 totalRounds) external",
   "function commitRubric(bytes32 battleId, bytes32 rubricHash) external",
   "function submitArgument(bytes32 battleId, uint8 side, bytes32 contentHash) external",
   "function settleBattle(bytes32 battleId, uint8 winnerSide, bytes32 rubricPreimage, uint256 judgeScore) external",
@@ -88,8 +89,6 @@ export const REGISTRY_ABI = parseAbi([
   "function agentExists_(address owner) external view returns (bool)",
   "function getAgent(address owner) external view returns ((address owner, address agentAddress, string name, bytes32 metadataHash, uint256 forgedAt, bool exists) agent, (uint256 wins, uint256 losses, uint256 totalBattles, uint256 scoreSum, uint256 earningsTotal) reputation)",
   "function totalAgents() external view returns (uint256)",
-  "function setAutonomousLimits(bool autonomousMode, uint256 maxEntryFee, uint256 maxResearchBudget, uint256 maxBattlesPerDay, uint256 permissionExpiry, bytes32 allowedCategoriesHash) external",
-  "function autonomousLimits(address owner) external view returns (bool autonomousMode, uint256 maxEntryFeePerBattle, uint256 maxResearchBudget, uint256 maxBattlesPerDay, uint256 battlesEnteredToday, uint256 dayResetTimestamp, uint256 permissionExpiry, bytes32 allowedCategoriesHash)",
 ]);
 
 export const TREASURY_ABI = parseAbi([
@@ -102,6 +101,7 @@ export const HOTTAKEROOMS_ABI = parseAbi([
   "function issueChallenge(bytes32 roomId, bytes32 topicHash, string topicPreview, bytes32 categoryHash, uint256 stake) external",
   "function acceptChallenge(bytes32 roomId, bytes32 battleId, uint256 bettingDuration, uint256 roundDuration, uint256 maxResearch) external",
   "function cancelChallenge(bytes32 roomId) external",
+  "function authorizeExecutor(address executor, bool allowed) external",
   "function getRoom(bytes32 roomId) external view returns ((uint8 state, address creator, address challenger, uint256 stake, bytes32 topicHash, string topicPreview, bytes32 battleId, uint256 createdAt, uint256 expiresAt, bytes32 categoryHash))",
   "event RoomCreated(bytes32 indexed roomId, address indexed creator, uint256 stake, string topicPreview, uint256 expiresAt)",
   "event RoomAccepted(bytes32 indexed roomId, address indexed challenger, bytes32 battleId)",
@@ -213,10 +213,36 @@ export async function createBattleOnChain(params: {
   topicHash: `0x${string}`;
   topic: string;
   categoryHash: `0x${string}`;
+  totalRounds?: 2 | 3;
 }): Promise<string> {
   const wallet = getWalletClient();
   const contract = getContractAddress();
   const chain = getActiveChain();
+
+  if (params.totalRounds && params.totalRounds !== 2) {
+    const hash = await wallet.writeContract({
+      address: contract,
+      abi: ARENA_ABI,
+      functionName: "createBattle",
+      args: [
+        params.battleId,
+        params.agentA,
+        params.agentB,
+        params.entryFee,
+        params.bettingDuration,
+        params.roundDuration,
+        params.maxResearch,
+        params.topicHash,
+        params.topic,
+        params.categoryHash,
+        params.totalRounds,
+      ],
+      chain,
+      account: getPlatformAccount(),
+    });
+
+    return hash;
+  }
 
   const hash = await wallet.writeContract({
     address: contract,

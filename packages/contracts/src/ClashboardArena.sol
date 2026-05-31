@@ -6,7 +6,6 @@ import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "./AgentRegistry.sol";
-import "./AgentTreasury.sol";
 
 /**
  * @title ClashboardArena
@@ -14,14 +13,19 @@ import "./AgentTreasury.sol";
  *
  * Timeline (all derived from block.timestamp):
  *
- *   [creation]──── bettingDeadline ────[round 1]──[round 2]──[round 3]──[settle]
+ *   [creation]──── bettingDeadline ────[round 1]──[round 2]──[optional round 3]──[judge]──[settle]
  *        ↑                ↑                  ↑         ↑         ↑          ↑
  *    createBattle     placeBet()        submitArg  submitArg  submitArg  settleBattle
  *                                       (side 1&2)
  *
- *   Phase = BETTING  : block.timestamp < bettingDeadline
- *   Phase = ROUND n  : bettingDeadline + (n-1)*roundDuration <= t < bettingDeadline + n*roundDuration
- *   Phase = COMPLETE : block.timestamp >= bettingDeadline + totalRounds*roundDuration
+ *   BattlePhase mapping:
+ *   0 = BETTING       : block.timestamp < bettingDeadline
+ *   1 = ROUND_1       : bettingDeadline <= t < bettingDeadline + roundDuration
+ *   2 = ROUND_2       : next active argument window
+ *   3 = ROUND_3       : optional final argument window
+ *   4 = JUDGING_READY : all configured rounds are over; backend can ask Venice to judge
+ *   5 = SETTLED       : winner recorded and payouts distributed
+ *   6 = CANCELLED     : battle refunded/cancelled
  *
  * Backend only needs to:
  *   1. commitRubric()     — lock judge criteria (while BETTING)
@@ -39,11 +43,19 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
 
     IERC20          public immutable USDC;
     AgentRegistry   public immutable registry;
-    AgentTreasury   public immutable treasury;
     address         public           platformTreasury;
     address         public           hotTakeRooms;
 
     enum BattleState { OPEN, SETTLED, CANCELLED }
+    enum BattlePhase {
+        BETTING,
+        ROUND_1,
+        ROUND_2,
+        ROUND_3,
+        JUDGING_READY,
+        SETTLED,
+        CANCELLED
+    }
 
     struct Battle {
         BattleState state;
@@ -57,7 +69,7 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         uint256     spectatorPoolB;
         uint256     bettingDeadline;  // betting closes here; round 1 starts here
         uint256     roundDuration;    // seconds per round
-        uint8       totalRounds;      // always 3
+        uint8       totalRounds;      // 2 for hackathon default, 3 optional
         bytes32     rubricHash;
         uint256     maxResearch;
         bytes32     topicHash;
@@ -90,7 +102,8 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
     uint256 public constant MIN_BETTING_WINDOW  = 120;   // 2 minutes
     uint256 public constant MIN_ROUND_DURATION  = 30;    // 30 seconds
     uint256 public constant MAX_TOPIC_LENGTH     = 280;   // bytes; enough for a hot take
-    uint8   public constant TOTAL_ROUNDS        = 3;
+    uint256 public constant MAX_BETTORS_PER_SIDE = 50;   // settlement loops are bounded
+    uint8   public constant HACKATHON_TOTAL_ROUNDS = 2;
 
     // ─── Events ───────────────────────────────────────────────────────────────
 
@@ -134,7 +147,10 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
     ) Ownable(msg.sender) {
         USDC             = IERC20(_usdc);
         registry         = AgentRegistry(_registry);
-        treasury         = AgentTreasury(_treasury);
+        // _treasury is kept in the constructor for deployment compatibility only.
+        // ClashboardArena no longer depends on AgentTreasury for battle entries,
+        // delegated bets, refunds, or payouts.
+        _treasury;
         platformTreasury = _platformTreasury;
         scheduler        = _scheduler;
     }
@@ -175,9 +191,50 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         string calldata _topic,
         bytes32 _categoryHash
     ) external onlyScheduler {
+        _createBattleWithRounds(
+            _battleId, _agentA, _agentB, _entryFee,
+            _bettingDuration, _roundDuration, HACKATHON_TOTAL_ROUNDS,
+            _maxResearch, _topicHash, _topic, _categoryHash
+        );
+    }
+
+    function createBattle(
+        bytes32 _battleId,
+        address _agentA,
+        address _agentB,
+        uint256 _entryFee,
+        uint256 _bettingDuration,
+        uint256 _roundDuration,
+        uint8   _totalRounds,
+        uint256 _maxResearch,
+        bytes32 _topicHash,
+        string calldata _topic,
+        bytes32 _categoryHash
+    ) external onlyScheduler {
+        _createBattleWithRounds(
+            _battleId, _agentA, _agentB, _entryFee,
+            _bettingDuration, _roundDuration, _totalRounds,
+            _maxResearch, _topicHash, _topic, _categoryHash
+        );
+    }
+
+    function _createBattleWithRounds(
+        bytes32 _battleId,
+        address _agentA,
+        address _agentB,
+        uint256 _entryFee,
+        uint256 _bettingDuration,
+        uint256 _roundDuration,
+        uint8   _totalRounds,
+        uint256 _maxResearch,
+        bytes32 _topicHash,
+        string calldata _topic,
+        bytes32 _categoryHash
+    ) internal {
         _validateAndCreate(
             _battleId, _agentA, _agentB, _entryFee,
-            _bettingDuration, _roundDuration, _maxResearch, _topicHash, _topic, _categoryHash
+            _bettingDuration, _roundDuration, _totalRounds,
+            _maxResearch, _topicHash, _topic, _categoryHash
         );
         if (_entryFee > 0) {
             USDC.safeTransferFrom(_agentA, address(this), _entryFee);
@@ -204,7 +261,29 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         require(msg.sender == hotTakeRooms, "Only HotTakeRooms");
         _validateAndCreate(
             _battleId, _agentA, _agentB, _entryFee,
-            _bettingDuration, _roundDuration, _maxResearch, _topicHash, _topic, _categoryHash
+            _bettingDuration, _roundDuration, HACKATHON_TOTAL_ROUNDS,
+            _maxResearch, _topicHash, _topic, _categoryHash
+        );
+    }
+
+    function createBattleFromRoom(
+        bytes32 _battleId,
+        address _agentA,
+        address _agentB,
+        uint256 _entryFee,
+        uint256 _bettingDuration,
+        uint256 _roundDuration,
+        uint8   _totalRounds,
+        uint256 _maxResearch,
+        bytes32 _topicHash,
+        string calldata _topic,
+        bytes32 _categoryHash
+    ) external nonReentrant {
+        require(msg.sender == hotTakeRooms, "Only HotTakeRooms");
+        _validateAndCreate(
+            _battleId, _agentA, _agentB, _entryFee,
+            _bettingDuration, _roundDuration, _totalRounds,
+            _maxResearch, _topicHash, _topic, _categoryHash
         );
     }
 
@@ -215,6 +294,7 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         uint256 _entryFee,
         uint256 _bettingDuration,
         uint256 _roundDuration,
+        uint8   _totalRounds,
         uint256 _maxResearch,
         bytes32 _topicHash,
         string calldata _topic,
@@ -226,6 +306,7 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         require(registry.agentExists_(_agentB),          "Agent B not registered");
         require(_bettingDuration >= MIN_BETTING_WINDOW,  "Betting window too short");
         require(_roundDuration   >= MIN_ROUND_DURATION,  "Round duration too short");
+        require(_totalRounds == 2 || _totalRounds == 3,  "Invalid rounds");
         require(bytes(_topic).length > 0,                 "Topic required");
         require(bytes(_topic).length <= MAX_TOPIC_LENGTH, "Topic too long");
         require(keccak256(abi.encode(_topic)) == _topicHash, "Topic hash mismatch");
@@ -244,7 +325,7 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
             spectatorPoolB: 0,
             bettingDeadline: deadline,
             roundDuration:  _roundDuration,
-            totalRounds:    TOTAL_ROUNDS,
+            totalRounds:    _totalRounds,
             rubricHash:     bytes32(0),
             maxResearch:    _maxResearch,
             topicHash:      _topicHash,
@@ -262,20 +343,20 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
      * @notice Autonomous agent joins an existing open battle.
      *         Pulls entry fee from the agent owner's wallet via their
      *         pre-granted ERC-7715 spending permission.
+     *
+     * @dev Budget/category/daily-limit checks are enforced off-chain in the
+     *      TypeScript policy engine (lib/autonomy/policy.ts) before 1Shot is
+     *      called. The contract only verifies the agent is registered.
      */
     function autonomousEntry(
         bytes32 _battleId,
         address _agentOwner
     ) external onlyScheduler battleExists(_battleId) {
         Battle storage battle = battles[_battleId];
-        require(battle.state == BattleState.OPEN,         "Battle not open");
-        require(block.timestamp < battle.bettingDeadline, "Betting window closed");
+        require(battle.state == BattleState.OPEN, "Battle not open");
+        require(getBattlePhase(_battleId) == BattlePhase.BETTING, "Betting window closed");
+        require(registry.agentExists_(_agentOwner), "Agent not registered");
 
-        (bool eligible, string memory reason) =
-            registry.isAutonomousEligible(_agentOwner, battle.entryFee);
-        require(eligible, reason);
-
-        registry.recordAutonomousEntry(_agentOwner);
         if (battle.entryFee > 0) {
             USDC.safeTransferFrom(_agentOwner, address(this), battle.entryFee);
         }
@@ -291,30 +372,25 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         uint8   _side,
         uint256 _amount
     ) external nonReentrant battleExists(_battleId) {
-        Battle storage battle = battles[_battleId];
-
-        require(battle.state == BattleState.OPEN,         "Battle not open");
-        require(block.timestamp < battle.bettingDeadline,  "Betting window closed");
-        require(_side == 1 || _side == 2,                  "Invalid side");
-        require(bets[_battleId][msg.sender].amount == 0,   "Already bet");
-        require(_amount > 0,                               "Zero amount");
-
-        USDC.safeTransferFrom(msg.sender, address(this), _amount);
-        bets[_battleId][msg.sender] = Bet(_side, _amount);
-
-        if (_side == 1) {
-            battle.spectatorPoolA += _amount;
-            _bettorsA[_battleId].push(msg.sender);
-        } else {
-            battle.spectatorPoolB += _amount;
-            _bettorsB[_battleId].push(msg.sender);
-        }
-
-        emit BetPlaced(_battleId, msg.sender, _side, _amount);
+        _placeBet(_battleId, msg.sender, _side, _amount, false);
     }
 
     /**
-     * @notice Agent places a bet from its treasury. Scheduler calls on behalf of autonomous agents.
+     * @notice Place a delegated bet for a bettor. Intended for 1Shot bundles:
+     *         call 1: USDC.approve(ClashboardArena, amount)
+     *         call 2: ClashboardArena.placeBetFor(bettor, battleId, side, amount)
+     */
+    function placeBetFor(
+        address _bettor,
+        bytes32 _battleId,
+        uint8   _side,
+        uint256 _amount
+    ) external onlyScheduler nonReentrant battleExists(_battleId) {
+        _placeBet(_battleId, _bettor, _side, _amount, true);
+    }
+
+    /**
+     * @notice Deprecated. Use placeBetFor() with ERC-7715/1Shot approval bundles.
      */
     function agentPlaceBet(
         bytes32 _battleId,
@@ -322,31 +398,41 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         uint8   _side,
         uint256 _amount
     ) external onlyScheduler nonReentrant battleExists(_battleId) {
+        _placeBet(_battleId, _agentOwner, _side, _amount, true);
+    }
+
+    function _placeBet(
+        bytes32 _battleId,
+        address _bettor,
+        uint8   _side,
+        uint256 _amount,
+        bool    _rejectFighter
+    ) internal {
         Battle storage battle = battles[_battleId];
 
-        require(battle.state == BattleState.OPEN,                         "Battle not open");
-        require(block.timestamp < battle.bettingDeadline,                  "Betting window closed");
-        require(_side == 1 || _side == 2,                                  "Invalid side");
-        require(bets[_battleId][_agentOwner].amount == 0,                  "Already bet");
-        require(_amount > 0,                                               "Zero amount");
-        require(battle.agentA != _agentOwner && battle.agentB != _agentOwner,
-                "Fighter cannot bet on own battle");
-
-        treasury.authorizedSpend(
-            _agentOwner, _amount, address(this),
-            AgentTreasury.SpendPurpose.BET, _battleId, 0
-        );
-        bets[_battleId][_agentOwner] = Bet(_side, _amount);
-
-        if (_side == 1) {
-            battle.spectatorPoolA += _amount;
-            _bettorsA[_battleId].push(_agentOwner);
-        } else {
-            battle.spectatorPoolB += _amount;
-            _bettorsB[_battleId].push(_agentOwner);
+        require(battle.state == BattleState.OPEN, "Battle not open");
+        require(getBattlePhase(_battleId) == BattlePhase.BETTING, "Betting window closed");
+        require(_side == 1 || _side == 2, "Invalid side");
+        require(bets[_battleId][_bettor].amount == 0, "Already bet");
+        require(_amount > 0, "Zero amount");
+        if (_rejectFighter) {
+            require(battle.agentA != _bettor && battle.agentB != _bettor, "Fighter cannot bet on own battle");
         }
 
-        emit BetPlaced(_battleId, _agentOwner, _side, _amount);
+        USDC.safeTransferFrom(_bettor, address(this), _amount);
+        bets[_battleId][_bettor] = Bet(_side, _amount);
+
+        if (_side == 1) {
+            require(_bettorsA[_battleId].length < MAX_BETTORS_PER_SIDE, "Side A full");
+            battle.spectatorPoolA += _amount;
+            _bettorsA[_battleId].push(_bettor);
+        } else {
+            require(_bettorsB[_battleId].length < MAX_BETTORS_PER_SIDE, "Side B full");
+            battle.spectatorPoolB += _amount;
+            _bettorsB[_battleId].push(_bettor);
+        }
+
+        emit BetPlaced(_battleId, _bettor, _side, _amount);
     }
 
     // ─── Rubric commitment ────────────────────────────────────────────────────
@@ -386,13 +472,21 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         bytes32 _contentHash
     ) external onlyScheduler battleExists(_battleId) {
         Battle storage battle = battles[_battleId];
-        require(battle.state == BattleState.OPEN,          "Battle not open");
+        require(battle.state == BattleState.OPEN, "Battle not open");
         require(block.timestamp >= battle.bettingDeadline, "Betting window still open");
-        require(_side == 1 || _side == 2,                  "Invalid side");
+        require(_side == 1 || _side == 2, "Invalid side");
 
-        uint8 round = _currentRound(battle);
-        require(round >= 1 && round <= battle.totalRounds, "No active round");
-        require(!argSubmitted[_battleId][round][_side],    "Argument already submitted");
+        BattlePhase phase = getBattlePhase(_battleId);
+        require(
+            phase == BattlePhase.ROUND_1 ||
+            phase == BattlePhase.ROUND_2 ||
+            phase == BattlePhase.ROUND_3,
+            "No active round"
+        );
+
+        uint8 round = _phaseRound(phase);
+        require(round <= battle.totalRounds, "No active round");
+        require(!argSubmitted[_battleId][round][_side], "Argument already submitted");
 
         arguments[_battleId][round][_side]  = _contentHash;
         argSubmitted[_battleId][round][_side] = true;
@@ -418,16 +512,14 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
     ) external onlyScheduler nonReentrant battleExists(_battleId) {
         Battle storage battle = battles[_battleId];
 
-        require(battle.state == BattleState.OPEN,    "Battle not open");
+        require(battle.state == BattleState.OPEN, "Battle not open");
         require(_winnerSide == 1 || _winnerSide == 2, "Invalid winner side");
-        require(
-            block.timestamp >= battle.bettingDeadline + uint256(battle.totalRounds) * battle.roundDuration,
-            "Rounds not complete yet"
-        );
+        require(getBattlePhase(_battleId) == BattlePhase.JUDGING_READY, "Judging not ready");
         require(
             keccak256(abi.encode(_rubricPreimage)) == battle.rubricHash,
             "Rubric preimage mismatch"
         );
+        require(_requiredArgumentsSubmitted(_battleId, battle), "Arguments incomplete");
 
         battle.state  = BattleState.SETTLED;
         battle.winner = _winnerSide == 1 ? battle.agentA : battle.agentB;
@@ -510,15 +602,21 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
 
     /**
      * @notice Current phase of a battle based on block.timestamp.
-     * @return phase  0 = betting open, 1-3 = round number, 4 = all rounds complete
+     * @return phase BattlePhase enum encoded as uint8 for ABI/frontend compatibility:
+     *         0 BETTING, 1 ROUND_1, 2 ROUND_2, 3 ROUND_3,
+     *         4 JUDGING_READY, 5 SETTLED, 6 CANCELLED.
      */
-    function getBattlePhase(bytes32 _battleId) external view battleExists(_battleId) returns (uint8 phase) {
+    function getBattlePhase(bytes32 _battleId) public view battleExists(_battleId) returns (BattlePhase phase) {
         Battle memory battle = battles[_battleId];
-        if (battle.state != BattleState.OPEN)             return 255; // settled or cancelled
-        if (block.timestamp < battle.bettingDeadline)     return 0;   // betting window
+        if (battle.state == BattleState.SETTLED) return BattlePhase.SETTLED;
+        if (battle.state == BattleState.CANCELLED) return BattlePhase.CANCELLED;
+        if (block.timestamp < battle.bettingDeadline) return BattlePhase.BETTING;
+
         uint8 round = _currentRound(battle);
-        if (round > battle.totalRounds)                   return 4;   // all rounds done
-        return round;
+        if (round > battle.totalRounds) return BattlePhase.JUDGING_READY;
+        if (round == 1) return BattlePhase.ROUND_1;
+        if (round == 2) return BattlePhase.ROUND_2;
+        return BattlePhase.ROUND_3;
     }
 
     /**
@@ -533,11 +631,21 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
             return battle.bettingDeadline - block.timestamp;
         }
 
-        uint256 roundEnd = battle.bettingDeadline +
-            uint256(_currentRound(battle)) * battle.roundDuration;
+        uint8 round = _currentRound(battle);
+        if (round > battle.totalRounds) return 0;
+
+        uint256 roundEnd = battle.bettingDeadline + uint256(round) * battle.roundDuration;
 
         if (block.timestamp >= roundEnd) return 0;
         return roundEnd - block.timestamp;
+    }
+
+    function isBettingOpen(bytes32 _battleId) external view battleExists(_battleId) returns (bool) {
+        return getBattlePhase(_battleId) == BattlePhase.BETTING;
+    }
+
+    function isJudgingReady(bytes32 _battleId) public view battleExists(_battleId) returns (bool) {
+        return getBattlePhase(_battleId) == BattlePhase.JUDGING_READY;
     }
 
     function getTotalPool(bytes32 _battleId) external view returns (uint256) {
@@ -561,6 +669,8 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
     function getArgument(bytes32 _battleId, uint8 _round, uint8 _side)
         external view returns (bytes32 contentHash, bool submitted)
     {
+        require(_round >= 1 && _round <= 3, "Invalid round");
+        require(_side == 1 || _side == 2, "Invalid side");
         return (
             arguments[_battleId][_round][_side],
             argSubmitted[_battleId][_round][_side]
@@ -576,8 +686,26 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
      */
     function _currentRound(Battle memory battle) internal view returns (uint8) {
         uint256 elapsed = block.timestamp - battle.bettingDeadline;
-        uint8 round = uint8(elapsed / battle.roundDuration) + 1;
-        return round;
+        uint256 round = (elapsed / battle.roundDuration) + 1;
+        if (round > type(uint8).max) return type(uint8).max;
+        return uint8(round);
+    }
+
+    function _phaseRound(BattlePhase _phase) internal pure returns (uint8) {
+        if (_phase == BattlePhase.ROUND_1) return 1;
+        if (_phase == BattlePhase.ROUND_2) return 2;
+        if (_phase == BattlePhase.ROUND_3) return 3;
+        return 0;
+    }
+
+    function _requiredArgumentsSubmitted(bytes32 _battleId, Battle memory battle)
+        internal view returns (bool)
+    {
+        for (uint8 round = 1; round <= battle.totalRounds; round++) {
+            if (!argSubmitted[_battleId][round][1]) return false;
+            if (!argSubmitted[_battleId][round][2]) return false;
+        }
+        return true;
     }
 
     function _payBettor(address _bettor, uint256 _amount) internal {

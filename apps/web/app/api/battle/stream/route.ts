@@ -6,7 +6,7 @@ import { submitArgumentOnChain, argContentHash } from "@/lib/chain";
 
 const StreamSchema = z.object({
   battleId: z.string().min(1),
-  rounds: z.number().int().min(1).max(5).default(3),
+  rounds: z.number().int().min(1).max(3).default(2),
 });
 
 function sleep(ms: number) {
@@ -37,7 +37,7 @@ export async function GET(req: NextRequest) {
     return new Response("Invalid params", { status: 400 });
   }
 
-  const { battleId, rounds } = parsed.data;
+  const { battleId } = parsed.data;
   const stored = battleStore.get(battleId);
 
   if (!stored) {
@@ -79,6 +79,7 @@ export async function GET(req: NextRequest) {
 
         const bettingDeadline = Number(stored.battle.bettingDeadline); // unix seconds
         const roundDuration = stored.battle.roundDuration;             // seconds
+        const rounds = Math.min(parsed.data.rounds, stored.battle.totalRounds ?? 2);
 
         // Wait for the betting window to close before starting round 1
         const nowSec = () => Date.now() / 1000;

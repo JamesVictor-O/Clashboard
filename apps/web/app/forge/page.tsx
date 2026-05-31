@@ -559,6 +559,8 @@ function StepBudget({
 }) {
   const accent = PERSONAS.find((p) => p.id === persona)?.accent ?? "#FFB800";
   const glow = PERSONAS.find((p) => p.id === persona)?.glow ?? "255,184,0";
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState<string | null>(null);
 
   const tiers = [
     { min: 1, max: 5, label: "Scout", desc: "Light research. Quick battles." },
@@ -568,6 +570,27 @@ function StepBudget({
   ];
 
   const currentTier = tiers.find((t) => value >= t.min && value <= t.max);
+
+  const handleContinue = async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const eth = (window as unknown as { ethereum?: { request: (a: { method: string }) => Promise<unknown> } }).ethereum;
+      if (!eth) throw new Error("No wallet detected. Install MetaMask Flask.");
+      const accounts = (await eth.request({ method: "eth_accounts" })) as string[];
+      if (!accounts[0]) throw new Error("Connect your wallet first.");
+
+      onNext();
+    } catch (err) {
+      const msg = err instanceof Error ? err.message
+        : typeof err === "object" && err !== null && "message" in err
+          ? String((err as { message: unknown }).message)
+          : "Permission request failed";
+      setError(msg);
+    } finally {
+      setLoading(false);
+    }
+  };
 
   return (
     <div className="flex-1 flex flex-col max-w-xl mx-auto w-full px-4 sm:px-6 py-10">
@@ -580,8 +603,8 @@ function StepBudget({
           <span style={{ color: accent }}>operate with?</span>
         </h2>
         <p className="font-body text-sm text-white/35 mt-2">
-          One master testnet USDC budget for research purchases, x402 data,
-          agent-to-agent research, demo arena actions, and arena stake.
+          One master approval for research, x402 data, and arena actions. You approve it
+          once — your agent spends within this cap without popping MetaMask every time.
         </p>
       </div>
 
@@ -605,7 +628,7 @@ function StepBudget({
         )}
       </div>
 
-      <div className="mb-8">
+      <div className="mb-6">
         <input
           type="range"
           min={1}
@@ -626,10 +649,42 @@ function StepBudget({
         </div>
       </div>
 
+      {/* What this covers */}
+      <div className="border border-white/6 p-4 mb-6 space-y-2" style={{ background: "rgba(255,255,255,0.02)" }}>
+        {[
+          "Approve once — no pop-ups every battle",
+          "1Shot executes challenges, accepts, and arena stakes from this cap",
+          `Your agent can never exceed $${value}/day`,
+          "Permission expires automatically in 24 hours",
+        ].map((line) => (
+          <div key={line} className="flex items-start gap-2">
+            <span className="mt-0.5 text-xs" style={{ color: accent }}>✓</span>
+            <span className="font-body text-xs text-white/50">{line}</span>
+          </div>
+        ))}
+      </div>
+
+      {error && (
+        <div className="border border-red-500/25 bg-red-500/8 px-4 py-3 mb-4">
+          <p className="font-mono text-[10px] text-red-400 leading-relaxed">{error}</p>
+        </div>
+      )}
+
       <div className="flex items-center gap-4 mt-auto">
-        <button onClick={onBack} className="btn-ghost text-sm">← Back</button>
-        <button onClick={onNext} className="btn-primary px-8 py-3 text-sm">
-          Set Operating Budget →
+        <button onClick={onBack} disabled={loading} className="btn-ghost text-sm">← Back</button>
+        <button
+          onClick={handleContinue}
+          disabled={loading}
+          className="btn-primary px-8 py-3 text-sm flex-1 flex items-center justify-center gap-2"
+        >
+          {loading ? (
+            <>
+              <span className="w-4 h-4 border-2 border-clash-black/30 border-t-clash-black rounded-full animate-spin" />
+              Checking wallet…
+            </>
+          ) : (
+            `Set $${value}/day Budget →`
+          )}
         </button>
       </div>
     </div>
@@ -772,6 +827,19 @@ function StepDeploy({
       await waitForTx(txHash);
 
       setDeployLog((p) => [...p, "Agent identity confirmed on Base Sepolia."]);
+      setDeployLog((p) => [...p, "Requesting master arena budget…"]);
+
+      const { grantPermissions } = await import("@/lib/metamask");
+      const { storePermissionContext } = await import("@/lib/permissions");
+      const expiry = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
+      const permission = await grantPermissions({
+        account: walletAddress,
+        expiry,
+        budgetUSDC: config.researchBudget,
+      });
+      storePermissionContext(walletAddress, permission);
+
+      setDeployLog((p) => [...p, "Arena budget active. 1Shot can now execute without wallet popups."]);
       setDeployLog((p) => [...p, "Agent deployed. Welcome to the arena."]);
 
       // Cache config locally so dashboard can display personality details
@@ -812,8 +880,8 @@ function StepDeploy({
             {config.name}
           </h2>
           <p className="font-body text-sm text-white/40 mb-8">
-            Your fighter is live. Head to the dashboard to fund, set permissions,
-            and watch them go to work.
+            Your fighter is live with one operating budget for research,
+            demo arena actions, and autonomous decisions.
           </p>
           <button onClick={() => router.push("/dashboard")} className="btn-primary px-10 py-4 text-sm">
             Open Command Centre →
@@ -939,7 +1007,7 @@ function StepDeploy({
           disabled={!walletAddress}
           className="btn-primary px-8 py-3 text-sm disabled:opacity-30 flex items-center gap-2"
         >
-          Deploy Agent →
+          Release Fighter →
         </button>
       </div>
     </div>

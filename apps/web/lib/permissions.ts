@@ -62,7 +62,7 @@ export function getPermissionContext(address: string): StoredPermission | null {
 
     // Validate minimum required shape before trusting the data
     if (
-      typeof stored.context !== "string" ||
+      stored.context == null ||
       typeof stored.expiry !== "number" ||
       typeof stored.sessionAddress !== "string"
     ) {

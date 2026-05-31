@@ -6,15 +6,8 @@ import dynamic from "next/dynamic";
 import Link from "next/link";
 import { parseAbi, parseAbiItem } from "viem";
 import { ConnectWallet } from "@/components/shared/ConnectWallet";
-import { ARENA_ABI, REGISTRY_ABI } from "@/lib/chain";
-import {
-  writeUserContract,
-  ensureUSDCApproval,
-  buildUSDCApprovalCall,
-  sendAutonomousBatch,
-  waitForTx,
-} from "@/lib/wallet-contract";
-import { isPermissionValid } from "@/lib/permissions";
+import { getConnectedWalletAccount, placeUserArenaStake } from "@/lib/wallet-contract";
+import { executePlaceBet } from "@/lib/autonomy/executor";
 
 const StagingArena3D = dynamic(() => import("@/components/lobby/StagingArena3D"), {
   ssr: false,
@@ -190,42 +183,34 @@ function StakeModal({
   const stake = async () => {
     setPhase("signing");
     try {
-      const { getProvider } = await import("@/lib/metamask");
-      const provider = getProvider();
-      if (!provider) throw new Error("Wallet not connected");
-      const accounts = (await provider.request({ method: "eth_accounts" })) as string[];
-      const account = accounts[0] as `0x${string}`;
+      if (!agent.id.startsWith("0x")) {
+        throw new Error("This battle does not accept on-chain stakes");
+      }
 
-      const arenaAddress = process.env.NEXT_PUBLIC_ARENA_CONTRACT as `0x${string}`;
-      const amountWei = BigInt(Math.round(Number(amount) * 1_000_000));
-      const battleIdHex = agent.id as `0x${string}`;
+      const account = await getConnectedWalletAccount();
+      const stakeAmount = Number(amount);
+      const execution = await executePlaceBet({
+        agentOwner: account,
+        battleId: agent.id as `0x${string}`,
+        side,
+        amountUsdc: stakeAmount,
+        isAgentTriggered: false,
+      });
 
-      if (isPermissionValid(account)) {
-        const approvalCall = await buildUSDCApprovalCall(account, arenaAddress, amountWei);
-        const betCall = {
-          address: arenaAddress,
-          abi: ARENA_ABI,
-          functionName: "placeBet",
-          args: [battleIdHex, side, amountWei] as readonly unknown[],
-        };
-        const calls = approvalCall ? [approvalCall, betCall] : [betCall];
-        const txHash = await sendAutonomousBatch(account, calls);
-        await waitForTx(txHash);
-      } else {
-        await ensureUSDCApproval(account, arenaAddress, amountWei);
-        const txHash = await writeUserContract({
-          address: arenaAddress,
-          abi: ARENA_ABI,
-          functionName: "placeBet",
-          args: [battleIdHex, side, amountWei],
+      if (execution.policyError) throw new Error(execution.policyError);
+
+      if (execution.mode !== "autonomous_oneshot") {
+        await placeUserArenaStake({
           account,
+          battleId: agent.id as `0x${string}`,
+          side,
+          amountUSDC: stakeAmount,
         });
-        await waitForTx(txHash);
       }
 
       setPhase("done");
     } catch (err) {
-      console.error("placeBet failed:", err);
+      console.error("placeUserArenaStake failed:", err);
       setPhase("amount");
       alert(err instanceof Error ? err.message : "Transaction failed");
     }

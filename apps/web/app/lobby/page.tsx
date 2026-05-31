@@ -6,10 +6,11 @@ import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { keccak256, encodeAbiParameters, parseAbiParameters, parseAbiItem } from "viem";
 import { ConnectWallet } from "@/components/shared/ConnectWallet";
+import { AutonomyLog } from "@/components/autonomy/AutonomyLog";
 import { HOTTAKEROOMS_ABI } from "@/lib/chain";
 import {
-  writeUserContract,
-  ensureUSDCApproval,
+  sendUserBatch,
+  buildUSDCApprovalCall,
   waitForTx,
 } from "@/lib/wallet-contract";
 
@@ -1389,18 +1390,39 @@ export default function LobbyPage() {
       const roomsAddress = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
       const stakeWei = BigInt(Math.round(room.stake * 1_000_000));
 
-      // Approve USDC for the stake, wait for it to mine before submitting accept
-      const approvalHash = await ensureUSDCApproval(account, roomsAddress, stakeWei);
-      if (approvalHash) await waitForTx(approvalHash);
+      // Route: autonomous (1Shot) vs manual (EIP-5792 batch)
+      const { executeAcceptChallenge } = await import("@/lib/autonomy/executor");
+      const execution = await executeAcceptChallenge({
+        agentOwner: account,
+        roomId: room.id as `0x${string}`,
+        battleId,
+        stakeUsdc: room.stake,
+        bettingDuration: 300n,
+        roundDuration: 120n,
+        maxResearch: 1_000_000n,
+        isAgentTriggered: false,
+      });
 
+      if (execution.policyError) throw new Error(execution.policyError);
+
+      if (execution.mode === "autonomous_oneshot") {
+        // 1Shot executed — no wallet popup.
+        setAcceptTxState("accepting");
+        router.push(`/arena/${battleId}`);
+        return;
+      }
+
+      // No active permission: EIP-5792 batch fallback requires a wallet popup.
       setAcceptTxState("accepting");
-      const txHash = await writeUserContract({
+      const approvalCall = await buildUSDCApprovalCall(account, roomsAddress, stakeWei);
+      const acceptCall = {
         address: roomsAddress,
         abi: HOTTAKEROOMS_ABI,
         functionName: "acceptChallenge",
-        args: [room.id as `0x${string}`, battleId, 300n, 120n, 1000000n],
-        account,
-      });
+        args: [room.id as `0x${string}`, battleId, 300n, 120n, 1000000n] as readonly unknown[],
+      };
+      const calls = approvalCall ? [approvalCall, acceptCall] : [acceptCall];
+      const txHash = await sendUserBatch(account, calls);
       await waitForTx(txHash);
       router.push(`/arena/${battleId}`);
     } catch (err) {
@@ -1443,23 +1465,33 @@ export default function LobbyPage() {
       encodeAbiParameters(parseAbiParameters("string"), ["general"])
     ) as `0x${string}`;
 
-    const challengeCall = {
-      address: roomsAddress,
-      abi: HOTTAKEROOMS_ABI,
-      functionName: "issueChallenge",
-      args: [roomId, topicHash, onChainTopic, categoryHash, stakeWei] as readonly unknown[],
-    };
+    const { executeIssueChallenge } = await import("@/lib/autonomy/executor");
+    const execution = await executeIssueChallenge({
+      agentOwner: account,
+      roomId,
+      topicHash,
+      topicPreview: onChainTopic,
+      categoryHash,
+      stakeUsdc,
+      isAgentTriggered: false,
+    });
 
-    // Challenge creation always uses plain user-signed txs. Never wallet_sendCalls:
-    // issueChallenge requires registry.agentExists_(msg.sender) and ERC-7715 delegation
-    // changes who msg.sender is, causing the check to fail.
-    //
-    // MUST wait for approval to mine before sending issueChallenge — MetaMask simulates
-    // the challenge tx against current chain state where allowance is still 0 otherwise.
-    const approvalHash = await ensureUSDCApproval(account, roomsAddress, stakeWei);
-    if (approvalHash) await waitForTx(approvalHash);
-    const txHash = await writeUserContract({ ...challengeCall, account });
-    await waitForTx(txHash);
+    if (execution.policyError) throw new Error(execution.policyError);
+
+    if (execution.mode !== "autonomous_oneshot") {
+      const challengeCall = {
+        address: roomsAddress,
+        abi: HOTTAKEROOMS_ABI,
+        functionName: "issueChallenge",
+        args: [roomId, topicHash, onChainTopic, categoryHash, stakeWei] as readonly unknown[],
+      };
+
+      // No active permission: EIP-5792 fallback asks the user to sign once.
+      const approvalCall = await buildUSDCApprovalCall(account, roomsAddress, stakeWei);
+      const calls = approvalCall ? [approvalCall, challengeCall] : [challengeCall];
+      const txHash = await sendUserBatch(account, calls);
+      await waitForTx(txHash);
+    }
 
     // Only reach here on success — optimistically add the new room immediately so
     // it appears in "My Open Challenges" without waiting for RPC event indexing.
@@ -1916,10 +1948,10 @@ export default function LobbyPage() {
                     <span className="w-10 h-10 border-2 border-white/10 border-t-clash-gold/70 rounded-full animate-spin" />
                   </div>
                   <p className="font-display text-lg font-bold uppercase text-clash-white mb-2">
-                    {acceptTxState === "approving" ? "Approving USDC…" : "Locking Your Stake…"}
+                    {acceptTxState === "approving" ? "Checking Arena Budget…" : "Locking Your Stake…"}
                   </p>
                   <p className="font-mono text-[10px] text-white/35 uppercase tracking-widest">
-                    {acceptTxState === "approving" ? "Confirm approval in MetaMask" : "Confirm accept in MetaMask"}
+                    {acceptTxState === "approving" ? "1Shot will execute if permission is active" : "No extra wallet popup when budget is active"}
                   </p>
                 </>
               )}
@@ -1927,6 +1959,9 @@ export default function LobbyPage() {
           </motion.div>
         )}
       </AnimatePresence>
+
+      {/* Autonomous execution log — shows 1Shot actions with no wallet popup */}
+      <AutonomyLog />
 
     </main>
   );

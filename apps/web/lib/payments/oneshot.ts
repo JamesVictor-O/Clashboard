@@ -7,7 +7,8 @@
  * Docs: https://docs.1shot.so
  */
 
-const ONESHOT_BASE_URL = "https://api.1shot.so/v1";
+import { getOneShotConfig, requireOneShotConfig } from "@/lib/oneshot/config";
+
 const MOCK_TX_HASH = "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
 
 interface PayVia1ShotParams {
@@ -30,7 +31,7 @@ export interface OneShotExecutionResult {
 }
 
 export interface OneShotPermissionContext {
-  context: `0x${string}`;
+  context: unknown;
   delegationManager: `0x${string}`;
   sessionAddress: `0x${string}`;
   walletAddress: `0x${string}`;
@@ -46,21 +47,24 @@ interface ExecuteWith1ShotParams {
 }
 
 function getApiKey(): string {
-  const key = process.env.ONESHOTAPI_KEY;
-  if (!key) throw new Error("ONESHOTAPI_KEY is not set");
+  const key = requireOneShotConfig().apiKey;
+  if (!key) throw new Error("ONESHOT_API_KEY is not set");
   return key;
 }
 
 async function postOneShot(path: string, body: Record<string, unknown>): Promise<OneShotExecutionResult> {
-  if (!process.env.ONESHOTAPI_KEY) {
+  const config = getOneShotConfig();
+  if (config.mockEnabled) {
     return { status: "mocked", txHash: MOCK_TX_HASH };
   }
+  requireOneShotConfig();
 
-  const response = await fetch(`${ONESHOT_BASE_URL}${path}`, {
+  const response = await fetch(`${config.baseUrl}${path}`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${getApiKey()}`,
+      ...(config.apiSecret ? { "X-1Shot-Api-Secret": config.apiSecret } : {}),
     },
     body: JSON.stringify(body),
   });
@@ -126,18 +130,21 @@ export async function payAgentResearchWith1Shot(
  */
 export async function payVia1Shot(params: PayVia1ShotParams): Promise<string> {
   const { recipient, amount, battleId, reason } = params;
+  const config = requireOneShotConfig();
 
-  const response = await fetch(`${ONESHOT_BASE_URL}/relay`, {
+  const response = await fetch(`${config.baseUrl}/relay`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${getApiKey()}`,
+      ...(config.apiSecret ? { "X-1Shot-Api-Secret": config.apiSecret } : {}),
     },
     body: JSON.stringify({
       to: recipient,
       amount: amount.toString(),
       token: process.env.NEXT_PUBLIC_USDC_ADDRESS,
       chain: process.env.NEXT_PUBLIC_CHAIN_ID ?? "44787",
+      memo: `Clashboard payout ${battleId}`,
       metadata: { battleId, reason },
     }),
   });
@@ -159,12 +166,14 @@ export async function redeemDelegation(
   params: RedeemDelegationParams
 ): Promise<string> {
   const { bettorAddress, amount, battleId, delegationData } = params;
+  const config = requireOneShotConfig();
 
-  const response = await fetch(`${ONESHOT_BASE_URL}/redeem-delegation`, {
+  const response = await fetch(`${config.baseUrl}/redeem-delegation`, {
     method: "POST",
     headers: {
       "Content-Type": "application/json",
       Authorization: `Bearer ${getApiKey()}`,
+      ...(config.apiSecret ? { "X-1Shot-Api-Secret": config.apiSecret } : {}),
     },
     body: JSON.stringify({
       delegator: bettorAddress,
@@ -172,6 +181,7 @@ export async function redeemDelegation(
       token: process.env.NEXT_PUBLIC_USDC_ADDRESS,
       chain: process.env.NEXT_PUBLIC_CHAIN_ID ?? "44787",
       delegationData,
+      memo: `Clashboard delegated arena stake ${battleId}`,
       metadata: { battleId },
     }),
   });

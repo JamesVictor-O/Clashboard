@@ -80,28 +80,16 @@ async function waitForCallsResult(callsId: string): Promise<`0x${string}`> {
   throw new Error("Autonomous transaction not confirmed after 60s");
 }
 
-/**
- * Execute a batch of contract calls autonomously using wallet_sendCalls +
- * the stored ERC-7715 permissionsContext. No MetaMask popup is shown.
- *
- * Falls back to individual eth_sendTransaction calls (with popup) if no
- * valid permission context is found for the account.
- */
-export async function sendAutonomousBatch(
-  account: `0x${string}`,
-  calls: Array<{
-    address: `0x${string}`;
-    abi: Abi;
-    functionName: string;
-    args?: readonly unknown[];
-    value?: bigint;
-  }>
-): Promise<`0x${string}`> {
-  const perm = getPermissionContext(account);
-  const provider = getProvider();
-  if (!provider) throw new Error("Wallet not connected");
+type CallInput = {
+  address: `0x${string}`;
+  abi: Abi;
+  functionName: string;
+  args?: readonly unknown[];
+  value?: bigint;
+};
 
-  const encodedCalls: SendCallsCall[] = calls.map((c) => {
+function encodeCalls(calls: CallInput[]): SendCallsCall[] {
+  return calls.map((c) => {
     const call: SendCallsCall = {
       to: c.address,
       data: encodeFunctionData({ abi: c.abi, functionName: c.functionName, args: c.args ?? [] }),
@@ -109,31 +97,97 @@ export async function sendAutonomousBatch(
     if (c.value) call.value = `0x${c.value.toString(16)}`;
     return call;
   });
+}
 
+/**
+ * Execute a batch of contract calls autonomously using wallet_sendCalls +
+ * the stored ERC-7715 permissionsContext. No MetaMask popup is shown.
+ *
+ * Execution order:
+ *   1. wallet_sendCalls + permissionsContext → fully autonomous, no popup
+ *   2. wallet_sendCalls without permission   → single EIP-5792 batch popup
+ *   3. sequential eth_sendTransaction        → one popup per call (last resort)
+ */
+export async function sendAutonomousBatch(
+  account: `0x${string}`,
+  calls: CallInput[]
+): Promise<`0x${string}`> {
+  const perm = getPermissionContext(account);
+  const provider = getProvider();
+  if (!provider) throw new Error("Wallet not connected");
+
+  const encodedCalls = encodeCalls(calls);
+
+  // Path 1: fully autonomous — ERC-7715 permission, no popup
   if (perm) {
     try {
       const callsId = (await provider.request({
         method: "wallet_sendCalls",
-        params: [
-          {
-            version: "2.0.0",
-            from: account,
-            calls: encodedCalls,
-            capabilities: {
-              permissions: { context: perm.context },
-            },
-          },
-        ],
+        params: [{ version: "2.0.0", from: account, calls: encodedCalls, capabilities: { permissions: { context: perm.context } } }],
       })) as string;
-
       return waitForCallsResult(callsId);
     } catch {
-      // wallet_sendCalls not supported or permission invalid — fall through to manual
+      // permission invalid or wallet_sendCalls not available — fall through
     }
   }
 
-  // Manual: fire each call sequentially with user confirmation
-  // Wait for each to mine before sending the next — prevents allowance simulation issues.
+  // Path 2: EIP-5792 batch without permission — single confirmation popup
+  try {
+    const callsId = (await provider.request({
+      method: "wallet_sendCalls",
+      params: [{ version: "2.0.0", from: account, calls: encodedCalls }],
+    })) as string;
+    return waitForCallsResult(callsId);
+  } catch {
+    // wallet_sendCalls not supported at all — fall through to sequential
+  }
+
+  // Path 3: sequential eth_sendTransaction — one popup per call
+  let lastHash: `0x${string}` = "0x";
+  for (const call of encodedCalls) {
+    const tx: Record<string, unknown> = { from: account, to: call.to, data: call.data };
+    if (call.value) tx.value = call.value;
+    lastHash = (await provider.request({ method: "eth_sendTransaction", params: [tx] })) as `0x${string}`;
+    await waitForTx(lastHash);
+  }
+  return lastHash;
+}
+
+/**
+ * Execute a batch of calls that MUST originate from the user's own EOA
+ * (i.e. contracts that check msg.sender against the registered agent owner —
+ * issueChallenge, acceptChallenge, cancelChallenge).
+ *
+ * These actions can NEVER use the ERC-7715 delegated path because delegation
+ * changes msg.sender to the DelegationManager, breaking agentExists_(msg.sender).
+ *
+ * Execution order:
+ *   1. wallet_sendCalls without permission — single EIP-5792 batch popup
+ *   2. sequential eth_sendTransaction      — one popup per call (fallback)
+ */
+export async function sendUserBatch(
+  account: `0x${string}`,
+  calls: CallInput[]
+): Promise<`0x${string}`> {
+  const provider = getProvider();
+  if (!provider) throw new Error("Wallet not connected");
+
+  const encodedCalls = encodeCalls(calls);
+
+  // Path 1: EIP-5792 batch — all calls in a single confirmation popup
+  try {
+    const callsId = (await provider.request({
+      method: "wallet_sendCalls",
+      params: [{ version: "2.0.0", from: account, calls: encodedCalls }],
+    })) as string;
+    return waitForCallsResult(callsId);
+  } catch {
+    // wallet_sendCalls not supported — fall back to sequential
+  }
+
+  // Path 2: sequential eth_sendTransaction — one popup per call
+  // Must wait for each to mine before the next: approval must land on-chain
+  // before the dependent call or MetaMask simulates against stale allowance.
   let lastHash: `0x${string}` = "0x";
   for (const call of encodedCalls) {
     const tx: Record<string, unknown> = { from: account, to: call.to, data: call.data };
@@ -166,10 +220,39 @@ const ERC20_ABI = parseAbi([
   "function approve(address spender, uint256 amount) returns (bool)",
 ]);
 
+const ARENA_STAKE_ABI = parseAbi([
+  "function placeBet(bytes32 battleId, uint8 side, uint256 amount) external",
+]);
+
 function usdcAddress(): `0x${string}` {
   const addr = process.env.NEXT_PUBLIC_USDC_ADDRESS;
   if (!addr) throw new Error("NEXT_PUBLIC_USDC_ADDRESS is not set");
   return addr as `0x${string}`;
+}
+
+function arenaAddress(): `0x${string}` {
+  const addr = process.env.NEXT_PUBLIC_ARENA_CONTRACT;
+  if (!addr) throw new Error("NEXT_PUBLIC_ARENA_CONTRACT is not set");
+  return addr as `0x${string}`;
+}
+
+function toUSDCUnits(amountUSDC: number): bigint {
+  if (!Number.isFinite(amountUSDC) || amountUSDC <= 0) {
+    throw new Error("Enter a valid USDC amount");
+  }
+  return BigInt(Math.round(amountUSDC * 1_000_000));
+}
+
+export async function getConnectedWalletAccount(): Promise<`0x${string}`> {
+  const provider = getProvider();
+  if (!provider) throw new Error("Wallet not connected");
+
+  // Do not prompt here. Post-forge flows should use the stored ERC-7715 budget
+  // through 1Shot, and manual fallbacks require the wallet to already be connected.
+  const accounts = (await provider.request({ method: "eth_accounts" })) as string[];
+  const account = accounts[0];
+  if (!account) throw new Error("Connect your wallet first");
+  return account as `0x${string}`;
 }
 
 /**
@@ -227,6 +310,37 @@ export async function ensureUSDCApproval(
     args: [spender, amount],
     account: owner,
   });
+}
+
+// ─── Arena staking ────────────────────────────────────────────────────────────
+
+/**
+ * User-driven arena stake. This intentionally uses the user's EOA path, not the
+ * stored ERC-7715 permission path, because placeBet records msg.sender as the
+ * logical bettor. Autonomous 1Shot execution should use placeBetFor server-side.
+ */
+export async function placeUserArenaStake(params: {
+  account: `0x${string}`;
+  battleId: `0x${string}`;
+  side: 1 | 2;
+  amountUSDC: number;
+}): Promise<`0x${string}`> {
+  const amount = toUSDCUnits(params.amountUSDC);
+  const arena = arenaAddress();
+  const approvalCall = await buildUSDCApprovalCall(params.account, arena, amount);
+  const stakeCall = {
+    address: arena,
+    abi: ARENA_STAKE_ABI as Abi,
+    functionName: "placeBet",
+    args: [params.battleId, params.side, amount] as readonly unknown[],
+  };
+
+  const txHash = await sendUserBatch(
+    params.account,
+    approvalCall ? [approvalCall, stakeCall] : [stakeCall]
+  );
+  await waitForTx(txHash);
+  return txHash;
 }
 
 // ─── Wait for tx ──────────────────────────────────────────────────────────────
