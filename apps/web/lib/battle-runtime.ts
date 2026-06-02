@@ -27,8 +27,10 @@ type BattleTuple = readonly [
 
 function mapContractPhase(phase: number): BattlePhase {
   if (phase === 0) return "BETTING";
-  if (phase >= 1 && phase <= 3) return "LIVE";
-  if (phase === 4) return "VERDICT";
+  if (phase === 1) return "ROUND_1";
+  if (phase === 2) return "ROUND_2";
+  if (phase === 3) return "ROUND_3";
+  if (phase === 4) return "JUDGING_READY";
   return "SETTLED";
 }
 
@@ -108,13 +110,11 @@ async function readOnChainBattle(battleId: `0x${string}`): Promise<{
   return { tuple, phaseNum: Number(phase) };
 }
 
-export async function ensureBattleRuntime(battleId: `0x${string}`): Promise<StoredBattle | null> {
-  const existing = battleStore.get(battleId);
-  if (existing) return existing;
-
+export async function syncBattleRuntimeFromChain(battleId: `0x${string}`): Promise<StoredBattle | null> {
   const onChain = await readOnChainBattle(battleId);
   if (!onChain) return null;
 
+  const existing = battleStore.get(battleId);
   const { tuple, phaseNum } = onChain;
   const topic = tuple[15];
   const rubricJson = deterministicRubricJson(battleId, topic);
@@ -160,9 +160,9 @@ export async function ensureBattleRuntime(battleId: `0x${string}`): Promise<Stor
 
   const stored: StoredBattle = {
     battle,
-    rubricPreimage,
-    rounds: [],
-    bets: new Map(),
+    rubricPreimage: existing?.rubricPreimage ?? rubricPreimage,
+    rounds: existing?.rounds ?? [],
+    bets: existing?.bets ?? new Map(),
     phase: mapContractPhase(phaseNum),
   };
 
@@ -170,8 +170,12 @@ export async function ensureBattleRuntime(battleId: `0x${string}`): Promise<Stor
   return stored;
 }
 
+export async function ensureBattleRuntime(battleId: `0x${string}`): Promise<StoredBattle | null> {
+  return syncBattleRuntimeFromChain(battleId);
+}
+
 export async function getBattleSnapshot(battleId: `0x${string}`) {
-  const stored = await ensureBattleRuntime(battleId);
+  const stored = await syncBattleRuntimeFromChain(battleId);
   if (!stored) return null;
 
   const { battle, phase, rounds } = stored;

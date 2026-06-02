@@ -1,10 +1,9 @@
 "use client";
 
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import dynamic from "next/dynamic";
-import { BettingPanel } from "@/components/battle/BettingPanel";
 import type { Battle, BattlePhase } from "@/lib/types";
 
 // ─── 3D Arena (no SSR) ───────────────────────────────────────────────────────
@@ -71,6 +70,17 @@ const DEMO_BATTLE: Battle = {
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 type Phase = "countdown" | "betting" | "live" | "verdict";
+
+function isContractRoundPhase(phase: BattlePhase | null) {
+  return phase === "ROUND_1" || phase === "ROUND_2" || phase === "ROUND_3";
+}
+
+function roundNumberFromPhase(phase: BattlePhase | null) {
+  if (phase === "ROUND_1") return 0;
+  if (phase === "ROUND_2") return 1;
+  if (phase === "ROUND_3") return 2;
+  return 0;
+}
 
 interface DebateRound { a: string; b: string }
 
@@ -586,6 +596,7 @@ function ArgumentPanel({
 
 export default function BattlePage() {
   const { battleId } = useParams<{ battleId: string }>();
+  const router = useRouter();
   const isDemo = !battleId || battleId === "demo" || !battleId.startsWith("0x");
 
   const [phase, setPhase] = useState<Phase>("countdown");
@@ -607,6 +618,7 @@ export default function BattlePage() {
 
   // Real battle data
   const [battle, setBattle] = useState<Battle>(DEMO_BATTLE);
+  const [serverPhase, setServerPhase] = useState<BattlePhase | null>(null);
   const [receivedRounds, setReceivedRounds] = useState<DebateRound[]>(
     isDemo ? DEMO_ROUNDS : []
   );
@@ -617,11 +629,25 @@ export default function BattlePage() {
   useEffect(() => {
     if (isDemo) return;
 
-    fetch(`/api/battle/${battleId}`)
-      .then((r) => (r.ok ? r.json() : null))
-      .then((data) => {
-        if (!data) return;
-        setBattle({
+    let alive = true;
+
+    const loadSnapshot = () => {
+      fetch(`/api/battle/${battleId}`, { cache: "no-store" })
+        .then((r) => (r.ok ? r.json() : null))
+        .then((data) => {
+          if (!alive) return;
+          if (!data) return;
+          if (data.phase === "BETTING") {
+            router.replace("/game-lobby");
+            return;
+          }
+          setServerPhase(data.phase ?? null);
+          if (data.phase === "JUDGING_READY" || data.phase === "SETTLED") {
+            setPhase("verdict");
+          } else if (isContractRoundPhase(data.phase) && receivedRounds.length === 0) {
+            setPhase("betting");
+          }
+          setBattle({
           id: data.id,
           topic: data.topic,
           agentA: data.agentA,
@@ -635,14 +661,23 @@ export default function BattlePage() {
           winner: null,
           createdAt: data.createdAt,
         });
-      })
-      .catch(() => {});
-  }, [battleId, isDemo]);
+        })
+        .catch(() => {});
+    };
+
+    loadSnapshot();
+    const id = window.setInterval(loadSnapshot, 8000);
+    return () => {
+      alive = false;
+      window.clearInterval(id);
+    };
+  }, [battleId, isDemo, router, receivedRounds.length]);
 
   // ─── Connect SSE stream (non-demo) ───────────────────────────────────────
 
   useEffect(() => {
     if (isDemo) return;
+    if (!isContractRoundPhase(serverPhase)) return;
 
     const sse = new EventSource(
       `/api/battle/stream?battleId=${encodeURIComponent(battleId!)}`
@@ -668,7 +703,7 @@ export default function BattlePage() {
     sse.onerror = () => sse.close();
 
     return () => sse.close();
-  }, [battleId, isDemo]);
+  }, [battleId, isDemo, serverPhase]);
 
   // ─── Spawn floating crowd emojis ─────────────────────────────────────────
 
@@ -808,9 +843,13 @@ export default function BattlePage() {
   // ─── Derived ─────────────────────────────────────────────────────────────
 
   const activeRounds = isDemo ? DEMO_ROUNDS : receivedRounds;
+  const displayedRound = isContractRoundPhase(serverPhase)
+    ? roundNumberFromPhase(serverPhase) + 1
+    : roundIndex + 1;
+  const displayedTotalRounds = battle.totalRounds ?? (activeRounds.length || 2);
 
   const bettingPhase: BattlePhase =
-    phase === "betting" ? "BETTING" :
+    phase === "betting" ? "RESEARCH" :
     phase === "live" ? "LIVE" :
     phase === "verdict" ? "VERDICT" : "BETTING";
 
@@ -830,7 +869,7 @@ export default function BattlePage() {
               <span className="flex-shrink-0 flex items-center gap-1.5 bg-clash-gold/15 rounded-full px-2.5 py-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-clash-gold animate-pulse" />
                 <span className="font-display text-[10px] text-clash-gold font-bold uppercase tracking-widest">
-                  {phase === "betting" ? "BETTING" : "LOADING"}
+                  {phase === "betting" ? "WARMUP" : "LOADING"}
                 </span>
               </span>
             )}
@@ -846,7 +885,7 @@ export default function BattlePage() {
             <div className="flex-shrink-0 text-right">
               <div className="font-body text-[10px] text-white/25 uppercase tracking-widest">Round</div>
               <div className="font-display text-sm font-bold text-white">
-                {roundIndex + 1} / {activeRounds.length || 3}
+                {displayedRound} / {displayedTotalRounds}
               </div>
             </div>
           )}
@@ -855,7 +894,7 @@ export default function BattlePage() {
 
       {/* ── Main grid ─────────────────────────────────────────────────────── */}
       <div className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-4 sm:py-5
-                      grid grid-cols-1 xl:grid-cols-[1fr_340px] gap-4 sm:gap-5">
+                      grid grid-cols-1 xl:grid-cols-[1fr_320px] gap-4 sm:gap-5">
 
         {/* Left: Arena + debate */}
         <div className="space-y-4">
@@ -903,7 +942,7 @@ export default function BattlePage() {
                   animate={{ opacity: 1 }}
                   className="font-display text-xs text-clash-gold/50 uppercase tracking-widest"
                 >
-                  Betting window open
+                  Agents entering the arena
                 </motion.div>
               ) : null}
             </AnimatePresence>
@@ -928,10 +967,10 @@ export default function BattlePage() {
                 className="rounded-xl border border-clash-gold/25 bg-clash-gold/05 p-6 text-center"
               >
                 <div className="font-display text-xl font-extrabold text-clash-gold mb-2">
-                  BETTING OPEN
+                  ARENA WARMING UP
                 </div>
                 <p className="font-body text-sm text-white/35 max-w-sm mx-auto">
-                  Place your bets now. The battle begins in moments.
+                  Venice is loading the first arguments. The live show starts in a moment.
                 </p>
               </motion.div>
             ) : null}
@@ -946,13 +985,43 @@ export default function BattlePage() {
           </AnimatePresence>
         </div>
 
-        {/* Right: Betting panel + score */}
+        {/* Right: Live show panel + score */}
         <div className="space-y-4">
-          <BettingPanel
-            battle={battle}
-            phase={bettingPhase}
-            onBetPlaced={() => spawnEmojis(["💰", "🤑", "💸", "🎲"])}
-          />
+          <motion.div
+            initial={{ opacity: 0, x: 14 }}
+            animate={{ opacity: 1, x: 0 }}
+            className="relative overflow-hidden rounded-xl border border-red-500/20 bg-white/[0.025] p-4"
+          >
+            <div className="absolute inset-x-0 top-0 h-[2px] bg-gradient-to-r from-transparent via-red-500 to-transparent" />
+            <div className="flex items-center justify-between gap-3 mb-4">
+              <div>
+                <p className="font-mono text-[9px] uppercase tracking-[0.34em] text-red-400/70">
+                  Live Arena
+                </p>
+                <h2 className="font-display text-lg font-extrabold uppercase text-white/88">
+                  Debate Feed
+                </h2>
+              </div>
+              <motion.span
+                className="h-3 w-3 rounded-full bg-red-500"
+                animate={{ scale: [1, 1.7, 1], opacity: [1, 0.35, 1] }}
+                transition={{ duration: 0.85, repeat: Infinity }}
+              />
+            </div>
+
+            <div className="space-y-3">
+              {[
+                ["State", phase === "live" ? "Live Round" : phase === "verdict" ? "Judging" : "Loading"],
+                ["Round", `${displayedRound} / ${displayedTotalRounds}`],
+                ["Pool", `$${(Number(battle.poolA + battle.poolB) / 1_000_000).toFixed(2)}`],
+              ].map(([label, value]) => (
+                <div key={label} className="flex items-center justify-between border-b border-white/6 pb-2 last:border-b-0 last:pb-0">
+                  <span className="font-mono text-[9px] uppercase tracking-widest text-white/28">{label}</span>
+                  <span className="font-display text-sm font-extrabold uppercase text-white/70">{value}</span>
+                </div>
+              ))}
+            </div>
+          </motion.div>
 
           <AnimatePresence>
             {(phase === "live" || phase === "verdict") && (roundScores.A > 0 || roundScores.B > 0) && (

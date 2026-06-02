@@ -1,4 +1,5 @@
 import { parseAbiItem } from "viem";
+import { blockRanges, getEventScanStartBlock, mapWithConcurrency } from "@/lib/event-scan";
 
 export interface Room {
   id: string;
@@ -34,25 +35,19 @@ export async function fetchRooms(): Promise<Room[]> {
   const roomsAddress = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
 
   const latestBlock = await client.getBlockNumber();
-  // Public RPC caps getLogs at 2 000 blocks per request. Scan sequentially so
-  // the lobby works on public endpoints without tripping rate limits.
-  const TARGET_RANGE = 50000n;
-  const CHUNK = 2000n;
-  const startBlock = latestBlock > TARGET_RANGE ? latestBlock - TARGET_RANGE : 0n;
+  const ranges = blockRanges(getEventScanStartBlock(latestBlock), latestBlock);
   const event = parseAbiItem(
     "event RoomCreated(bytes32 indexed roomId, address indexed creator, uint256 stake, string topicPreview, uint256 expiresAt)"
   );
 
-  const allLogs = [];
-  for (let from = startBlock; from < latestBlock; from += CHUNK) {
-    const to = from + CHUNK - 1n < latestBlock ? from + CHUNK - 1n : latestBlock;
+  const chunks = await mapWithConcurrency(ranges, 4, async ({ fromBlock, toBlock }) => {
     try {
-      const chunk = await client.getLogs({ address: roomsAddress, event, fromBlock: from, toBlock: to });
-      allLogs.push(...chunk);
+      return await client.getLogs({ address: roomsAddress, event, fromBlock, toBlock });
     } catch {
-      // Skip flaky chunks and keep rendering whatever the RPC returned.
+      return [];
     }
-  }
+  });
+  const allLogs = chunks.flat();
 
   const topLogs = [...allLogs].reverse().slice(0, 30);
   const roomResults = await Promise.allSettled(

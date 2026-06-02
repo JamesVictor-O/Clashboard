@@ -2,6 +2,10 @@
 
 export type BattlePhase =
   | "BETTING"
+  | "ROUND_1"
+  | "ROUND_2"
+  | "ROUND_3"
+  | "JUDGING_READY"
   | "RESEARCH"
   | "LIVE"
   | "VERDICT"

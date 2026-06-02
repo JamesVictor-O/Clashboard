@@ -9,6 +9,10 @@ const StreamSchema = z.object({
   rounds: z.number().int().min(1).max(3).default(2),
 });
 
+function isRoundPhase(phase: string) {
+  return phase === "ROUND_1" || phase === "ROUND_2" || phase === "ROUND_3";
+}
+
 function sleep(ms: number) {
   return new Promise<void>((r) => setTimeout(r, ms));
 }
@@ -42,6 +46,15 @@ export async function GET(req: NextRequest) {
 
   if (!stored) {
     return new Response("Battle not found", { status: 404 });
+  }
+  if (stored.phase === "BETTING") {
+    return new Response("Battle is still in betting phase", { status: 409 });
+  }
+  if (stored.phase === "JUDGING_READY" || stored.phase === "SETTLED") {
+    return new Response("Battle debate phase is complete", { status: 409 });
+  }
+  if (!isRoundPhase(stored.phase) && stored.phase !== "RESEARCH" && stored.phase !== "LIVE") {
+    return new Response("Battle is not in an active round", { status: 409 });
   }
 
   const encoder = new TextEncoder();
@@ -158,8 +171,9 @@ export async function GET(req: NextRequest) {
           send("round", round);
         }
 
+        await waitUntil(bettingDeadline + rounds * roundDuration + 0.2);
         send("phase", "DONE");
-        stored.phase = "VERDICT";
+        stored.phase = "JUDGING_READY";
       } catch (err) {
         console.error("Stream error:", err);
         send("error", err instanceof Error ? err.message : "Stream failed");

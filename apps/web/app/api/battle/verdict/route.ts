@@ -24,7 +24,7 @@ export async function POST(req: NextRequest) {
       return NextResponse.json({ error: "Battle not found" }, { status: 404 });
     }
 
-    if (stored.phase !== "VERDICT") {
+    if (stored.phase !== "JUDGING_READY" && stored.phase !== "VERDICT") {
       return NextResponse.json(
         { error: "Battle not ready for verdict" },
         { status: 409 }

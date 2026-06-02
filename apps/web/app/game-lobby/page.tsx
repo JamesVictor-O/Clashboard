@@ -8,6 +8,7 @@ import { parseAbi, parseAbiItem } from "viem";
 import { ConnectWallet } from "@/components/shared/ConnectWallet";
 import { getConnectedWalletAccount, placeUserArenaStake } from "@/lib/wallet-contract";
 import { executePlaceBet } from "@/lib/autonomy/executor";
+import { blockRanges, getEventScanStartBlock, mapWithConcurrency } from "@/lib/event-scan";
 
 const StagingArena3D = dynamic(() => import("@/components/lobby/StagingArena3D"), {
   ssr: false,
@@ -714,16 +715,38 @@ function FeaturedFighterCard({
   const accentB = PERSONA_ACCENT[agent.agentBPersona] ?? "#7C3AED";
   const glowB = PERSONA_GLOW[agent.agentBPersona] ?? "124,58,237";
   const [countdown, setCountdown] = useState(agent.countdown);
+  const [displayStatus, setDisplayStatus] = useState(agent.status);
+  const liveDuration =
+    agent.status === "LOCKED"
+      ? agent.countdown
+      : Math.max(1, (agent.countdown || 0) + 240);
 
   useEffect(() => {
-    if (countdown <= 0) return;
-    const t = setInterval(() => setCountdown(c => Math.max(0, c - 1)), 1000);
-    return () => clearInterval(t);
-  }, [countdown]);
+    setCountdown(agent.countdown);
+    setDisplayStatus(agent.status);
+  }, [agent.countdown, agent.status]);
 
-  const isBetting = agent.status === "MATCHING";
-  const isLive = agent.status === "LOCKED";
-  const isSettling = agent.status === "QUEUED";
+  useEffect(() => {
+    if (displayStatus === "QUEUED") return;
+    const t = setInterval(() => {
+      setCountdown(c => Math.max(0, c - 1));
+    }, 1000);
+    return () => clearInterval(t);
+  }, [displayStatus]);
+
+  useEffect(() => {
+    if (countdown > 0) return;
+    if (displayStatus === "MATCHING") {
+      setDisplayStatus("LOCKED");
+      setCountdown(liveDuration);
+    } else if (displayStatus === "LOCKED") {
+      setDisplayStatus("QUEUED");
+    }
+  }, [countdown, displayStatus, liveDuration]);
+
+  const isBetting = displayStatus === "MATCHING";
+  const isLive = displayStatus === "LOCKED";
+  const isSettling = displayStatus === "QUEUED";
 
   return (
     <motion.div
@@ -798,6 +821,24 @@ function FeaturedFighterCard({
               Entry ${agent.entryFee} USDC
             </span>
           )}
+        </div>
+
+        {/* Hot take */}
+        <div
+          className="relative mb-6 overflow-hidden border px-4 py-3 sm:px-5 sm:py-4"
+          style={{
+            borderColor: "rgba(255,184,0,0.18)",
+            background:
+              "linear-gradient(90deg, rgba(255,184,0,0.075), rgba(255,255,255,0.018), rgba(124,58,237,0.055))",
+          }}
+        >
+          <div className="absolute left-0 top-0 bottom-0 w-[3px] bg-clash-gold" />
+          <p className="font-mono text-[8px] uppercase tracking-[0.32em] text-clash-gold/55 mb-1">
+            Hot take
+          </p>
+          <p className="font-display text-base sm:text-xl font-extrabold uppercase leading-tight text-white/82">
+            {agent.topic}
+          </p>
         </div>
 
         {/* ── VS FIGHTERS ─────────────────────────────────────────────── */}
@@ -875,24 +916,14 @@ function FeaturedFighterCard({
             <p className="font-mono text-[10px] uppercase tracking-widest text-yellow-500/60">Battle complete · Awaiting settlement</p>
           </div>
         ) : isLive ? (
-          <div className="flex gap-3">
-            <button onClick={() => onStake(agent, 1)}
-              className="flex-1 py-3.5 font-display text-xs font-extrabold uppercase tracking-widest relative overflow-hidden transition-all hover:brightness-110 active:scale-[0.97]"
-              style={{ background: accentA, color: "#0A0A0F" }}>
-              <motion.div className="absolute inset-0 bg-white/15" initial={{ x: "-100%" }} whileHover={{ x: "100%" }} transition={{ duration: 0.4 }} />
-              <span className="relative">Stake on {agent.name.split(" ")[0]}</span>
-            </button>
+          <div className="grid grid-cols-1 sm:grid-cols-[1fr_auto_1fr] gap-3">
+            <div className="hidden sm:block border border-white/6 bg-white/[0.015]" />
             <Link href={`/arena/${agent.id}`}
-              className="flex-1 py-3.5 border font-display text-xs font-extrabold uppercase tracking-widest text-center transition-all hover:bg-red-500/8 flex items-center justify-center"
+              className="py-4 px-8 border font-display text-sm font-extrabold uppercase tracking-widest text-center transition-all hover:bg-red-500/8 flex items-center justify-center"
               style={{ borderColor: "rgba(239,68,68,0.3)", color: "#EF4444" }}>
               Watch Live →
             </Link>
-            <button onClick={() => onStake(agent, 2)}
-              className="flex-1 py-3.5 font-display text-xs font-extrabold uppercase tracking-widest relative overflow-hidden transition-all hover:brightness-110 active:scale-[0.97]"
-              style={{ background: accentB, color: "#0A0A0F" }}>
-              <motion.div className="absolute inset-0 bg-white/15" initial={{ x: "-100%" }} whileHover={{ x: "100%" }} transition={{ duration: 0.4 }} />
-              <span className="relative">Stake on {agent.agentBName.split(" ")[0]}</span>
-            </button>
+            <div className="hidden sm:block border border-white/6 bg-white/[0.015]" />
           </div>
         ) : (
           <div className="flex gap-3">
@@ -921,11 +952,10 @@ function FeaturedFighterCard({
 // ─── Queue row (settling / completed) ─────────────────────────────────────────
 
 function QueueRow({
-  agent, rank, onStake, index,
+  agent, rank, index,
 }: {
   agent: StagedAgent;
   rank: number;
-  onStake: (a: StagedAgent, side: 1 | 2) => void;
   index: number;
 }) {
   const accentA = PERSONA_ACCENT[agent.persona] ?? "#FFB800";
@@ -1033,23 +1063,16 @@ function QueueRow({
 
       {/* Actions */}
       <div className="relative col-span-2 lg:col-span-1 flex lg:self-center">
-        <button
-          onClick={() => onStake(agent, 1)}
-          className="w-full lg:w-auto min-w-32 px-6 py-3 font-display text-xs font-extrabold uppercase tracking-widest transition-all hover:brightness-110 active:scale-[0.97] focus-visible:ring-2 focus-visible:ring-clash-gold focus-visible:ring-offset-2 focus-visible:ring-offset-clash-black relative overflow-hidden"
+        <div
+          className="w-full lg:w-auto min-w-32 px-6 py-3 border font-display text-xs font-extrabold uppercase tracking-widest text-center"
           style={{
-            background: `linear-gradient(90deg, ${accentA}, ${accentB})`,
-            color: "#08080D",
-            boxShadow: `0 0 28px rgba(${glowA},0.16)`,
+            borderColor: "rgba(255,255,255,0.09)",
+            color: "rgba(255,255,255,0.34)",
+            background: "rgba(255,255,255,0.018)",
           }}
         >
-          <motion.span
-            className="absolute inset-0 bg-white/20"
-            initial={{ x: "-120%" }}
-            whileHover={{ x: "120%" }}
-            transition={{ duration: 0.45 }}
-          />
-          <span className="relative">Stake</span>
-        </button>
+          Settled
+        </div>
       </div>
     </motion.div>
   );
@@ -1136,9 +1159,7 @@ async function fetchLiveBattles(): Promise<StagedAgent[]> {
   ]);
 
   const latestBlock = await client.getBlockNumber();
-  const CHUNK = 2000n;
-  const RANGE = 50000n;
-  const rangeStart = latestBlock > RANGE ? latestBlock - RANGE : 0n;
+  const ranges = blockRanges(getEventScanStartBlock(latestBlock), latestBlock);
 
   // Sequential chunked getLogs — avoids Base Sepolia public RPC rate limits
   type RawLog = {
@@ -1152,18 +1173,21 @@ async function fetchLiveBattles(): Promise<StagedAgent[]> {
       topic?: string;
     };
   };
-  const allLogs: RawLog[] = [];
-  for (let start = rangeStart; start <= latestBlock; start += CHUNK) {
-    const end = start + CHUNK - 1n < latestBlock ? start + CHUNK - 1n : latestBlock;
+  const chunks = await mapWithConcurrency(ranges, 4, async ({ fromBlock, toBlock }) => {
     try {
       const [currentChunk, legacyChunk] = await Promise.allSettled([
-        client.getLogs({ address: arenaAddress, event: battleCreatedEvent, fromBlock: start, toBlock: end }),
-        client.getLogs({ address: arenaAddress, event: legacyBattleCreatedEvent, fromBlock: start, toBlock: end }),
+        client.getLogs({ address: arenaAddress, event: battleCreatedEvent, fromBlock, toBlock }),
+        client.getLogs({ address: arenaAddress, event: legacyBattleCreatedEvent, fromBlock, toBlock }),
       ]);
-      if (currentChunk.status === "fulfilled") allLogs.push(...(currentChunk.value as unknown as RawLog[]));
-      if (legacyChunk.status === "fulfilled") allLogs.push(...(legacyChunk.value as unknown as RawLog[]));
-    } catch {}
-  }
+      const logs: RawLog[] = [];
+      if (currentChunk.status === "fulfilled") logs.push(...(currentChunk.value as unknown as RawLog[]));
+      if (legacyChunk.status === "fulfilled") logs.push(...(legacyChunk.value as unknown as RawLog[]));
+      return logs;
+    } catch {
+      return [];
+    }
+  });
+  const allLogs = chunks.flat();
 
   const recent = [...allLogs]
     .reverse()
@@ -1349,6 +1373,22 @@ export default function GameLobbyPage() {
       .finally(() => setLoadingAgents(false));
   }, []);
 
+  useEffect(() => {
+    const refresh = () => {
+      fetchLiveBattles()
+        .then(fresh => {
+          if (fresh.length > 0) {
+            setStagedAgents(fresh);
+            saveBattlesCache(fresh);
+          }
+        })
+        .catch(() => {});
+    };
+
+    const id = window.setInterval(refresh, 15000);
+    return () => window.clearInterval(id);
+  }, []);
+
   const arena3DAgents = stagedAgents.map(a => ({
     name: a.name,
     accent: PERSONA_ACCENT[a.persona] ?? "#FFB800",
@@ -1506,7 +1546,7 @@ export default function GameLobbyPage() {
             </div>
             <div className="space-y-2 mb-14">
               {queued.map((a, i) => (
-                <QueueRow key={a.id} agent={a} rank={i + 1} index={i} onStake={handleStake} />
+                <QueueRow key={a.id} agent={a} rank={i + 1} index={i} />
               ))}
             </div>
           </>

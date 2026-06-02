@@ -9,6 +9,7 @@ import { ConnectWallet } from "@/components/shared/ConnectWallet";
 import { AutonomyLog } from "@/components/autonomy/AutonomyLog";
 import { HOTTAKEROOMS_ABI } from "@/lib/chain";
 import { inferChallengeCategory, type Room } from "@/lib/challenges";
+import { blockRanges, getEventScanStartBlock, mapWithConcurrency } from "@/lib/event-scan";
 import {
   sendUserBatch,
   buildUSDCApprovalCall,
@@ -930,25 +931,19 @@ async function fetchRooms(): Promise<Room[]> {
   const roomsAddress = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
 
   const latestBlock = await client.getBlockNumber();
-  // Public RPC caps getLogs at 2 000 blocks per request. Scan sequentially so we don't
-  // hammer the rate limit with 25 simultaneous requests (all would fail silently).
-  const TARGET_RANGE = 50000n;
-  const CHUNK = 2000n;
-  const startBlock = latestBlock > TARGET_RANGE ? latestBlock - TARGET_RANGE : 0n;
+  const ranges = blockRanges(getEventScanStartBlock(latestBlock), latestBlock);
   const event = parseAbiItem(
     "event RoomCreated(bytes32 indexed roomId, address indexed creator, uint256 stake, string topicPreview, uint256 expiresAt)"
   );
 
-  const allLogs = [];
-  for (let from = startBlock; from < latestBlock; from += CHUNK) {
-    const to = from + CHUNK - 1n < latestBlock ? from + CHUNK - 1n : latestBlock;
+  const chunks = await mapWithConcurrency(ranges, 4, async ({ fromBlock, toBlock }) => {
     try {
-      const chunk = await client.getLogs({ address: roomsAddress, event, fromBlock: from, toBlock: to });
-      allLogs.push(...chunk);
+      return await client.getLogs({ address: roomsAddress, event, fromBlock, toBlock });
     } catch {
-      // skip chunks that fail (RPC node quirks) — process whatever we got
+      return [];
     }
-  }
+  });
+  const allLogs = chunks.flat();
 
   const topLogs = [...allLogs].reverse().slice(0, 30);
 
@@ -1415,7 +1410,7 @@ export default function LobbyPage() {
       if (execution.mode === "autonomous_oneshot") {
         // 1Shot executed — no wallet popup.
         setAcceptTxState("accepting");
-        router.push(`/arena/${battleId}`);
+        router.push("/game-lobby");
         return;
       }
 
@@ -1431,7 +1426,7 @@ export default function LobbyPage() {
       const calls = approvalCall ? [approvalCall, acceptCall] : [acceptCall];
       const txHash = await sendUserBatch(account, calls);
       await waitForTx(txHash);
-      router.push(`/arena/${battleId}`);
+      router.push("/game-lobby");
     } catch (err) {
       let msg = "Accept failed";
       if (err instanceof Error) {
