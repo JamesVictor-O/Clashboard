@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
-import { battleStore } from "@/lib/battle-store";
+import { ensureBattleRuntime } from "@/lib/battle-runtime";
 import { runJudge } from "@/lib/agents/judge";
 import { settleBattleOnChain } from "@/lib/chain";
 
@@ -18,7 +18,7 @@ export async function POST(req: NextRequest) {
     }
 
     const { battleId } = parsed.data;
-    const stored = battleStore.get(battleId);
+    const stored = await ensureBattleRuntime(battleId as `0x${string}`);
 
     if (!stored) {
       return NextResponse.json({ error: "Battle not found" }, { status: 404 });
@@ -66,6 +66,7 @@ export async function POST(req: NextRequest) {
       judgeResult,
       settleTxHash,
       winner: stored.battle.winner,
+      winnerSide: judgeResult.winner,
     });
   } catch (err) {
     console.error("verdict error:", err);

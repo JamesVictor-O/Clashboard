@@ -17,6 +17,7 @@
 
 import { encodeFunctionData, parseAbi, parseUnits, type Hex } from "viem";
 import { getOneShotConfig, requireOneShotConfig } from "./config";
+import { decodeDelegations } from "@metamask/smart-accounts-kit/utils";
 
 export const ONESHOT_PUBLIC_RELAYER_MAINNET = "https://relayer.1shotapi.com/relayers";
 export const ONESHOT_PUBLIC_RELAYER_TESTNET = "https://relayer.1shotapi.dev/relayers";
@@ -59,6 +60,7 @@ export interface OneShotExecuteResult {
   status: "submitted" | "confirmed" | "mocked";
   taskId?: `0x${string}`;
   txHash?: `0x${string}`;
+  prefundTxHash?: `0x${string}`;
   actionType: string;
   timestamp: number;
 }
@@ -141,7 +143,23 @@ async function relayerRpc<T>(chainId: number, method: string, params: unknown): 
 }
 
 function normalizePermissionContext(context: unknown): unknown[] {
+  // Already an array of delegation objects — use directly
   if (Array.isArray(context)) return context;
+
+  // Hex string — this is what MetaMask Flask returns as grant.context
+  // Decode it into delegation objects using the Smart Accounts Kit
+  if (typeof context === "string" && context.startsWith("0x")) {
+    try {
+      const delegations = decodeDelegations(context as `0x${string}`);
+      if (Array.isArray(delegations) && delegations.length > 0) {
+        return delegations;
+      }
+    } catch (err) {
+      console.warn("[1Shot] Failed to decode hex permissionContext:", err);
+    }
+  }
+
+  // JSON string array
   if (typeof context === "string") {
     const trimmed = context.trim();
     if (trimmed.startsWith("[")) {
@@ -150,11 +168,13 @@ function normalizePermissionContext(context: unknown): unknown[] {
     }
     if (trimmed.startsWith("{")) return [JSON.parse(trimmed)];
   }
+
+  // Single delegation object
   if (typeof context === "object" && context !== null) return [context];
 
   throw new Error(
     "ERC-7715 permission context is not a 1Shot ERC-7710 delegation chain. " +
-    "Re-release the fighter with a MetaMask/Smart Accounts Kit grant compatible with the public relayer."
+      "Re-release the fighter with a MetaMask/Smart Accounts Kit grant compatible with the public relayer.",
   );
 }
 
@@ -257,10 +277,17 @@ export async function execute1Shot(req: OneShotExecuteRequest): Promise<OneShotE
     })),
   ];
 
+  // ERC20PeriodTransferEnforcer only accepts one ERC-20 transfer execution per
+  // redemption. Keep fee and action prefunds as separate redemption entries.
+  const transactions = executions.map((execution) => ({
+    permissionContext,
+    executions: [execution],
+  }));
+
   const taskId = await relayerRpc<`0x${string}`>(chainId, "relayer_send7710Transaction", {
     chainId: String(chainId),
     context: feeData.context,
-    transactions: [{ permissionContext, executions }],
+    transactions,
   });
 
   const status = await pollStatus(chainId, taskId);

@@ -78,8 +78,8 @@ contract HotTakeRoomsTest is Test {
         usdc.mint(bob,   100 * 1e6);
         usdc.mint(carol, 100 * 1e6);
         // No AgentTreasury deposit needed for autonomous path.
-        // The 1Shot bundle includes USDC.approve(rooms, stake) from the smart account,
-        // so issueChallengeFor / acceptChallengeFor call transferFrom(agentOwner, ...).
+        // The 1Shot bundle includes USDC.transfer(rooms, stake) from the smart account,
+        // so issueChallengeFor / acceptChallengeFor consume prefunded USDC.
     }
 
     // ─── Direct path: issueChallenge ─────────────────────────────────────────
@@ -117,12 +117,11 @@ contract HotTakeRoomsTest is Test {
 
     function test_issueChallengeFor_delegationManager() public {
         // Simulates the 1Shot bundle:
-        //   call 1: alice's smart account calls USDC.approve(rooms, STAKE)
+        //   call 1: alice's smart account calls USDC.transfer(rooms, STAKE)
         //   call 2: DelegationManager calls issueChallengeFor(alice, ...)
-        vm.prank(alice);
-        usdc.approve(address(rooms), STAKE);
-
         uint256 aliceBalBefore = usdc.balanceOf(alice);
+        vm.prank(alice);
+        usdc.transfer(address(rooms), STAKE);
 
         vm.prank(dm);
         rooms.issueChallengeFor(alice, ROOM_ID, TOPIC_HASH, TOPIC, CATEGORY_HASH, STAKE);
@@ -137,9 +136,9 @@ contract HotTakeRoomsTest is Test {
     }
 
     function test_issueChallengeFor_noApproval_reverts() public {
-        // If the bundle is missing the USDC.approve call, transferFrom must revert
+        // If the bundle is missing the USDC.transfer call, prefund consumption must revert
         vm.prank(dm);
-        vm.expectRevert(); // SafeERC20: ERC20 operation did not succeed (or allowance error)
+        vm.expectRevert("Missing prefund");
         rooms.issueChallengeFor(alice, ROOM_ID, TOPIC_HASH, TOPIC, CATEGORY_HASH, STAKE);
     }
 
@@ -149,10 +148,11 @@ contract HotTakeRoomsTest is Test {
         registry.forge("Broke Agent", keccak256("broke-meta"));
         usdc.mint(broke, STAKE - 1); // one wei short of the required stake
         vm.prank(broke);
-        usdc.approve(address(rooms), STAKE);
+        vm.expectRevert();
+        usdc.transfer(address(rooms), STAKE);
 
         vm.prank(dm);
-        vm.expectRevert(); // safeTransferFrom reverts — insufficient USDC balance
+        vm.expectRevert("Missing prefund");
         rooms.issueChallengeFor(broke, ROOM_ID, TOPIC_HASH, TOPIC, CATEGORY_HASH, STAKE);
     }
 
@@ -160,9 +160,9 @@ contract HotTakeRoomsTest is Test {
         vm.prank(alice);
         rooms.authorizeExecutor(agentDM, true);
 
-        // Bundle: approve then call
+        // Bundle: transfer then call
         vm.prank(alice);
-        usdc.approve(address(rooms), STAKE);
+        usdc.transfer(address(rooms), STAKE);
 
         vm.prank(agentDM);
         rooms.issueChallengeFor(alice, ROOM_ID, TOPIC_HASH, TOPIC, CATEGORY_HASH, STAKE);
@@ -181,7 +181,7 @@ contract HotTakeRoomsTest is Test {
         vm.prank(carol);
         rooms.authorizeExecutor(dm, true);
         vm.prank(carol);
-        usdc.approve(address(rooms), STAKE);
+        usdc.transfer(address(rooms), STAKE);
 
         vm.prank(dm);
         vm.expectRevert("Must have an agent to issue challenge");
@@ -192,7 +192,7 @@ contract HotTakeRoomsTest is Test {
         vm.startPrank(alice);
         rooms.authorizeExecutor(agentDM, true);
         rooms.authorizeExecutor(agentDM, false);
-        usdc.approve(address(rooms), STAKE);
+        usdc.transfer(address(rooms), STAKE);
         vm.stopPrank();
 
         vm.prank(agentDM);
@@ -256,11 +256,11 @@ contract HotTakeRoomsTest is Test {
         vm.stopPrank();
 
         // Simulate 1Shot bundle for bob's accept:
-        //   call 1: bob's smart account calls USDC.approve(rooms, STAKE)
+        //   call 1: bob's smart account calls USDC.transfer(rooms, STAKE)
         //   call 2: DelegationManager calls acceptChallengeFor(bob, ...)
         uint256 bobBalBefore = usdc.balanceOf(bob);
         vm.prank(bob);
-        usdc.approve(address(rooms), STAKE);
+        usdc.transfer(address(rooms), STAKE);
 
         vm.prank(dm);
         rooms.acceptChallengeFor(bob, ROOM_ID, BATTLE_ID, BETTING_WINDOW, ROUND_DURATION, 1_000_000);
@@ -279,23 +279,23 @@ contract HotTakeRoomsTest is Test {
         rooms.issueChallenge(ROOM_ID, TOPIC_HASH, TOPIC, CATEGORY_HASH, STAKE);
         vm.stopPrank();
 
-        // Missing USDC.approve in bundle — must revert
+        // Missing USDC.transfer in bundle — must revert
         vm.prank(dm);
-        vm.expectRevert();
+        vm.expectRevert("Missing prefund");
         rooms.acceptChallengeFor(bob, ROOM_ID, BATTLE_ID, BETTING_WINDOW, ROUND_DURATION, 1_000_000);
     }
 
     function test_acceptChallengeFor_fullDelegatedFlow() public {
         // Both sides fully autonomous via DelegationManager — wallet-level spending
-        // Issue side: alice approves + dm calls issueChallengeFor
+        // Issue side: alice transfers + dm calls issueChallengeFor
         vm.prank(alice);
-        usdc.approve(address(rooms), STAKE);
+        usdc.transfer(address(rooms), STAKE);
         vm.prank(dm);
         rooms.issueChallengeFor(alice, ROOM_ID, TOPIC_HASH, TOPIC, CATEGORY_HASH, STAKE);
 
-        // Accept side: bob approves + dm calls acceptChallengeFor
+        // Accept side: bob transfers + dm calls acceptChallengeFor
         vm.prank(bob);
-        usdc.approve(address(rooms), STAKE);
+        usdc.transfer(address(rooms), STAKE);
         vm.prank(dm);
         rooms.acceptChallengeFor(bob, ROOM_ID, BATTLE_ID, BETTING_WINDOW, ROUND_DURATION, 1_000_000);
 
@@ -384,9 +384,9 @@ contract HotTakeRoomsTest is Test {
     }
 
     function test_gas_delegatedIssue() public {
-        // Simulate bundle: approve first (call 1), then issueChallengeFor (call 2)
+        // Simulate bundle: transfer first (call 1), then issueChallengeFor (call 2)
         vm.prank(alice);
-        usdc.approve(address(rooms), STAKE);
+        usdc.transfer(address(rooms), STAKE);
 
         vm.prank(dm);
         uint256 g = gasleft();

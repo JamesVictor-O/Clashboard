@@ -468,12 +468,9 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
     setReleasing(true);
     setReleaseError(null);
     try {
-      const { getProvider, grantPermissions } = await import("@/lib/metamask");
-      const provider = getProvider();
-      if (!provider) throw new Error("Wallet not connected");
-
-      const accounts = (await provider.request({ method: "eth_accounts" })) as string[];
-      const account = accounts[0] as `0x${string}`;
+      const { getSelectedWalletAddress, grantPermissions } = await import("@/lib/metamask");
+      const account = getSelectedWalletAddress();
+      if (!account) throw new Error("Connect your wallet first");
 
       // 24-hour permission window
       const expiry = Math.floor(Date.now() / 1000) + 24 * 3600;
@@ -693,14 +690,9 @@ export default function DashboardPage() {
   useEffect(() => {
     const load = async () => {
       try {
-        const { getProvider } = await import("@/lib/metamask");
-        const provider = getProvider();
-        if (!provider) { setLoading(false); return; }
-
-        const accounts = (await provider.request({ method: "eth_accounts" })) as string[];
-        if (!accounts[0]) { setLoading(false); return; }
-
-        const address = accounts[0] as `0x${string}`;
+        const { getSelectedWalletAddress } = await import("@/lib/metamask");
+        const address = getSelectedWalletAddress();
+        if (!address) { setLoading(false); return; }
 
         // Read live on-chain state from AgentRegistry
         const { getPublicClient, REGISTRY_ABI } = await import("@/lib/chain");

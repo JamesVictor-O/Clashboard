@@ -575,10 +575,8 @@ function StepBudget({
     setLoading(true);
     setError(null);
     try {
-      const eth = (window as unknown as { ethereum?: { request: (a: { method: string }) => Promise<unknown> } }).ethereum;
-      if (!eth) throw new Error("No wallet detected. Install MetaMask Flask.");
-      const accounts = (await eth.request({ method: "eth_accounts" })) as string[];
-      if (!accounts[0]) throw new Error("Connect your wallet first.");
+      const { getSelectedWalletAddress } = await import("@/lib/metamask");
+      if (!getSelectedWalletAddress()) throw new Error("Connect your wallet first.");
 
       onNext();
     } catch (err) {
@@ -1066,19 +1064,13 @@ export default function ForgePage() {
       }
     };
 
-    const init = () => {
-      // Use window.ethereum directly — avoids MetaMask SDK init which pops the
-      // "choose wallet" modal and fails to return the session on page refresh.
-      const eth = typeof window !== "undefined"
-        ? (window as unknown as { ethereum?: { request: (a: { method: string }) => Promise<unknown>; on: (e: string, h: (...a: unknown[]) => void) => void; removeListener: (e: string, h: (...a: unknown[]) => void) => void } }).ethereum
-        : undefined;
+    const init = async () => {
+      const { getProvider, getSelectedWalletAddress } = await import("@/lib/metamask");
+      const eth = getProvider();
       if (!eth) return;
 
-      // eth_accounts never prompts — returns already-connected accounts immediately
-      eth.request({ method: "eth_accounts" }).then((accs) => {
-        const list = accs as string[];
-        if (list[0]) handleAccount(list[0]);
-      }).catch(() => {});
+      const selected = getSelectedWalletAddress();
+      if (selected) handleAccount(selected);
 
       // Stay in sync when the user connects/switches in the nav
       const onAccountsChanged = (accs: unknown) => {
@@ -1086,11 +1078,12 @@ export default function ForgePage() {
         if (list[0]) handleAccount(list[0]);
         else if (mounted) setWalletAddress(null);
       };
-      eth.on("accountsChanged", onAccountsChanged);
-      return () => eth.removeListener("accountsChanged", onAccountsChanged);
+      eth.on?.("accountsChanged", onAccountsChanged);
+      return () => eth.removeListener?.("accountsChanged", onAccountsChanged);
     };
 
-    const cleanup = init();
+    let cleanup: void | (() => void);
+    init().then((fn) => { cleanup = fn; }).catch(() => {});
     return () => {
       mounted = false;
       cleanup?.();

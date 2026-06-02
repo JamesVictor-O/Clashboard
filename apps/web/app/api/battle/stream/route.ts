@@ -1,6 +1,6 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { battleStore } from "@/lib/battle-store";
+import { ensureBattleRuntime } from "@/lib/battle-runtime";
 import { setupBattle, runResearchPhase, runDebateRound } from "@/lib/agents/orchestrator";
 import { submitArgumentOnChain, argContentHash } from "@/lib/chain";
 
@@ -38,7 +38,7 @@ export async function GET(req: NextRequest) {
   }
 
   const { battleId } = parsed.data;
-  const stored = battleStore.get(battleId);
+  const stored = await ensureBattleRuntime(battleId as `0x${string}`);
 
   if (!stored) {
     return new Response("Battle not found", { status: 404 });

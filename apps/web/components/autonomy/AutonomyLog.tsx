@@ -119,14 +119,28 @@ export function AutonomyLog() {
                       </span>
                     </div>
 
-                    {entry.txHash && entry.txHash !== "0x" + "0".repeat(64) && (
+                    {entry.prefundTxHash && entry.prefundTxHash !== "0x" + "0".repeat(64) && (
                       <div className="flex items-center gap-1.5">
-                        <span className="text-[8px] text-white/30 uppercase">Tx</span>
+                        <span className="text-[8px] text-white/30 uppercase">1Shot</span>
+                        <a
+                          href={`https://sepolia.basescan.org/tx/${entry.prefundTxHash}`}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="text-[9px] text-clash-gold/70 hover:text-clash-gold transition-colors"
+                        >
+                          {entry.prefundTxHash.slice(0, 10)}…{entry.prefundTxHash.slice(-6)}
+                        </a>
+                      </div>
+                    )}
+
+                    {entry.txHash && entry.txHash !== entry.prefundTxHash && entry.txHash !== "0x" + "0".repeat(64) && (
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[8px] text-white/30 uppercase">Action</span>
                         <a
                           href={`https://sepolia.basescan.org/tx/${entry.txHash}`}
                           target="_blank"
                           rel="noreferrer"
-                          className="text-[9px] text-clash-gold/70 hover:text-clash-gold transition-colors"
+                          className="text-[9px] text-white/45 hover:text-white/75 transition-colors"
                         >
                           {entry.txHash.slice(0, 10)}…{entry.txHash.slice(-6)}
                         </a>
@@ -159,9 +173,9 @@ export function AutonomyLog() {
                 <p className="text-[9px] text-green-400/80 leading-relaxed">
                   ⚡ Agent action executed by 1Shot — no wallet popup required.
                 </p>
-                {latest.txHash && (
+                {latest.prefundTxHash && (
                   <p className="text-[8px] text-white/30 mt-1">
-                    Tx: {latest.txHash.slice(0, 18)}…
+                    1Shot: {latest.prefundTxHash.slice(0, 18)}…
                   </p>
                 )}
               </div>

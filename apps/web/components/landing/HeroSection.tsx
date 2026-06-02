@@ -32,12 +32,10 @@ export function HeroSection() {
   useEffect(() => {
     const check = async () => {
       try {
-        const { getProvider } = await import("@/lib/metamask");
-        const provider = getProvider();
-        if (!provider) return;
-        const accounts = (await provider.request({ method: "eth_accounts" })) as string[];
-        if (accounts[0]) {
-          setAgentExists(!!localStorage.getItem(`clashboard_agent_${accounts[0]}`));
+        const { getSelectedWalletAddress } = await import("@/lib/metamask");
+        const account = getSelectedWalletAddress();
+        if (account) {
+          setAgentExists(!!localStorage.getItem(`clashboard_agent_${account}`));
         }
       } catch {}
     };

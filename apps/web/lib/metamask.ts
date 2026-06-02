@@ -1,48 +1,106 @@
 "use client";
 
-import { MetaMaskSDK, type SDKProvider } from "@metamask/sdk";
 import { createWalletClient, custom, parseUnits } from "viem";
 import { baseSepolia, base } from "viem/chains";
 import { erc7715ProviderActions } from "@metamask/smart-accounts-kit/actions";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
-// ─── SDK Singleton ────────────────────────────────────────────────────────────
+// ─── Provider Helpers ─────────────────────────────────────────────────────────
 
-let _sdk: MetaMaskSDK | null = null;
-let _provider: SDKProvider | null = null;
+export type EthereumProvider = Parameters<typeof custom>[0] & {
+  request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
+  on?: (event: string, handler: (...args: unknown[]) => void) => void;
+  removeListener?: (event: string, handler: (...args: unknown[]) => void) => void;
+  selectedAddress?: string;
+  isMetaMask?: boolean;
+  isPhantom?: boolean;
+  providers?: EthereumProvider[];
+};
 
-export function getMetaMaskSDK(): MetaMaskSDK {
-  if (!_sdk) {
-    _sdk = new MetaMaskSDK({
-      dappMetadata: {
-        name: "Clashboard",
-        url: process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
-        iconUrl: `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/icon.png`,
-        base64Icon: undefined,
-      },
-    });
-  }
-  return _sdk;
+let _provider: EthereumProvider | null = null;
+let _discoveredProviders: EthereumProvider[] = [];
+
+type Eip6963ProviderDetail = {
+  info?: { name?: string; rdns?: string };
+  provider?: EthereumProvider;
+};
+
+function rememberProvider(provider: EthereumProvider | undefined) {
+  if (!provider || _discoveredProviders.includes(provider)) return;
+  _discoveredProviders.push(provider);
+}
+
+function isMetaMaskProvider(provider: EthereumProvider | undefined): provider is EthereumProvider {
+  return Boolean(provider?.isMetaMask && !provider?.isPhantom);
+}
+
+function pickMetaMaskProvider(providers: EthereumProvider[]): EthereumProvider | null {
+  return (
+    providers.find(isMetaMaskProvider) ??
+    providers.find((p) => Boolean(p.isMetaMask)) ??
+    null
+  );
+}
+
+function injectedProviders(): EthereumProvider[] {
+  if (typeof window === "undefined") return [];
+  const eth = (window as unknown as { ethereum?: EthereumProvider }).ethereum;
+  const providers = eth?.providers ?? [];
+  return [..._discoveredProviders, ...providers, ...(eth ? [eth] : [])];
+}
+
+async function discoverMetaMaskProvider(): Promise<EthereumProvider | null> {
+  const immediate = pickMetaMaskProvider(injectedProviders());
+  if (immediate) return immediate;
+
+  if (typeof window === "undefined") return null;
+
+  return new Promise((resolve) => {
+    const found: EthereumProvider[] = [];
+    const onAnnounce = (event: Event) => {
+      const detail = (event as CustomEvent<Eip6963ProviderDetail>).detail;
+      if (detail?.provider) {
+        rememberProvider(detail.provider);
+        const name = `${detail.info?.name ?? ""} ${detail.info?.rdns ?? ""}`.toLowerCase();
+        if (isMetaMaskProvider(detail.provider) || name.includes("metamask")) {
+          found.push(detail.provider);
+        }
+      }
+    };
+
+    window.addEventListener("eip6963:announceProvider", onAnnounce);
+    window.dispatchEvent(new Event("eip6963:requestProvider"));
+
+    window.setTimeout(() => {
+      window.removeEventListener("eip6963:announceProvider", onAnnounce);
+      resolve(pickMetaMaskProvider(found) ?? found[0] ?? pickMetaMaskProvider(injectedProviders()));
+    }, 120);
+  });
 }
 
 export async function connectWallet(): Promise<string[]> {
-  const sdk = getMetaMaskSDK();
-  const provider = sdk.getProvider();
+  const provider = await discoverMetaMaskProvider();
   if (!provider) throw new Error("MetaMask provider not available");
   _provider = provider;
   const accounts = (await provider.request({ method: "eth_requestAccounts" })) as string[];
   return accounts;
 }
 
-export function getProvider(): SDKProvider | null {
+export function getProvider(): EthereumProvider | null {
   if (_provider) return _provider;
-  // Use window.ethereum directly — avoids MetaMask SDK initialization which
-  // triggers the "choose wallet" modal on every provider request.
-  if (typeof window !== "undefined") {
-    const eth = (window as unknown as { ethereum?: SDKProvider }).ethereum;
-    if (eth) return eth;
+  // Prefer MetaMask's injected provider directly. Multi-wallet aggregators can
+  // show a wallet chooser even for "silent" account checks.
+  const provider = pickMetaMaskProvider(injectedProviders());
+  if (provider) {
+    _provider = provider;
+    return provider;
   }
   return null;
+}
+
+export function getSelectedWalletAddress(): `0x${string}` | null {
+  const selected = getProvider()?.selectedAddress;
+  return selected && selected.startsWith("0x") ? (selected as `0x${string}`) : null;
 }
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -223,8 +281,7 @@ export async function grantPermissions(
   if (typeof window === "undefined") throw new Error("Not in browser");
 
   const chain = getActiveChain();
-  const ethereum = (window as unknown as { ethereum: unknown }).ethereum as
-    Parameters<typeof custom>[0];
+  const ethereum = await discoverMetaMaskProvider();
 
   if (!ethereum) {
     throw new Error(

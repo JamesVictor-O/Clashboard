@@ -384,6 +384,8 @@ contract ClashboardTest is Test {
 
     function testPlaceBet_agentBettor() public {
         _createBattle();
+        vm.prank(carol);
+        usdc.transfer(address(arena), 3 * 1e6);
         vm.prank(scheduler);
         arena.placeBetFor(carol, BATTLE_ID, 2, 3 * 1e6);
         (, uint256 betAmount) = arena.getUserBet(BATTLE_ID, carol);
@@ -411,7 +413,7 @@ contract ClashboardTest is Test {
         address erin = makeAddr("erin");
         usdc.mint(erin, BET_AMOUNT);
         vm.prank(erin);
-        usdc.approve(address(arena), BET_AMOUNT);
+        usdc.transfer(address(arena), BET_AMOUNT);
 
         vm.prank(scheduler);
         arena.placeBetFor(erin, BATTLE_ID, 1, BET_AMOUNT);
@@ -547,6 +549,8 @@ contract ClashboardTest is Test {
         usdc.approve(address(arena), 20 * 1e6);
         arena.placeBet(BATTLE_ID, 1, 20 * 1e6);
         vm.stopPrank();
+        vm.prank(carol);
+        usdc.transfer(address(arena), 10 * 1e6);
         vm.prank(scheduler);
         arena.placeBetFor(carol, BATTLE_ID, 2, 10 * 1e6);
 
@@ -606,6 +610,8 @@ contract ClashboardTest is Test {
     function testSettleBattle_noWinningBettors() public {
         _createBattle();
         // Carol bets on losing side (B), alice wins
+        vm.prank(carol);
+        usdc.transfer(address(arena), 3 * 1e6);
         vm.prank(scheduler);
         arena.placeBetFor(carol, BATTLE_ID, 2, 3 * 1e6);
 

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { motion } from "framer-motion";
-import { grantPermissions } from "@/lib/metamask";
+import { getSelectedWalletAddress, grantPermissions } from "@/lib/metamask";
 import { storePermissionContext } from "@/lib/permissions";
 
 interface BudgetScreenProps {
@@ -25,11 +25,8 @@ export function BudgetScreen({ onConfirm, onCancel }: BudgetScreenProps) {
     setError(null);
 
     try {
-      const eth = (window as unknown as { ethereum?: { request: (a: { method: string }) => Promise<unknown> } }).ethereum;
-      if (!eth) throw new Error("Wallet not connected");
-      const accounts = (await eth.request({ method: "eth_accounts" })) as string[];
-      if (!accounts[0]) throw new Error("No wallet connected");
-      const account = accounts[0];
+      const account = getSelectedWalletAddress();
+      if (!account) throw new Error("Connect your wallet first");
 
       const expiry = Math.floor(Date.now() / 1000) + 24 * 60 * 60;
 

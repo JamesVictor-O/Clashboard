@@ -65,6 +65,7 @@ export const ARENA_ABI = parseAbi([
 
   // Spectator betting (public)
   "function placeBet(bytes32 battleId, uint8 side, uint256 amount) external",
+  "function placeBetFor(address bettor, bytes32 battleId, uint8 side, uint256 amount) external",
 
   // Views
   "function getBattlePhase(bytes32 battleId) external view returns (uint8 phase)",
@@ -99,7 +100,9 @@ export const TREASURY_ABI = parseAbi([
 
 export const HOTTAKEROOMS_ABI = parseAbi([
   "function issueChallenge(bytes32 roomId, bytes32 topicHash, string topicPreview, bytes32 categoryHash, uint256 stake) external",
+  "function issueChallengeFor(address agentOwner, bytes32 roomId, bytes32 topicHash, string topicPreview, bytes32 categoryHash, uint256 stake) external",
   "function acceptChallenge(bytes32 roomId, bytes32 battleId, uint256 bettingDuration, uint256 roundDuration, uint256 maxResearch) external",
+  "function acceptChallengeFor(address agentOwner, bytes32 roomId, bytes32 battleId, uint256 bettingDuration, uint256 roundDuration, uint256 maxResearch) external",
   "function cancelChallenge(bytes32 roomId) external",
   "function authorizeExecutor(address executor, bool allowed) external",
   "function getRoom(bytes32 roomId) external view returns ((uint8 state, address creator, address challenger, uint256 stake, bytes32 topicHash, string topicPreview, bytes32 battleId, uint256 createdAt, uint256 expiresAt, bytes32 categoryHash))",
@@ -154,6 +157,12 @@ function getContractAddress(): `0x${string}` {
 function getRegistryAddress(): `0x${string}` {
   const addr = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT;
   if (!addr) throw new Error("NEXT_PUBLIC_REGISTRY_CONTRACT is not set");
+  return addr as `0x${string}`;
+}
+
+function getHotTakeRoomsAddress(): `0x${string}` {
+  const addr = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT;
+  if (!addr) throw new Error("NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT is not set");
   return addr as `0x${string}`;
 }
 
@@ -333,6 +342,81 @@ export async function settleBattleOnChain(params: {
   });
 
   return hash;
+}
+
+export async function issueChallengeForOnChain(params: {
+  agentOwner: `0x${string}`;
+  roomId: `0x${string}`;
+  topicHash: `0x${string}`;
+  topicPreview: string;
+  categoryHash: `0x${string}`;
+  stakeWei: bigint;
+}): Promise<string> {
+  const wallet = getWalletClient();
+  const chain = getActiveChain();
+
+  return wallet.writeContract({
+    address: getHotTakeRoomsAddress(),
+    abi: HOTTAKEROOMS_ABI,
+    functionName: "issueChallengeFor",
+    args: [
+      params.agentOwner,
+      params.roomId,
+      params.topicHash,
+      params.topicPreview,
+      params.categoryHash,
+      params.stakeWei,
+    ],
+    chain,
+    account: getPlatformAccount(),
+  });
+}
+
+export async function acceptChallengeForOnChain(params: {
+  agentOwner: `0x${string}`;
+  roomId: `0x${string}`;
+  battleId: `0x${string}`;
+  bettingDuration: bigint;
+  roundDuration: bigint;
+  maxResearch: bigint;
+}): Promise<string> {
+  const wallet = getWalletClient();
+  const chain = getActiveChain();
+
+  return wallet.writeContract({
+    address: getHotTakeRoomsAddress(),
+    abi: HOTTAKEROOMS_ABI,
+    functionName: "acceptChallengeFor",
+    args: [
+      params.agentOwner,
+      params.roomId,
+      params.battleId,
+      params.bettingDuration,
+      params.roundDuration,
+      params.maxResearch,
+    ],
+    chain,
+    account: getPlatformAccount(),
+  });
+}
+
+export async function placeBetForOnChain(params: {
+  bettor: `0x${string}`;
+  battleId: `0x${string}`;
+  side: 1 | 2;
+  amountWei: bigint;
+}): Promise<string> {
+  const wallet = getWalletClient();
+  const chain = getActiveChain();
+
+  return wallet.writeContract({
+    address: getContractAddress(),
+    abi: ARENA_ABI,
+    functionName: "placeBetFor",
+    args: [params.bettor, params.battleId, params.side, params.amountWei],
+    chain,
+    account: getPlatformAccount(),
+  });
 }
 
 // ─── Read Helpers ─────────────────────────────────────────────────────────────

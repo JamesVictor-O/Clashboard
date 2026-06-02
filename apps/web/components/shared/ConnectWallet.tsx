@@ -2,17 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-
-type EthProvider = {
-  request: (args: { method: string; params?: unknown[] }) => Promise<unknown>;
-  on: (event: string, handler: (...args: unknown[]) => void) => void;
-  removeListener: (event: string, handler: (...args: unknown[]) => void) => void;
-};
-
-function getEthereum(): EthProvider | undefined {
-  if (typeof window === "undefined") return undefined;
-  return (window as unknown as { ethereum?: EthProvider }).ethereum;
-}
+import { connectWallet, getProvider, getSelectedWalletAddress } from "@/lib/metamask";
 
 /**
  * Wallet connect button that uses window.ethereum directly.
@@ -25,33 +15,30 @@ export function ConnectWallet() {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
-    const eth = getEthereum();
+    const eth = getProvider();
     if (!eth) return;
 
-    // eth_accounts never pops a prompt — returns already-connected accounts
-    eth.request({ method: "eth_accounts" }).then((accs) => {
-      const list = accs as string[];
-      if (list[0]) setAddress(list[0]);
-    }).catch(() => {});
+    const selected = getSelectedWalletAddress();
+    if (selected) setAddress(selected);
 
     // Keep UI in sync when user switches or disconnects in MetaMask
     const onAccountsChanged = (accs: unknown) => {
       const list = accs as string[];
       setAddress(list[0] ?? null);
     };
-    eth.on("accountsChanged", onAccountsChanged);
-    return () => eth.removeListener("accountsChanged", onAccountsChanged);
+    eth.on?.("accountsChanged", onAccountsChanged);
+    return () => eth.removeListener?.("accountsChanged", onAccountsChanged);
   }, []);
 
   const handleConnect = async () => {
     setIsConnecting(true);
     setError(null);
     try {
-      const eth = getEthereum();
-      if (!eth) throw new Error("No wallet detected. Install MetaMask Flask.");
+      const eth = getProvider();
+      if (!eth) throw new Error("MetaMask not detected. Install MetaMask Flask.");
 
-      // eth_requestAccounts asks the user to connect — no MetaMask SDK modal
-      const accounts = (await eth.request({ method: "eth_requestAccounts" })) as string[];
+      // Only this button click may request accounts.
+      const accounts = await connectWallet();
       if (!accounts[0]) throw new Error("No accounts returned");
       setAddress(accounts[0]);
 

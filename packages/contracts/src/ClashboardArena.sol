@@ -95,6 +95,7 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
     mapping(bytes32 => mapping(uint8 => mapping(uint8 => bool)))    public argSubmitted;
 
     address public scheduler;
+    uint256 public accountedBalance;
 
     uint256 public constant PLATFORM_FEE_BPS   = 500;   // 5%
     uint256 public constant WINNER_FIGHTER_BPS  = 7000;  // 70%
@@ -239,6 +240,7 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         if (_entryFee > 0) {
             USDC.safeTransferFrom(_agentA, address(this), _entryFee);
             USDC.safeTransferFrom(_agentB, address(this), _entryFee);
+            _recordAccountedUSDC(_entryFee * 2);
         }
     }
 
@@ -264,6 +266,7 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
             _bettingDuration, _roundDuration, HACKATHON_TOTAL_ROUNDS,
             _maxResearch, _topicHash, _topic, _categoryHash
         );
+        _consumePrefundedUSDC(_entryFee * 2);
     }
 
     function createBattleFromRoom(
@@ -285,6 +288,7 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
             _bettingDuration, _roundDuration, _totalRounds,
             _maxResearch, _topicHash, _topic, _categoryHash
         );
+        _consumePrefundedUSDC(_entryFee * 2);
     }
 
     function _validateAndCreate(
@@ -357,9 +361,7 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         require(getBattlePhase(_battleId) == BattlePhase.BETTING, "Betting window closed");
         require(registry.agentExists_(_agentOwner), "Agent not registered");
 
-        if (battle.entryFee > 0) {
-            USDC.safeTransferFrom(_agentOwner, address(this), battle.entryFee);
-        }
+        if (battle.entryFee > 0) _consumePrefundedUSDC(battle.entryFee);
     }
 
     // ─── Betting ──────────────────────────────────────────────────────────────
@@ -372,12 +374,12 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         uint8   _side,
         uint256 _amount
     ) external nonReentrant battleExists(_battleId) {
-        _placeBet(_battleId, msg.sender, _side, _amount, false);
+        _placeBet(_battleId, msg.sender, _side, _amount, false, false);
     }
 
     /**
      * @notice Place a delegated bet for a bettor. Intended for 1Shot bundles:
-     *         call 1: USDC.approve(ClashboardArena, amount)
+     *         call 1: USDC.transfer(ClashboardArena, amount)
      *         call 2: ClashboardArena.placeBetFor(bettor, battleId, side, amount)
      */
     function placeBetFor(
@@ -386,11 +388,11 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         uint8   _side,
         uint256 _amount
     ) external onlyScheduler nonReentrant battleExists(_battleId) {
-        _placeBet(_battleId, _bettor, _side, _amount, true);
+        _placeBet(_battleId, _bettor, _side, _amount, true, true);
     }
 
     /**
-     * @notice Deprecated. Use placeBetFor() with ERC-7715/1Shot approval bundles.
+     * @notice Deprecated. Use placeBetFor() with ERC-7715/1Shot prefund bundles.
      */
     function agentPlaceBet(
         bytes32 _battleId,
@@ -398,7 +400,7 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         uint8   _side,
         uint256 _amount
     ) external onlyScheduler nonReentrant battleExists(_battleId) {
-        _placeBet(_battleId, _agentOwner, _side, _amount, true);
+        _placeBet(_battleId, _agentOwner, _side, _amount, true, true);
     }
 
     function _placeBet(
@@ -406,7 +408,8 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         address _bettor,
         uint8   _side,
         uint256 _amount,
-        bool    _rejectFighter
+        bool    _rejectFighter,
+        bool    _prefunded
     ) internal {
         Battle storage battle = battles[_battleId];
 
@@ -419,7 +422,12 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
             require(battle.agentA != _bettor && battle.agentB != _bettor, "Fighter cannot bet on own battle");
         }
 
-        USDC.safeTransferFrom(_bettor, address(this), _amount);
+        if (_prefunded) {
+            _consumePrefundedUSDC(_amount);
+        } else {
+            USDC.safeTransferFrom(_bettor, address(this), _amount);
+            _recordAccountedUSDC(_amount);
+        }
         bets[_battleId][_bettor] = Bet(_side, _amount);
 
         if (_side == 1) {
@@ -530,9 +538,9 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         uint256 fighterWinner   = (fighterPool * WINNER_FIGHTER_BPS) / BPS_DENOMINATOR;
         uint256 fighterToSpect  = fighterPool - fighterPlatform - fighterWinner;
 
-        USDC.safeTransfer(platformTreasury, fighterPlatform);
+        _sendAccountedUSDC(platformTreasury, fighterPlatform);
         // Winnings go directly to the winner's wallet — no treasury hop needed.
-        USDC.safeTransfer(battle.winner, fighterWinner);
+        _sendAccountedUSDC(battle.winner, fighterWinner);
 
         // ── Spectator pool ─────────────────────────────────────────────────
         uint256 totalSpectPool = battle.spectatorPoolA + battle.spectatorPoolB + fighterToSpect;
@@ -540,7 +548,7 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         uint256 spectPrize     = totalSpectPool - spectPlatform;
 
         if (spectPlatform > 0) {
-            USDC.safeTransfer(platformTreasury, spectPlatform);
+            _sendAccountedUSDC(platformTreasury, spectPlatform);
         }
 
         uint256        winningSpectPool;
@@ -562,7 +570,7 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
                 _payBettor(bettor, (stake * spectPrize) / winningSpectPool);
             }
         } else if (winningSpectPool == 0 && spectPrize > 0) {
-            USDC.safeTransfer(platformTreasury, spectPrize);
+            _sendAccountedUSDC(platformTreasury, spectPrize);
         }
 
         registry.updateReputation(battle.agentA, _winnerSide == 1, _judgeScore, fighterWinner);
@@ -583,8 +591,8 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
         battle.state = BattleState.CANCELLED;
 
         // Return entry fees directly to each agent's wallet.
-        USDC.safeTransfer(battle.agentA, battle.fighterPoolA);
-        USDC.safeTransfer(battle.agentB, battle.fighterPoolB);
+        _sendAccountedUSDC(battle.agentA, battle.fighterPoolA);
+        _sendAccountedUSDC(battle.agentB, battle.fighterPoolB);
 
         _refundBettors(_battleId, _bettorsA[_battleId]);
         _refundBettors(_battleId, _bettorsB[_battleId]);
@@ -710,7 +718,25 @@ contract ClashboardArena is Ownable, ReentrancyGuard {
 
     function _payBettor(address _bettor, uint256 _amount) internal {
         if (_amount == 0) return;
-        USDC.safeTransfer(_bettor, _amount);
+        _sendAccountedUSDC(_bettor, _amount);
+    }
+
+    function _consumePrefundedUSDC(uint256 _amount) internal {
+        if (_amount == 0) return;
+        uint256 available = USDC.balanceOf(address(this)) - accountedBalance;
+        require(available >= _amount, "Missing prefund");
+        accountedBalance += _amount;
+    }
+
+    function _recordAccountedUSDC(uint256 _amount) internal {
+        accountedBalance += _amount;
+    }
+
+    function _sendAccountedUSDC(address _to, uint256 _amount) internal {
+        if (_amount == 0) return;
+        require(accountedBalance >= _amount, "Accounted underflow");
+        accountedBalance -= _amount;
+        USDC.safeTransfer(_to, _amount);
     }
 
     function _refundBettors(bytes32 _battleId, address[] storage _bettors) internal {

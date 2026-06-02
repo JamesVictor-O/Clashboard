@@ -71,6 +71,7 @@ export interface ExecutionLogEntry {
   amountUsdc: number;
   mode: ExecutionMode;
   txHash?: `0x${string}`;
+  prefundTxHash?: `0x${string}`;
   status: "pending" | "success" | "failed";
   reason?: string; // policy failure reason
   timestamp: number;
@@ -161,7 +162,12 @@ export async function executeIssueChallenge(
       });
 
       recordSpend(params.agentOwner, params.stakeUsdc);
-      pushLog({ ...logEntry, status: "success", txHash: result.txHash });
+      pushLog({
+        ...logEntry,
+        status: "success",
+        txHash: result.txHash,
+        prefundTxHash: result.prefundTxHash,
+      });
       return { mode, result };
     } catch (err) {
       const reason = err instanceof Error ? err.message : "1Shot execution failed";
@@ -169,8 +175,6 @@ export async function executeIssueChallenge(
       throw err;
     }
   }
-
-  // Manual path — return mode so caller can handle wallet interaction
   pushLog({ ...logEntry, status: "pending" });
   return { mode };
 }
@@ -249,7 +253,12 @@ export async function executeAcceptChallenge(
       });
 
       recordSpend(params.agentOwner, params.stakeUsdc);
-      pushLog({ ...logEntry, status: "success", txHash: result.txHash });
+      pushLog({
+        ...logEntry,
+        status: "success",
+        txHash: result.txHash,
+        prefundTxHash: result.prefundTxHash,
+      });
       return { mode, result };
     } catch (err) {
       const reason = err instanceof Error ? err.message : "1Shot execution failed";
@@ -327,7 +336,12 @@ export async function executePlaceBet(
       });
 
       recordSpend(params.agentOwner, params.amountUsdc);
-      pushLog({ ...logEntry, status: "success", txHash: result.txHash });
+      pushLog({
+        ...logEntry,
+        status: "success",
+        txHash: result.txHash,
+        prefundTxHash: result.prefundTxHash,
+      });
       return { mode, result };
     } catch (err) {
       const reason = err instanceof Error ? err.message : "1Shot execution failed";

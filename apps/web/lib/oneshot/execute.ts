@@ -53,15 +53,14 @@ export interface PlaceBetParams {
 // ─── Executors ────────────────────────────────────────────────────────────────
 
 /**
- * Issue a challenge autonomously via 1Shot.
- * Calls HotTakeRooms.issueChallengeFor(agentOwner, ...) through DelegationManager.
- * USDC stays in the user's wallet until the 1Shot bundle executes.
+ * Prefund a challenge autonomously via 1Shot.
+ * The server route calls HotTakeRooms.issueChallengeFor after the transfer confirms.
  */
 export async function issueChallengeWith1Shot(
   params: IssueChallengeParams
 ): Promise<OneShotExecuteResult> {
-  // Bundle: [USDC.approve(hotTakeRooms, stake), issueChallengeFor(agentOwner, ...)]
-  // USDC stays in wallet until execution — no AgentTreasury required.
+  // Permission redemption: USDC.transfer(hotTakeRooms, stake)
+  // The ERC-7715 erc20-token-periodic enforcer permits transfers, not approvals.
   const calls = buildIssueChallengeForCall(params);
   return execute1Shot({
     permissionContext: params.permissionContext,
@@ -71,7 +70,10 @@ export async function issueChallengeWith1Shot(
     metadata: {
       agentOwner: params.agentOwner,
       roomId: params.roomId,
+      topicHash: params.topicHash,
       topicPreview: params.topicPreview,
+      categoryHash: params.categoryHash,
+      stakeWei: params.stakeWei.toString(),
       stakeUsdc: Number(params.stakeWei) / 1e6,
     },
     memo: `Issue Clashboard challenge ${params.roomId}`,
@@ -79,14 +81,13 @@ export async function issueChallengeWith1Shot(
 }
 
 /**
- * Accept a challenge autonomously via 1Shot.
- * Calls HotTakeRooms.acceptChallengeFor(agentOwner, ...) through DelegationManager.
- * USDC stays in the user's wallet until the 1Shot bundle executes.
+ * Prefund challenge acceptance autonomously via 1Shot.
+ * The server route calls HotTakeRooms.acceptChallengeFor after the transfer confirms.
  */
 export async function acceptChallengeWith1Shot(
   params: AcceptChallengeParams
 ): Promise<OneShotExecuteResult> {
-  // Bundle: [USDC.approve(hotTakeRooms, room.stake), acceptChallengeFor(agentOwner, ...)]
+  // Permission redemption: USDC.transfer(hotTakeRooms, room.stake)
   // stakeWei = room.stake read off-chain via getRoom(roomId) before calling this.
   const calls = buildAcceptChallengeForCall(params);
   return execute1Shot({
@@ -98,6 +99,10 @@ export async function acceptChallengeWith1Shot(
       agentOwner: params.agentOwner,
       roomId: params.roomId,
       battleId: params.battleId,
+      bettingDuration: params.bettingDuration.toString(),
+      roundDuration: params.roundDuration.toString(),
+      maxResearch: params.maxResearch.toString(),
+      stakeWei: params.stakeWei.toString(),
       stakeUsdc: Number(params.stakeWei) / 1e6,
     },
     memo: `Accept Clashboard challenge ${params.roomId}`,
@@ -105,10 +110,8 @@ export async function acceptChallengeWith1Shot(
 }
 
 /**
- * Place a bet autonomously via 1Shot.
- * Calls ClashboardArena.placeBetFor(agentOwner, battleId, side, amount)
- * through the authorized 1Shot relayer target.
- * USDC approval + bet are batched atomically — no wallet popup.
+ * Prefund an arena stake autonomously via 1Shot.
+ * The server route calls ClashboardArena.placeBetFor after the transfer confirms.
  */
 export async function placeBetWith1Shot(
   params: PlaceBetParams
@@ -123,6 +126,7 @@ export async function placeBetWith1Shot(
       agentOwner: params.agentOwner,
       battleId: params.battleId,
       side: params.side,
+      amountWei: params.amountWei.toString(),
       amountUsdc: Number(params.amountWei) / 1e6,
     },
     memo: `Place Clashboard arena stake on ${params.battleId}`,

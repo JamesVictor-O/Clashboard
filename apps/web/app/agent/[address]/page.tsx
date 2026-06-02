@@ -7,6 +7,7 @@ import { AgentCard } from "@/components/agent/AgentCard";
 import { AgentWallet } from "@/components/agent/AgentWallet";
 import { ConnectWallet } from "@/components/shared/ConnectWallet";
 import { BattleCard } from "@/components/battle/BattleCard";
+import { AgentOpenChallenges } from "@/components/challenges/AgentOpenChallenges";
 import type { AgentConfig, Battle } from "@/lib/types";
 
 export default function AgentProfilePage() {
@@ -86,6 +87,8 @@ export default function AgentProfilePage() {
               }}
               showFull
             />
+
+            <AgentOpenChallenges ownerAddress={address} />
 
             {/* Stats */}
             <div className="card">

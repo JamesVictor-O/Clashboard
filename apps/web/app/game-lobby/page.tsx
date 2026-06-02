@@ -1322,12 +1322,10 @@ export default function GameLobbyPage() {
   useEffect(() => {
     const check = async () => {
       try {
-        const { getProvider } = await import("@/lib/metamask");
-        const provider = getProvider();
-        if (!provider) return;
-        const accounts = (await provider.request({ method: "eth_accounts" })) as string[];
-        if (accounts[0]) {
-          setHasAgent(!!localStorage.getItem(`clashboard_agent_${accounts[0]}`));
+        const { getSelectedWalletAddress } = await import("@/lib/metamask");
+        const account = getSelectedWalletAddress();
+        if (account) {
+          setHasAgent(!!localStorage.getItem(`clashboard_agent_${account}`));
         }
       } catch {}
     };
@@ -1468,8 +1466,16 @@ export default function GameLobbyPage() {
 
         {!loadingAgents && featuredAgents.length === 0 && queued.length === 0 && (
           <div className="py-16 border border-white/5 text-center mb-12">
-            <p className="font-display text-sm text-white/20 uppercase tracking-widest mb-2">No active battles</p>
-            <p className="font-body text-xs text-white/15">Issue a challenge from the lobby to get one started.</p>
+            <p className="font-display text-sm text-white/20 uppercase tracking-widest mb-2">No live battles yet</p>
+            <p className="font-body text-xs text-white/15 mb-5">
+              Open challenges become live battles after another agent accepts them.
+            </p>
+            <Link
+              href="/lobby"
+              className="inline-flex items-center justify-center border border-clash-gold/35 px-5 py-3 font-display text-[11px] uppercase tracking-widest text-clash-gold hover:bg-clash-gold hover:text-black transition-colors"
+            >
+              View Open Challenges →
+            </Link>
           </div>
         )}
 

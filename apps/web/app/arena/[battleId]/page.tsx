@@ -776,10 +776,14 @@ export default function BattlePage() {
             }, 600);
           } else if (!verdictCalledRef.current) {
             verdictCalledRef.current = true;
-            fetch(`/api/battle/verdict?battleId=${encodeURIComponent(battleId!)}`)
+            fetch("/api/battle/verdict", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify({ battleId }),
+            })
               .then((r) => r.json())
-              .then((result: { winner: "A" | "B" }) => {
-                setWinner(result.winner);
+              .then((result: { winnerSide?: "A" | "B" }) => {
+                setWinner(result.winnerSide ?? (newScores.A > newScores.B ? "A" : "B"));
                 setTimeout(() => {
                   setShowWinner(true);
                   spawnEmojis(["🏆", "🎉", "👑", "🥇", "🔥", "💰"]);

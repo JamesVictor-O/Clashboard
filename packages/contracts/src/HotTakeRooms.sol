@@ -22,19 +22,19 @@ import "./ClashboardArena.sol";
  *
  *      DELEGATED (autonomous / 1Shot, no wallet popup):
  *        issueChallengeFor(agentOwner, ...)  — caller must be authorized executor;
- *        acceptChallengeFor(agentOwner, ...) —   USDC from agentOwner's wallet via pre-approval
+ *        acceptChallengeFor(agentOwner, ...) —   USDC prefunded by the 1Shot bundle
  *
  *      ERC-7715 wallet-level spending model:
  *        The delegated path does NOT require a pre-funded AgentTreasury.
- *        Instead, the 1Shot bundle includes a USDC.approve call executed from the
+ *        Instead, the 1Shot bundle includes a USDC.transfer call executed from the
  *        user's smart account (via ERC-7710 delegation), followed by the challenge
  *        call. This mirrors exactly how placeBet works autonomously:
  *
- *          bundle call 1: USDC.approve(hotTakeRooms, stake)   ← from smart account
- *          bundle call 2: issueChallengeFor(agentOwner, ...)  ← calls transferFrom(agentOwner)
+ *          bundle call 1: USDC.transfer(hotTakeRooms, stake)  ← from smart account
+ *          bundle call 2: issueChallengeFor(agentOwner, ...)  ← consumes prefunded stake
  *
  *        The ERC-7715 erc20-token-periodic caveat enforces the daily USDC spend cap.
- *        Funds stay in the user's wallet until the moment of execution. No escrow needed.
+ *        Funds move only inside the delegated execution bundle. No AgentTreasury needed.
  *
  *      Authorization hierarchy (checked in isAuthorizedExecutor):
  *        1. delegationManager — the ERC-7710 DelegationManager address, set by owner.
@@ -76,6 +76,7 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
 
     mapping(bytes32 => Room) public rooms;
     uint256 public totalRooms;
+    uint256 public escrowedBalance;
 
     /**
      * @notice ERC-7710 DelegationManager — globally trusted executor.
@@ -240,7 +241,7 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
         room.state      = RoomState.LOCKED;
 
         // Transfer both stakes to Arena — these become the fighter pool directly.
-        USDC.safeTransfer(address(arena), room.stake * 2);
+        _sendEscrowedUSDC(address(arena), room.stake * 2);
 
         arena.createBattleFromRoom(
             _battleId,
@@ -256,6 +257,22 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
         );
 
         emit RoomAccepted(_roomId, _agentOwner, _battleId);
+    }
+
+    function _consumePrefundedUSDC(uint256 _amount) internal {
+        uint256 available = USDC.balanceOf(address(this)) - escrowedBalance;
+        require(available >= _amount, "Missing prefund");
+        escrowedBalance += _amount;
+    }
+
+    function _recordEscrowedUSDC(uint256 _amount) internal {
+        escrowedBalance += _amount;
+    }
+
+    function _sendEscrowedUSDC(address _to, uint256 _amount) internal {
+        require(escrowedBalance >= _amount, "Escrow underflow");
+        escrowedBalance -= _amount;
+        USDC.safeTransfer(_to, _amount);
     }
 
     // ─── Issue challenge — direct path ────────────────────────────────────────
@@ -275,6 +292,7 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
         _validateAndCreateRoom(msg.sender, _roomId, _topicHash, _topicPreview, _categoryHash, _stake);
         // Pull stake from the user's wallet (requires prior USDC.approve)
         USDC.safeTransferFrom(msg.sender, address(this), _stake);
+        _recordEscrowedUSDC(_stake);
     }
 
     // ─── Issue challenge — delegated path ─────────────────────────────────────
@@ -287,11 +305,11 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
      *      USDC comes directly from agentOwner's wallet — no AgentTreasury required.
      *
      *      Before calling this, the 1Shot bundle must include:
-     *        call N-1: USDC.approve(address(this), _stake)   ← executed from smart account
+     *        call N-1: USDC.transfer(address(this), _stake)  ← executed from smart account
      *        call N:   issueChallengeFor(agentOwner, ...)    ← this function
      *
      *      The ERC-7715 erc20-token-periodic caveat caps total daily USDC flow.
-     *      Funds remain in the user's wallet until this transferFrom executes.
+     *      This function consumes the prefunded amount instead of calling approve/transferFrom.
      */
     function issueChallengeFor(
         address _agentOwner,
@@ -306,9 +324,7 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
             "Not authorized executor"
         );
         _validateAndCreateRoom(_agentOwner, _roomId, _topicHash, _topicPreview, _categoryHash, _stake);
-        // Pull stake from agentOwner's wallet — allowance set by the preceding
-        // USDC.approve call in the 1Shot bundle. No AgentTreasury required.
-        USDC.safeTransferFrom(_agentOwner, address(this), _stake);
+        _consumePrefundedUSDC(_stake);
     }
 
     // ─── Issue challenge — treasury path (legacy scheduler) ──────────────────
@@ -332,6 +348,7 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
             _agentOwner, _stake, address(this),
             AgentTreasury.SpendPurpose.OTHER, bytes32(0), 0
         );
+        _recordEscrowedUSDC(_stake);
     }
 
     // ─── Accept challenge — direct path ───────────────────────────────────────
@@ -350,6 +367,7 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
     ) external nonReentrant {
         // Pull challenger's matching stake from their wallet first
         USDC.safeTransferFrom(msg.sender, address(this), rooms[_roomId].stake);
+        _recordEscrowedUSDC(rooms[_roomId].stake);
         _validateAndAcceptRoom(msg.sender, _roomId, _battleId, _bettingDuration, _roundDuration, _maxResearch);
     }
 
@@ -362,7 +380,7 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
      *      USDC comes directly from agentOwner's wallet — no AgentTreasury required.
      *
      *      Before calling this, the 1Shot bundle must include:
-     *        call N-1: USDC.approve(address(this), room.stake)  ← from smart account
+     *        call N-1: USDC.transfer(address(this), room.stake) ← from smart account
      *        call N:   acceptChallengeFor(agentOwner, ...)      ← this function
      *
      *      room.stake is readable off-chain before bundle construction via getRoom(roomId).
@@ -380,9 +398,7 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
             "Not authorized executor"
         );
         uint256 stake = rooms[_roomId].stake;
-        // Pull stake from agentOwner's wallet — allowance set by the preceding
-        // USDC.approve call in the 1Shot bundle. No AgentTreasury required.
-        USDC.safeTransferFrom(_agentOwner, address(this), stake);
+        _consumePrefundedUSDC(stake);
         _validateAndAcceptRoom(_agentOwner, _roomId, _battleId, _bettingDuration, _roundDuration, _maxResearch);
     }
 
@@ -402,7 +418,7 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
         );
 
         room.state = RoomState.CANCELLED;
-        USDC.safeTransfer(room.creator, room.stake);
+        _sendEscrowedUSDC(room.creator, room.stake);
 
         emit RoomCancelled(_roomId, msg.sender);
     }
@@ -418,7 +434,7 @@ contract HotTakeRooms is Ownable, ReentrancyGuard {
         require(block.timestamp >= room.expiresAt,     "Room has not expired yet");
 
         room.state = RoomState.CANCELLED;
-        USDC.safeTransfer(room.creator, room.stake);
+        _sendEscrowedUSDC(room.creator, room.stake);
 
         emit RoomExpired(_roomId);
     }

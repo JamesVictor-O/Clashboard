@@ -8,25 +8,12 @@ import { keccak256, encodeAbiParameters, parseAbiParameters, parseAbiItem } from
 import { ConnectWallet } from "@/components/shared/ConnectWallet";
 import { AutonomyLog } from "@/components/autonomy/AutonomyLog";
 import { HOTTAKEROOMS_ABI } from "@/lib/chain";
+import { inferChallengeCategory, type Room } from "@/lib/challenges";
 import {
   sendUserBatch,
   buildUSDCApprovalCall,
   waitForTx,
 } from "@/lib/wallet-contract";
-
-// ─── Types ────────────────────────────────────────────────────────────────────
-
-interface Room {
-  id: string;
-  topic: string;
-  creatorName: string;
-  creatorAddress: string;
-  stake: number;
-  state: "WAITING" | "LOCKED" | "SETTLED";
-  createdAt: number;
-  category: string;
-  bettors: number;
-}
 
 // Rooms are fetched live from on-chain RoomCreated events
 
@@ -109,14 +96,20 @@ function ChallengeCard({
   index,
   onAccept,
   hasAgent,
+  walletAddress,
 }: {
   room: Room;
   index: number;
   onAccept: (room: Room) => void;
   hasAgent?: boolean | null;
+  walletAddress?: string | null;
 }) {
   const cat = CATEGORY_COLORS[room.category] ?? CATEGORY_COLORS.Custom;
   const isWaiting = room.state === "WAITING";
+  const isCreator =
+    !!walletAddress &&
+    room.creatorAddress.toLowerCase() === walletAddress.toLowerCase();
+  const canAccept = isWaiting && !isCreator && hasAgent !== false;
   const isHot = room.bettors > 25;
   const age = Math.floor((Date.now() - room.createdAt) / 60000);
   const ageLabel = age < 60 ? `${age}m ago` : `${Math.floor(age / 60)}h ago`;
@@ -129,9 +122,9 @@ function ChallengeCard({
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.045, duration: 0.24, ease: [0, 0, 0.2, 1] }}
-      whileHover={isWaiting ? { y: -2 } : undefined}
-      className="group relative overflow-hidden cursor-pointer"
-      onClick={() => isWaiting && hasAgent !== false && onAccept(room)}
+      whileHover={canAccept ? { y: -2 } : undefined}
+      className={`group relative overflow-hidden ${canAccept ? "cursor-pointer" : "cursor-default"}`}
+      onClick={() => canAccept && onAccept(room)}
     >
       {/* ── Base + atmosphere ──────────────────────────────────────── */}
       <div
@@ -380,7 +373,24 @@ function ChallengeCard({
         {/* Action column */}
         <div className="relative flex items-center justify-stretch md:justify-center px-5 sm:px-6 pb-5 md:py-5">
           {isWaiting ? (
-            hasAgent === false ? (
+            isCreator ? (
+              <div
+                className="w-full md:w-[156px] min-h-12 inline-flex items-center justify-center gap-2 border font-mono text-[10px] uppercase tracking-widest px-5 sm:px-6 py-3 whitespace-nowrap"
+                style={{
+                  background: "rgba(255,255,255,0.018)",
+                  borderColor: `rgba(${cat.glow},0.20)`,
+                  color: `rgba(${cat.glow},0.58)`,
+                }}
+              >
+                <motion.span
+                  className="w-1.5 h-1.5 rounded-full"
+                  style={{ background: cat.fg }}
+                  animate={{ opacity: [1, 0.25, 1] }}
+                  transition={{ duration: 1.4, repeat: Infinity }}
+                />
+                Waiting
+              </div>
+            ) : hasAgent === false ? (
               <Link
                 href="/forge"
                 onClick={(e) => e.stopPropagation()}
@@ -1305,14 +1315,6 @@ export default function LobbyPage() {
       .catch(() => {})
       .finally(() => setLoadingRooms(false));
 
-    // Use window.ethereum directly — MetaMask SDK has init overhead that causes it to
-    // appear disconnected on page refresh even when MetaMask still holds the session.
-    const eth = typeof window !== "undefined"
-      ? (window as unknown as { ethereum?: { request: (a: { method: string }) => Promise<unknown>; on: (e: string, h: (...a: unknown[]) => void) => void; removeListener: (e: string, h: (...a: unknown[]) => void) => void } }).ethereum
-      : undefined;
-
-    if (!eth) return;
-
     const checkAgent = async (addr: string) => {
       try {
         const { getPublicClient, REGISTRY_ABI } = await import("@/lib/chain");
@@ -1331,23 +1333,32 @@ export default function LobbyPage() {
       }
     };
 
-    eth.request({ method: "eth_accounts" }).then(async (accs) => {
-      const list = accs as string[];
-      if (!list[0]) return;
-      setWalletAddress(list[0]);
-      checkAgent(list[0]);
-    }).catch(() => {});
+    let cleanup: void | (() => void);
+    const initWallet = async () => {
+      const { getProvider, getSelectedWalletAddress } = await import("@/lib/metamask");
+      const eth = getProvider();
+      if (!eth) return;
 
-    // Keep wallet state in sync — account switch or disconnect in MetaMask
-    const onAccountsChanged = (accs: unknown) => {
-      const list = accs as string[];
-      const addr = list[0] ?? null;
-      setWalletAddress(addr);
-      setHasAgent(null);
-      if (addr) checkAgent(addr);
+      const selected = getSelectedWalletAddress();
+      if (selected) {
+        setWalletAddress(selected);
+        checkAgent(selected);
+      }
+
+      // Keep wallet state in sync — account switch or disconnect in MetaMask
+      const onAccountsChanged = (accs: unknown) => {
+        const list = accs as string[];
+        const addr = list[0] ?? null;
+        setWalletAddress(addr);
+        setHasAgent(null);
+        if (addr) checkAgent(addr);
+      };
+      eth.on?.("accountsChanged", onAccountsChanged);
+      return () => eth.removeListener?.("accountsChanged", onAccountsChanged);
     };
-    eth.on("accountsChanged", onAccountsChanged);
-    return () => eth.removeListener("accountsChanged", onAccountsChanged);
+
+    initWallet().then((fn) => { cleanup = fn; }).catch(() => {});
+    return () => cleanup?.();
   }, []);
 
   const waitingRooms = rooms.filter((r) => r.state === "WAITING").length;
@@ -1356,10 +1367,6 @@ export default function LobbyPage() {
   const filtered = rooms.filter((r) =>
     filter === "ALL" ? true : r.state === filter,
   );
-
-  function handleCancelRoom(roomId: string) {
-    setRooms((prev) => prev.filter((r) => r.id !== roomId));
-  }
 
   function handleAccept(room: Room) {
     if (hasAgent === false) {
@@ -1495,12 +1502,6 @@ export default function LobbyPage() {
 
     // Only reach here on success — optimistically add the new room immediately so
     // it appears in "My Open Challenges" without waiting for RPC event indexing.
-    const catGuess =
-      /sport|football|soccer|basketball|nba|nfl|kobe|lebron|messi|ronaldo/i.test(topic) ? "Sports" :
-      /music|rap|hip.?hop|wizkid|burna|singer|song/i.test(topic) ? "Music" :
-      /crypto|bitcoin|eth|web3|defi/i.test(topic) ? "Crypto" :
-      /tech|iphone|android|ai|apple|google/i.test(topic) ? "Tech" : "Culture";
-
     setRooms((prev) => [
       {
         id: roomId,
@@ -1510,7 +1511,7 @@ export default function LobbyPage() {
         stake: stakeUsdc,
         state: "WAITING" as const,
         createdAt: Date.now(),
-        category: catGuess,
+        category: inferChallengeCategory(topic),
         bettors: 0,
       },
       ...prev,
@@ -1777,13 +1778,6 @@ export default function LobbyPage() {
           </button>
         </motion.div>
 
-        {/* ── My open challenges ────────────────────────────────────────────── */}
-        <MyOpenChallenges
-          rooms={rooms}
-          walletAddress={walletAddress}
-          onCancel={handleCancelRoom}
-        />
-
         {/* ── Filter strip (mobile) ────────────────────────────────────────── */}
         <div className="sm:hidden flex gap-1 mb-5 border border-white/6 p-0.5 overflow-hidden">
           {["ALL", "WAITING", "LOCKED"].map((f) => (
@@ -1833,6 +1827,7 @@ export default function LobbyPage() {
                       index={i}
                       onAccept={handleAccept}
                       hasAgent={hasAgent}
+                      walletAddress={walletAddress}
                     />
                   ))}
                 </AnimatePresence>
