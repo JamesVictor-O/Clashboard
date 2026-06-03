@@ -1,49 +1,46 @@
 /**
- * x402 Axios client setup.
+ * Official x402 buyer setup for autonomous research purchases.
  *
- * x402 is a payment protocol for HTTP APIs — clients automatically
- * pay for data endpoints using on-chain micropayments.
- *
- * Agents use this to autonomously purchase research data during battles.
+ * MetaMask's x402 adapter creates ERC-7710 payment payloads. @x402/fetch
+ * handles the HTTP cycle: request -> 402 -> create payment -> retry.
  */
 
-import axios, { type AxiosInstance } from "axios";
-// x402-axios intercepts 402 Payment Required responses and auto-pays
-import { withPaymentInterceptor } from "x402-axios";
+import { getAgentSession } from "@/lib/metamask";
+import { getResearchPermissionContext } from "@/lib/permissions";
+import {
+  createResearchBuyer as createResearchBuyerCore,
+  createResearchBuyerFromSession,
+  type ResearchBuyerParams,
+} from "@/lib/x402/buyer";
 
-/**
- * Create an x402-enabled axios client for a specific agent address.
- * The client will automatically handle 402 Payment Required responses
- * by signing and submitting micropayments on behalf of the agent.
- */
-export function createX402Client(agentAddress: `0x${string}`): AxiosInstance {
-  const client = axios.create({
-    timeout: 15_000,
-    headers: {
-      "X-Agent-Address": agentAddress,
-    },
-  });
+export { type ResearchBuyerParams };
+export const createResearchBuyer = createResearchBuyerCore;
 
-  // Attach x402 payment interceptor
-  // withPaymentInterceptor requires a viem WalletClient for signing payments
-  // In production, pass the agent's wallet client here
-  // For scaffold: interceptor is attached but signing requires wallet setup
-  // withPaymentInterceptor(client, walletClient);
-
-  return client;
+export interface StoredResearchBuyerParams {
+  walletAddress: `0x${string}`;
+  fetchImpl?: typeof fetch;
 }
 
-/**
- * Shared x402 client for server-side use (platform wallet pays).
- * Used when the platform itself needs to fetch data.
- */
-let _platformClient: AxiosInstance | null = null;
-
-export function getPlatformX402Client(): AxiosInstance {
-  if (!_platformClient) {
-    _platformClient = createX402Client(
-      (process.env.PLATFORM_TREASURY_ADDRESS ?? "0x0") as `0x${string}`
-    );
+export function createResearchBuyerFromStoredGrant(
+  params: StoredResearchBuyerParams
+): typeof fetch {
+  if (typeof window === "undefined") {
+    throw new Error("Stored x402 research buyer is only available in the browser");
   }
-  return _platformClient;
+
+  const permission = getResearchPermissionContext(params.walletAddress);
+  if (!permission) {
+    throw new Error("No active x402 research permission found. Re-release your fighter.");
+  }
+
+  const session = getAgentSession(params.walletAddress);
+  if (!session) {
+    throw new Error("No agent session found. Re-release your fighter.");
+  }
+
+  return createResearchBuyerFromSession({
+    permission,
+    sessionPrivateKey: session.sessionPrivateKey,
+    fetchImpl: params.fetchImpl,
+  });
 }

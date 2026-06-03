@@ -14,6 +14,8 @@ import { validateAutonomousAction, remainingOperatingBudgetUSDC } from "@/lib/po
 import { researchStore } from "@/lib/research-store";
 import { inferResearchCategory, researchEndpointForCategory } from "@/lib/research-pricing";
 import { battleStore } from "@/lib/battle-store";
+import { getServerResearchSession } from "@/lib/agent-research-session-store";
+import { createResearchBuyerFromSession } from "@/lib/x402/buyer";
 import type {
   Battle,
   AgentConfig,
@@ -155,7 +157,11 @@ async function researchForAgent(
 
   try {
     const artifact = shouldUseMarketplace
-      ? buyMarketplaceArtifact(agentId, availableArtifacts[0])
+      ? await buyMarketplaceArtifact({
+          appUrl,
+          agentId,
+          artifact: availableArtifacts[0],
+        })
       : await buyExternalResearchForStream({
           appUrl,
           agentId,
@@ -181,11 +187,19 @@ async function researchForAgent(
   agentConfig.researchContext = contextParts.join("\n\n");
 }
 
-function buyMarketplaceArtifact(agentId: string, artifact: ResearchArtifact): ResearchArtifact {
-  // TODO(hackathon): when the SSE runtime receives server-side ERC-7715 metadata,
-  // redeem the grant here with payAgentResearchWith1Shot before marking purchase.
-  researchStore.markPurchased(agentId, artifact.id);
-  return artifact;
+async function buyMarketplaceArtifact(params: {
+  appUrl: string;
+  agentId: string;
+  artifact: ResearchArtifact;
+}): Promise<ResearchArtifact> {
+  const url = `${params.appUrl}/api/agent-research/buy?artifactId=${encodeURIComponent(params.artifact.id)}&buyerAgentId=${encodeURIComponent(params.agentId)}`;
+  const response = await researchFetchForAgent(params.agentId)(url);
+  if (!response.ok) {
+    throw new Error(`A2A research purchase failed: ${response.status}`);
+  }
+
+  const data = (await response.json()) as { artifact: ResearchArtifact };
+  return data.artifact;
 }
 
 async function buyExternalResearchForStream(params: {
@@ -196,17 +210,28 @@ async function buyExternalResearchForStream(params: {
 }): Promise<ResearchArtifact> {
   const endpoint = researchEndpointForCategory(params.category);
   const url = `${params.appUrl}${endpoint}?topic=${encodeURIComponent(params.topic)}&ownerAgentId=${encodeURIComponent(params.agentId)}&ownerWalletAddress=${params.agentId}`;
-  const response = await fetch(url);
+  const response = await researchFetchForAgent(params.agentId)(url);
   if (!response.ok) {
     throw new Error(`Research endpoint ${endpoint} failed: ${response.status}`);
   }
 
   const data = (await response.json()) as { artifact: ResearchArtifact };
-  // TODO(hackathon): this route returns an x402-shaped artifact today. Once the
-  // backend owns the active ERC-7715 permission context, payResearchWith1Shot
-  // should be called before returning the artifact to the agent.
   researchStore.markPurchased(params.agentId, data.artifact.id);
   return data.artifact;
+}
+
+function researchFetchForAgent(agentId: string): typeof fetch {
+  if (process.env.X402_ENFORCE !== "true") return fetch;
+
+  const session = getServerResearchSession(agentId);
+  if (!session) {
+    throw new Error("No backend x402 research session registered for agent");
+  }
+
+  return createResearchBuyerFromSession({
+    permission: session.researchPermission,
+    sessionPrivateKey: session.sessionPrivateKey,
+  });
 }
 
 function researchSourceName(category: ResearchArtifact["category"]): string {

@@ -3,6 +3,8 @@ import { z } from "zod";
 import { researchStore } from "@/lib/research-store";
 import { validateAutonomousAction } from "@/lib/policy";
 import { payAgentResearchWith1Shot } from "@/lib/payments/oneshot";
+import { X402_NETWORK_ID } from "@/lib/x402/facilitator";
+import { withX402Payment } from "@/lib/x402/next";
 import type { PermissionMetadata } from "@/lib/types";
 
 const BuySchema = z.object({
@@ -12,6 +14,56 @@ const BuySchema = z.object({
   permission: z.custom<PermissionMetadata>(),
   spentUSDC: z.union([z.string(), z.number()]).optional(),
 });
+
+const BuyQuerySchema = z.object({
+  artifactId: z.string().min(1),
+  buyerAgentId: z.string().min(1),
+});
+
+export async function GET(req: NextRequest) {
+  const { searchParams } = new URL(req.url);
+  const parsed = BuyQuerySchema.safeParse({
+    artifactId: searchParams.get("artifactId"),
+    buyerAgentId: searchParams.get("buyerAgentId"),
+  });
+
+  if (!parsed.success) {
+    return NextResponse.json({ error: "Invalid purchase", details: parsed.error.flatten() }, { status: 400 });
+  }
+
+  const artifact = researchStore.get(parsed.data.artifactId);
+  if (!artifact) {
+    return NextResponse.json({ error: "Research artifact not found" }, { status: 404 });
+  }
+
+  return withX402Payment(
+    req,
+    {
+      accepts: {
+        scheme: "exact",
+        price: `$${artifact.priceUSDC}`,
+        network: X402_NETWORK_ID,
+        payTo: artifact.ownerWalletAddress,
+        maxTimeoutSeconds: 60,
+        extra: { assetTransferMethod: "erc7710" },
+      },
+      description: "Agent-owned Clashboard research resale",
+      mimeType: "application/json",
+    },
+    async () => {
+      researchStore.markPurchased(parsed.data.buyerAgentId, artifact.id);
+      return NextResponse.json({
+        artifact,
+        x402: {
+          paid: true,
+          priceUSDC: artifact.priceUSDC,
+          sellerAgentId: artifact.ownerAgentId,
+          payTo: artifact.ownerWalletAddress,
+        },
+      });
+    }
+  );
+}
 
 export async function POST(req: NextRequest) {
   try {

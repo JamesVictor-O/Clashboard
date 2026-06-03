@@ -38,6 +38,8 @@ export function BudgetScreen({ onConfirm, onCancel }: BudgetScreenProps) {
 
       // Persist the context so autonomous txs can use it without pop-ups
       storePermissionContext(account, result);
+      const { registerResearchSessionForBackend } = await import("@/lib/research-session-client");
+      await registerResearchSessionForBackend(account);
 
       onConfirm(budget);
     } catch (err) {

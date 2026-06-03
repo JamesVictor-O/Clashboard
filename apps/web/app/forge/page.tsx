@@ -825,7 +825,7 @@ function StepDeploy({
       await waitForTx(txHash);
 
       setDeployLog((p) => [...p, "Agent identity confirmed on Base Sepolia."]);
-      setDeployLog((p) => [...p, "Requesting master arena budget…"]);
+      setDeployLog((p) => [...p, "Requesting arena and research budgets…"]);
 
       const { grantPermissions } = await import("@/lib/metamask");
       const { storePermissionContext } = await import("@/lib/permissions");
@@ -836,8 +836,10 @@ function StepDeploy({
         budgetUSDC: config.researchBudget,
       });
       storePermissionContext(walletAddress, permission);
+      const { registerResearchSessionForBackend } = await import("@/lib/research-session-client");
+      await registerResearchSessionForBackend(walletAddress as `0x${string}`);
 
-      setDeployLog((p) => [...p, "Arena budget active. 1Shot can now execute without wallet popups."]);
+      setDeployLog((p) => [...p, "Operating budgets active. 1Shot and x402 can now run without repeat wallet popups."]);
       setDeployLog((p) => [...p, "Agent deployed. Welcome to the arena."]);
 
       // Cache config locally so dashboard can display personality details

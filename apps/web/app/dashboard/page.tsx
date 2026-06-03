@@ -450,7 +450,7 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
     if (perm) {
       setReleased(true);
       setPermExpiry(perm.expiry);
-      setActiveBudget(perm.budgetUSDC);
+      setActiveBudget(perm.totalBudgetUSDC ?? perm.budgetUSDC);
     }
   }, [agent.walletAddress]);
 
@@ -482,6 +482,8 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
       });
 
       storePermissionContext(account, result);
+      const { registerResearchSessionForBackend } = await import("@/lib/research-session-client");
+      await registerResearchSessionForBackend(account);
 
       const executor = process.env.NEXT_PUBLIC_ONESHOT_EXECUTOR_ADDRESS as `0x${string}` | undefined;
       const rooms = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}` | undefined;
@@ -499,7 +501,7 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
       }
 
       setPermExpiry(expiry);
-      setActiveBudget(result.budgetUSDC);
+      setActiveBudget(result.totalBudgetUSDC ?? result.budgetUSDC);
       setReleased(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message

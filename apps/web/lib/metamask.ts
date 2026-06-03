@@ -147,6 +147,13 @@ export interface GrantedPermission {
   permissionType: string;
   createdAt: number;
   active: boolean;
+  rail?: "arena" | "research";
+  totalBudgetUSDC?: number;
+}
+
+export interface GrantedPermissionBundle extends GrantedPermission {
+  arenaPermission: GrantedPermission;
+  researchPermission: GrantedPermission;
 }
 
 export interface GrantPermissionsParams {
@@ -271,13 +278,15 @@ const REQUIRED_PERMISSION_TYPE = "erc20-token-periodic" as const;
  *      wallet_grantPermissions with -32601 when called through its wrapper.
  *   2. Call getSupportedExecutionPermissions (best-effort) to verify that
  *      erc20-token-periodic is available before showing the Flask UI.
- *   3. Call requestExecutionPermissions targeting 1Shot relayer targetAddress.
- *   4. Return only permission metadata (GrantedPermission).
+ *   3. Call requestExecutionPermissions once for two grants:
+ *      - arena grant scoped to the 1Shot relayer targetAddress
+ *      - research grant scoped to the agent session address for x402
+ *   4. Return only permission metadata (GrantedPermissionBundle).
  *      The session private key stays in AgentSession — it never appears here.
  */
 export async function grantPermissions(
   params: GrantPermissionsParams
-): Promise<GrantedPermission> {
+): Promise<GrantedPermissionBundle> {
   if (typeof window === "undefined") throw new Error("Not in browser");
 
   const chain = getActiveChain();
@@ -325,15 +334,22 @@ export async function grantPermissions(
   }
 
   // ── Step 2: resolve agent session and 1Shot public relayer target ────────
-  getOrCreateAgentSession(params.account);
+  const session = getOrCreateAgentSession(params.account);
   const relayerTargetAddress = await getOneShotRelayerTargetAddress(chain.id);
 
   const usdcAddress = process.env.NEXT_PUBLIC_USDC_ADDRESS as `0x${string}`;
   if (!usdcAddress) throw new Error("NEXT_PUBLIC_USDC_ADDRESS is not configured");
 
-  const periodAmount = parseUnits(params.budgetUSDC.toString(), 6);
+  const totalPeriodAmount = parseUnits(params.budgetUSDC.toString(), 6);
+  const arenaAmount = (totalPeriodAmount * 70n) / 100n;
+  const researchAmount = totalPeriodAmount - arenaAmount;
+  const arenaBudgetUSDC = Number(arenaAmount) / 1_000_000;
+  const researchBudgetUSDC = Number(researchAmount) / 1_000_000;
 
   // ── Step 3: request the delegation grant from Flask ────────────────────────
+  // One wallet popup, two correctly scoped grants:
+  //   arena    -> 1Shot relayer target address
+  //   research -> local agent session address for x402 redelegation
   const grantedPermissions = await walletClient.requestExecutionPermissions([
     {
       chainId: chain.id,
@@ -345,35 +361,79 @@ export async function grantPermissions(
         type: REQUIRED_PERMISSION_TYPE,
         data: {
           tokenAddress: usdcAddress,
-          periodAmount,
+          periodAmount: arenaAmount,
           periodDuration: 86400, // 24-hour rolling window
           justification:
-            "Clashboard arena budget — limited USDC/day for agent research and demo arena actions.",
+            "Clashboard arena — limited testnet USDC/day for demo arena actions and arena stakes.",
+        },
+        isAdjustmentAllowed: true,
+      },
+    },
+    {
+      chainId: chain.id,
+      expiry: params.expiry,
+      // x402 research payments are redelegated by the local agent session.
+      // The session private key remains in AgentSession demo storage only.
+      to: session.sessionAddress,
+      permission: {
+        type: REQUIRED_PERMISSION_TYPE,
+        data: {
+          tokenAddress: usdcAddress,
+          periodAmount: researchAmount,
+          periodDuration: 86400, // 24-hour rolling window
+          justification:
+            "Clashboard research — limited testnet USDC/day for agent data purchases via x402.",
         },
         isAdjustmentAllowed: true,
       },
     },
   ]);
 
-  if (!grantedPermissions || grantedPermissions.length === 0) {
+  if (!grantedPermissions || grantedPermissions.length < 2) {
     throw new Error("No permissions were granted by the wallet.");
   }
 
-  const grant = grantedPermissions[0];
+  const arenaGrant = grantedPermissions[0];
+  const researchGrant = grantedPermissions[1];
+  const createdAt = Math.floor(Date.now() / 1000);
 
   // ── Step 4: return metadata only — private key stays in AgentSession ───────
-  return {
-    context: grant.context,
-    delegationManager: grant.delegationManager as `0x${string}`,
+  const arenaPermission: GrantedPermission = {
+    context: arenaGrant.context,
+    delegationManager: arenaGrant.delegationManager as `0x${string}`,
     sessionAddress: relayerTargetAddress,
     walletAddress: params.account as `0x${string}`,
     expiry: params.expiry,
-    budgetUSDC: params.budgetUSDC,
+    budgetUSDC: arenaBudgetUSDC,
     budgetPeriod: "1 day",
     chainId: chain.id,
     permissionType: REQUIRED_PERMISSION_TYPE,
-    createdAt: Math.floor(Date.now() / 1000),
+    createdAt,
     active: true,
+    rail: "arena",
+    totalBudgetUSDC: params.budgetUSDC,
+  };
+
+  const researchPermission: GrantedPermission = {
+    context: researchGrant.context,
+    delegationManager: researchGrant.delegationManager as `0x${string}`,
+    sessionAddress: session.sessionAddress,
+    walletAddress: params.account as `0x${string}`,
+    expiry: params.expiry,
+    budgetUSDC: researchBudgetUSDC,
+    budgetPeriod: "1 day",
+    chainId: chain.id,
+    permissionType: REQUIRED_PERMISSION_TYPE,
+    createdAt,
+    active: true,
+    rail: "research",
+    totalBudgetUSDC: params.budgetUSDC,
+  };
+
+  return {
+    ...arenaPermission,
+    arenaPermission,
+    researchPermission,
   };
 }
 

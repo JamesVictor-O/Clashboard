@@ -1,6 +1,6 @@
 "use client";
 
-import type { GrantedPermission } from "@/lib/metamask";
+import type { GrantedPermission, GrantedPermissionBundle } from "@/lib/metamask";
 
 // ─── ERC-7715 permission context storage ─────────────────────────────────────
 //
@@ -9,7 +9,8 @@ import type { GrantedPermission } from "@/lib/metamask";
 // exclusively in AgentSession (see lib/metamask.ts getOrCreateAgentSession).
 //
 // Two-layer storage design:
-//   clashboard_perms_<addr>         ← this file  (permission metadata, safe)
+//   clashboard_perms_<addr>         ← arena/1Shot permission metadata
+//   clashboard_research_perms_<addr>← research/x402 permission metadata
 //   clashboard_agent_session_<addr> ← metamask.ts (session identity, includes key)
 
 /**
@@ -26,13 +27,30 @@ export interface StoredPermission extends GrantedPermission {
 const PERMISSION_KEY = (addr: string) =>
   `clashboard_perms_${addr.toLowerCase()}`;
 
+const RESEARCH_PERMISSION_KEY = (addr: string) =>
+  `clashboard_research_perms_${addr.toLowerCase()}`;
+
 // ─── Write ────────────────────────────────────────────────────────────────────
 
 export function storePermissionContext(
   address: string,
-  grant: GrantedPermission
+  grant: GrantedPermission | GrantedPermissionBundle
 ): void {
   if (typeof window === "undefined") return;
+  if ("arenaPermission" in grant && "researchPermission" in grant) {
+    storeSinglePermission(address, grant.arenaPermission, PERMISSION_KEY(address));
+    storeSinglePermission(address, grant.researchPermission, RESEARCH_PERMISSION_KEY(address));
+    return;
+  }
+
+  storeSinglePermission(address, grant, PERMISSION_KEY(address));
+}
+
+function storeSinglePermission(
+  address: string,
+  grant: GrantedPermission,
+  storageKey: string
+): void {
   const now = Math.floor(Date.now() / 1000);
   const data: StoredPermission = {
     ...grant,
@@ -42,7 +60,7 @@ export function storePermissionContext(
     active: grant.active ?? true,
     grantedAt: now,
   };
-  localStorage.setItem(PERMISSION_KEY(address), JSON.stringify(data));
+  localStorage.setItem(storageKey, JSON.stringify(data));
 }
 
 // ─── Read ─────────────────────────────────────────────────────────────────────
@@ -53,9 +71,17 @@ export function storePermissionContext(
  * Returns null if absent, malformed, or within 60 s of expiry.
  */
 export function getPermissionContext(address: string): StoredPermission | null {
+  return readPermissionContext(address, PERMISSION_KEY(address));
+}
+
+export function getResearchPermissionContext(address: string): StoredPermission | null {
+  return readPermissionContext(address, RESEARCH_PERMISSION_KEY(address));
+}
+
+function readPermissionContext(address: string, storageKey: string): StoredPermission | null {
   if (typeof window === "undefined") return null;
   try {
-    const raw = localStorage.getItem(PERMISSION_KEY(address));
+    const raw = localStorage.getItem(storageKey);
     if (!raw) return null;
 
     const stored: StoredPermission = JSON.parse(raw);
@@ -66,7 +92,7 @@ export function getPermissionContext(address: string): StoredPermission | null {
       typeof stored.expiry !== "number" ||
       typeof stored.sessionAddress !== "string"
     ) {
-      localStorage.removeItem(PERMISSION_KEY(address));
+      localStorage.removeItem(storageKey);
       return null;
     }
 
@@ -82,14 +108,14 @@ export function getPermissionContext(address: string): StoredPermission | null {
 
     // Expire 60 s early to avoid edge-case denials at the exact boundary
     if (Math.floor(Date.now() / 1000) >= migrated.expiry - 60) {
-      localStorage.removeItem(PERMISSION_KEY(address));
+      localStorage.removeItem(storageKey);
       return null;
     }
 
     return migrated;
   } catch {
     // Malformed JSON or unexpected parse error — discard
-    localStorage.removeItem(PERMISSION_KEY(address));
+    localStorage.removeItem(storageKey);
     return null;
   }
 }
@@ -99,6 +125,7 @@ export function getPermissionContext(address: string): StoredPermission | null {
 export function clearPermissionContext(address: string): void {
   if (typeof window === "undefined") return;
   localStorage.removeItem(PERMISSION_KEY(address));
+  localStorage.removeItem(RESEARCH_PERMISSION_KEY(address));
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
