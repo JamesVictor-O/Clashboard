@@ -819,7 +819,7 @@ function CreateDrawer({
                   {submitting ? (
                     <>
                       <span className="w-4 h-4 border-2 border-black/25 border-t-black/70 rounded-full animate-spin flex-shrink-0" />
-                      Confirm in MetaMask…
+                      Creating challenge…
                     </>
                   ) : (
                     <>

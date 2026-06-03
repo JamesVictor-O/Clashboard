@@ -4,7 +4,8 @@ import { useParams, useRouter } from "next/navigation";
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import dynamic from "next/dynamic";
-import type { Battle, BattlePhase } from "@/lib/types";
+import { ResearchFeed } from "@/components/battle/ResearchFeed";
+import type { Battle, BattlePhase, ResearchPurchase } from "@/lib/types";
 
 // ─── 3D Arena (no SSR) ───────────────────────────────────────────────────────
 
@@ -622,6 +623,9 @@ export default function BattlePage() {
   const [receivedRounds, setReceivedRounds] = useState<DebateRound[]>(
     isDemo ? DEMO_ROUNDS : []
   );
+  const [researchPurchases, setResearchPurchases] = useState<ResearchPurchase[]>(
+    isDemo ? [] : []
+  );
   const verdictCalledRef = useRef(false);
 
   // ─── Fetch battle metadata (non-demo) ────────────────────────────────────
@@ -660,7 +664,11 @@ export default function BattlePage() {
           rubricHash: "0x",
           winner: null,
           createdAt: data.createdAt,
+          researchPurchases: data.researchPurchases ?? [],
         });
+          if (Array.isArray(data.researchPurchases)) {
+            setResearchPurchases(data.researchPurchases);
+          }
         })
         .catch(() => {});
     };
@@ -696,6 +704,14 @@ export default function BattlePage() {
             ...prev,
             { a: round.agentAText, b: round.agentBText },
           ]);
+        } else if (type === "research") {
+          const purchase = data as ResearchPurchase;
+          setResearchPurchases((prev) => {
+            if (prev.some((item) => item.id === purchase.id)) return prev;
+            return [...prev, purchase];
+          });
+        } else if (type === "phase" && data === "RESEARCH") {
+          setPhase("betting");
         }
       } catch {}
     };
@@ -1051,6 +1067,15 @@ export default function BattlePage() {
               </motion.div>
             )}
           </AnimatePresence>
+
+          <motion.div
+            initial={{ opacity: 0, x: 14 }}
+            animate={{ opacity: 1, x: 0 }}
+            transition={{ delay: 0.06 }}
+            className="rounded-xl border border-clash-gold/15 bg-white/[0.025] p-4"
+          >
+            <ResearchFeed purchases={researchPurchases} />
+          </motion.div>
 
           <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
             <div className="flex items-center justify-between mb-3">

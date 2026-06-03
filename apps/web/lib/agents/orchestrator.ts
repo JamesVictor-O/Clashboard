@@ -5,7 +5,6 @@ import {
   generateRebuttal,
 } from "@/lib/venice";
 import { getPersona } from "@/lib/agents/personas";
-import { createX402Client } from "@/lib/payments/x402client";
 import {
   executeArenaActionWith1Shot,
   payAgentResearchWith1Shot,
@@ -26,7 +25,6 @@ import type {
   ResearchArtifact,
   RiskMode,
 } from "@/lib/types";
-import { v4 as uuidv4 } from "uuid";
 
 export interface BattleAgentConfig {
   agentConfig: AgentConfig;
@@ -123,52 +121,133 @@ async function researchForAgent(
   appUrl: string,
   onPurchase: (purchase: ResearchPurchase) => void
 ): Promise<void> {
-  const x402 = createX402Client(agentConfig.agentConfig.address as `0x${string}`);
-  const topic = encodeURIComponent(battle.topic);
+  const agentId = agentConfig.agentConfig.address;
+  const category = inferResearchCategory(battle.topic);
   const contextParts: string[] = [];
 
-  const endpoints = [
-    {
-      url: `${appUrl}/api/data/sports?query=${topic}`,
-      source: "Sports Reference",
-      endpoint: "/api/data/sports",
-    },
-    {
-      url: `${appUrl}/api/data/news?query=${topic}`,
-      source: "News Sentiment API",
-      endpoint: "/api/data/news",
-    },
-    {
-      url: `${appUrl}/api/data/records?subject=${topic}`,
-      source: "Historical Records DB",
-      endpoint: "/api/data/records",
-    },
-  ];
+  const availableArtifacts = researchStore.search({
+    topic: battle.topic,
+    category,
+    excludeOwnerAgentId: agentId,
+    limit: 3,
+  });
 
-  for (const ep of endpoints) {
-    try {
-      const response = await x402.get(ep.url);
-      const data = response.data as Record<string, unknown>;
+  let decisionCategory = category;
+  let shouldUseMarketplace = availableArtifacts.length > 0;
 
-      const purchase: ResearchPurchase = {
-        id: uuidv4(),
-        agent: side,
-        source: ep.source,
-        endpoint: ep.endpoint,
-        cost: "0.01 USDC",
-        txHash: `0x${Math.random().toString(16).slice(2)}`, // Real tx hash from x402 response
-        data,
-        purchasedAt: Date.now(),
-      };
+  try {
+    const decision = await decideAgentAction({
+      fighterProfile: agentConfig.agentConfig,
+      topic: battle.topic,
+      assignedSide: side,
+      activePermission: null,
+      remainingBudgetUSDC: String(agentConfig.agentConfig.operatingBudgetUSDC ?? 0),
+      researchAlreadyOwned: researchStore.listPurchasedBy(agentId),
+      availableResearchArtifacts: availableArtifacts,
+    });
 
-      onPurchase(purchase);
-      contextParts.push(`[${ep.source}]: ${JSON.stringify(data).slice(0, 300)}`);
-    } catch (err) {
-      console.error(`Research fetch failed for ${ep.source}:`, err);
-    }
+    decisionCategory = decision.category ?? category;
+    shouldUseMarketplace =
+      decision.action === "BUY_AGENT_RESEARCH" && availableArtifacts.length > 0;
+  } catch (err) {
+    console.error(`Research decision failed for Agent ${side}:`, err);
+  }
+
+  try {
+    const artifact = shouldUseMarketplace
+      ? buyMarketplaceArtifact(agentId, availableArtifacts[0])
+      : await buyExternalResearchForStream({
+          appUrl,
+          agentId,
+          topic: battle.topic,
+          category: decisionCategory,
+        });
+
+    const purchase = artifactToPurchase({
+      artifact,
+      side,
+      endpoint: shouldUseMarketplace
+        ? "/api/agent-research/buy"
+        : researchEndpointForCategory(artifact.category),
+      source: shouldUseMarketplace ? "A2A Research Market" : researchSourceName(artifact.category),
+    });
+
+    onPurchase(purchase);
+    contextParts.push(formatArtifactForPrompt(artifact, purchase.source));
+  } catch (err) {
+    console.error(`Research purchase failed for Agent ${side}:`, err);
   }
 
   agentConfig.researchContext = contextParts.join("\n\n");
+}
+
+function buyMarketplaceArtifact(agentId: string, artifact: ResearchArtifact): ResearchArtifact {
+  // TODO(hackathon): when the SSE runtime receives server-side ERC-7715 metadata,
+  // redeem the grant here with payAgentResearchWith1Shot before marking purchase.
+  researchStore.markPurchased(agentId, artifact.id);
+  return artifact;
+}
+
+async function buyExternalResearchForStream(params: {
+  appUrl: string;
+  agentId: string;
+  topic: string;
+  category: ResearchArtifact["category"];
+}): Promise<ResearchArtifact> {
+  const endpoint = researchEndpointForCategory(params.category);
+  const url = `${params.appUrl}${endpoint}?topic=${encodeURIComponent(params.topic)}&ownerAgentId=${encodeURIComponent(params.agentId)}&ownerWalletAddress=${params.agentId}`;
+  const response = await fetch(url);
+  if (!response.ok) {
+    throw new Error(`Research endpoint ${endpoint} failed: ${response.status}`);
+  }
+
+  const data = (await response.json()) as { artifact: ResearchArtifact };
+  // TODO(hackathon): this route returns an x402-shaped artifact today. Once the
+  // backend owns the active ERC-7715 permission context, payResearchWith1Shot
+  // should be called before returning the artifact to the agent.
+  researchStore.markPurchased(params.agentId, data.artifact.id);
+  return data.artifact;
+}
+
+function researchSourceName(category: ResearchArtifact["category"]): string {
+  if (category === "sports") return "x402 Sports Research";
+  if (category === "tech" || category === "crypto") return "x402 News Research";
+  return "x402 History Research";
+}
+
+function artifactToPurchase(params: {
+  artifact: ResearchArtifact;
+  side: "A" | "B";
+  endpoint: string;
+  source: string;
+}): ResearchPurchase {
+  return {
+    id: `${params.side}_${params.artifact.id}_${Date.now()}`,
+    agent: params.side,
+    source: params.source,
+    endpoint: params.endpoint,
+    cost: `${params.artifact.priceUSDC} USDC`,
+    txHash:
+      params.artifact.txHash ??
+      "0x0000000000000000000000000000000000000000000000000000000000000000",
+    data: {
+      artifactId: params.artifact.id,
+      topic: params.artifact.topic,
+      category: params.artifact.category,
+      summary: params.artifact.summary,
+      facts: params.artifact.facts,
+      sources: params.artifact.sources,
+    },
+    purchasedAt: Date.now(),
+  };
+}
+
+function formatArtifactForPrompt(artifact: ResearchArtifact, source: string): string {
+  return [
+    `[${source}] ${artifact.summary}`,
+    `Facts: ${artifact.facts.join(" | ")}`,
+    `Sources: ${artifact.sources.join(", ")}`,
+  ].join("\n");
 }
 
 // ─── Debate Round ─────────────────────────────────────────────────────────────
