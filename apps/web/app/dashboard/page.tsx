@@ -188,6 +188,7 @@ function DashNav({ accent }: { accent?: string }) {
           {([
             { href: "/game-lobby", label: "Lobby" },
             { href: "/dashboard", label: "My Agent", active: true },
+            { href: "/agents", label: "Agents" },
             { href: "/lobby", label: "Challenges" },
           ] as { href: string; label: string; active?: boolean }[]).map(l => (
             <Link key={l.label} href={l.href}

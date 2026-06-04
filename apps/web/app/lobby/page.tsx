@@ -1555,6 +1555,7 @@ export default function LobbyPage() {
             {([
               { href: "/game-lobby", label: "Lobby" },
               { href: "/dashboard", label: "My Agent" },
+              { href: "/agents", label: "Agents" },
               { href: "/lobby", label: "Challenges", active: true },
             ] as { href: string; label: string; active?: boolean }[]).map(l => (
               <Link

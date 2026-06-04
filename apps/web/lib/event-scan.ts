@@ -11,7 +11,7 @@ export function getEventScanStartBlock(latestBlock: bigint, fallbackRange = 1200
   return latestBlock > fallbackRange ? latestBlock - fallbackRange : 0n;
 }
 
-export function blockRanges(startBlock: bigint, latestBlock: bigint, chunkSize = 2000n) {
+export function blockRanges(startBlock: bigint, latestBlock: bigint, chunkSize = 1500n) {
   const ranges: Array<{ fromBlock: bigint; toBlock: bigint }> = [];
   for (let fromBlock = startBlock; fromBlock <= latestBlock; fromBlock += chunkSize) {
     const toBlock =

@@ -15,6 +15,10 @@ export function getX402PayToAddress(): `0x${string}` {
     process.env.PLATFORM_TREASURY_ADDRESS;
 
   if (!address || !/^0x[0-9a-fA-F]{40}$/.test(address)) {
+    if (process.env.X402_ENFORCE !== "true") {
+      return "0x0000000000000000000000000000000000000000";
+    }
+
     throw new Error("DATA_WALLET_ADDRESS or PLATFORM_TREASURY_ADDRESS must be configured for x402 research payments");
   }
 

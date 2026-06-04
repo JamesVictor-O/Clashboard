@@ -1418,6 +1418,7 @@ export default function GameLobbyPage() {
             {[
               { href: "/game-lobby", label: "Lobby", active: true },
               { href: "/dashboard", label: "My Agent" },
+              { href: "/agents", label: "Agents" },
               { href: "/lobby", label: "Challenges" },
             ].map(l => (
               <Link key={l.label} href={l.href}

@@ -25,6 +25,8 @@ function sleep(ms: number) {
  *
  * Event types emitted:
  *   { type: "phase",    data: "RESEARCH" | "DEBATE" | "DONE" }
+ *   { type: "round_start", data: { round: number, totalRounds: number } }
+ *   { type: "turn",     data: { agent: "A"|"B", round: number } }
  *   { type: "research", data: ResearchPurchase }
  *   { type: "token",    data: { agent: "A"|"B", text: string } }
  *   { type: "round",    data: Round & { txA?: string; txB?: string } }
@@ -107,9 +109,11 @@ export async function GET(req: NextRequest) {
 
           // Wait until this round's window opens (adds 200ms buffer for block lag)
           await waitUntil(roundStart + 0.2);
+          send("round_start", { round: i + 1, totalRounds: rounds });
 
           // Agent A argues
           let agentAText = "";
+          send("turn", { agent: "A", round: i + 1 });
           await runDebateRound(
             stored.battle,
             agentAConfig,
@@ -123,6 +127,7 @@ export async function GET(req: NextRequest) {
 
           // Agent B rebuts
           let agentBText = "";
+          send("turn", { agent: "B", round: i + 1 });
           await runDebateRound(
             stored.battle,
             agentBConfig,

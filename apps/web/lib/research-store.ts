@@ -65,4 +65,10 @@ class ResearchStore {
   }
 }
 
-export const researchStore = new ResearchStore();
+const globalResearchStore = globalThis as typeof globalThis & {
+  __clashboardResearchStore?: ResearchStore;
+};
+
+export const researchStore =
+  globalResearchStore.__clashboardResearchStore ??
+  (globalResearchStore.__clashboardResearchStore = new ResearchStore());

@@ -31,12 +31,22 @@ export async function POST(req: NextRequest) {
       );
     }
 
+    if (stored.rounds.length === 0) {
+      return NextResponse.json(
+        {
+          error:
+            "Battle has no debate transcript yet. Funds remain locked until Venice debate is retried or the battle is cancelled on-chain.",
+        },
+        { status: 409 }
+      );
+    }
+
     // Run AI judge
     const judgeResult = await runJudge(stored.battle, stored.rounds);
 
     // Settle on-chain — payouts are distributed by the contract.
     // rubricPreimage is the bytes32 stored at battle creation time.
-    let settleTxHash: string | null = null;
+    let settleTxHash: string;
     try {
       settleTxHash = await settleBattleOnChain({
         battleId: battleId as `0x${string}`,
@@ -52,6 +62,14 @@ export async function POST(req: NextRequest) {
       });
     } catch (chainErr) {
       console.error("Chain settle failed:", chainErr);
+      return NextResponse.json(
+        {
+          error:
+            "Venice returned a verdict, but on-chain settlement failed. Funds remain locked until settlement is retried.",
+          judgeResult,
+        },
+        { status: 502 }
+      );
     }
 
     // Update stored state

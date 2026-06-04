@@ -8,6 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "typecheck": "tsc --noEmit",
+    "test:a2a": "node scripts/test-a2a-research.mjs",
     "clean": "rm -rf .next"
   },
   "dependencies": {

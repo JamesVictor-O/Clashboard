@@ -71,6 +71,13 @@ const DEMO_BATTLE: Battle = {
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 type Phase = "countdown" | "betting" | "live" | "verdict";
+type StreamStatus =
+  | "idle"
+  | "research"
+  | "debate"
+  | "judging_ready"
+  | "settled"
+  | "error";
 
 function isContractRoundPhase(phase: BattlePhase | null) {
   return phase === "ROUND_1" || phase === "ROUND_2" || phase === "ROUND_3";
@@ -556,12 +563,14 @@ function ArgumentPanel({
   text,
   battle,
   onDone,
+  liveStreaming = false,
 }: {
   turn: "A" | "B";
   roundIndex: number;
   text: string;
   battle: Battle;
   onDone: () => void;
+  liveStreaming?: boolean;
 }) {
   const agent = turn === "A" ? battle.agentA : battle.agentB;
 
@@ -583,7 +592,14 @@ function ArgumentPanel({
         {agent.name}
       </div>
       <p className="font-body text-sm sm:text-[15px] leading-relaxed ml-1" style={{ color: `${agent.color}CC` }}>
-        <TypewriterText key={`tw-${roundIndex}-${turn}`} text={text} onDone={onDone} speed={14} />
+        {liveStreaming ? (
+          <>
+            {text}
+            <span className="inline-block w-[2px] h-[1.1em] ml-0.5 bg-current align-middle animate-pulse opacity-80" />
+          </>
+        ) : (
+          <TypewriterText key={`tw-${roundIndex}-${turn}`} text={text} onDone={onDone} speed={14} />
+        )}
       </p>
       <div
         className="absolute bottom-0 left-0 right-0 h-16 pointer-events-none"
@@ -620,6 +636,10 @@ export default function BattlePage() {
   // Real battle data
   const [battle, setBattle] = useState<Battle>(DEMO_BATTLE);
   const [serverPhase, setServerPhase] = useState<BattlePhase | null>(null);
+  const [streamStatus, setStreamStatus] = useState<StreamStatus>(
+    isDemo ? "debate" : "idle"
+  );
+  const [streamError, setStreamError] = useState<string | null>(null);
   const [receivedRounds, setReceivedRounds] = useState<DebateRound[]>(
     isDemo ? DEMO_ROUNDS : []
   );
@@ -627,6 +647,7 @@ export default function BattlePage() {
     isDemo ? [] : []
   );
   const verdictCalledRef = useRef(false);
+  const currentStreamingAgentRef = useRef<"A" | "B" | null>(null);
 
   // ─── Fetch battle metadata (non-demo) ────────────────────────────────────
 
@@ -646,10 +667,14 @@ export default function BattlePage() {
             return;
           }
           setServerPhase(data.phase ?? null);
-          if (data.phase === "JUDGING_READY" || data.phase === "SETTLED") {
+          if (data.phase === "SETTLED") {
+            setStreamStatus("settled");
+            setPhase("verdict");
+          } else if (data.phase === "JUDGING_READY") {
+            setStreamStatus("judging_ready");
             setPhase("verdict");
           } else if (isContractRoundPhase(data.phase) && receivedRounds.length === 0) {
-            setPhase("betting");
+            setPhase((current) => (current === "countdown" ? "betting" : current));
           }
           setBattle({
           id: data.id,
@@ -698,7 +723,49 @@ export default function BattlePage() {
           data: unknown;
         };
 
-        if (type === "round") {
+        if (type === "phase") {
+          if (data === "RESEARCH") {
+            setStreamStatus("research");
+            setPhase((current) => (current === "countdown" ? "betting" : current));
+          } else if (data === "DEBATE") {
+            setStreamStatus("debate");
+            setPhase("live");
+          } else if (data === "DONE") {
+            setStreamStatus("judging_ready");
+            setPhase("verdict");
+          }
+        } else if (type === "round_start") {
+          const event = data as { round?: number; totalRounds?: number };
+          const nextRound = Math.max(0, (event.round ?? 1) - 1);
+          setRoundIndex(nextRound);
+          setTurn("A");
+          setCurrentText("");
+          setTypingDone(false);
+          setPhase("live");
+          setStreamStatus("debate");
+        } else if (type === "turn") {
+          const event = data as { agent?: "A" | "B"; round?: number };
+          const nextTurn = event.agent === "B" ? "B" : "A";
+          currentStreamingAgentRef.current = nextTurn;
+          setTurn(nextTurn);
+          setCurrentText("");
+          setTypingDone(false);
+          if (event.round) setRoundIndex(Math.max(0, event.round - 1));
+          setPhase("live");
+          setStreamStatus("debate");
+        } else if (type === "token") {
+          const token = data as { agent?: "A" | "B"; text?: string };
+          if (!token.text) return;
+          const tokenAgent = token.agent === "B" ? "B" : "A";
+          if (currentStreamingAgentRef.current !== tokenAgent) {
+            currentStreamingAgentRef.current = tokenAgent;
+            setTurn(tokenAgent);
+            setCurrentText("");
+          }
+          setPhase("live");
+          setStreamStatus("debate");
+          setCurrentText((prev) => `${prev}${token.text}`);
+        } else if (type === "round") {
           const round = data as { agentAText: string; agentBText: string };
           setReceivedRounds((prev) => [
             ...prev,
@@ -710,13 +777,19 @@ export default function BattlePage() {
             if (prev.some((item) => item.id === purchase.id)) return prev;
             return [...prev, purchase];
           });
-        } else if (type === "phase" && data === "RESEARCH") {
-          setPhase("betting");
+        } else if (type === "error") {
+          setStreamStatus("error");
+          setStreamError(String(data || "Battle stream failed"));
+          setPhase("verdict");
         }
       } catch {}
     };
 
-    sse.onerror = () => sse.close();
+    sse.onerror = () => {
+      setStreamStatus("error");
+      setStreamError("Battle stream disconnected. Funds remain locked until judging or cancellation resolves on-chain.");
+      sse.close();
+    };
 
     return () => sse.close();
   }, [battleId, isDemo, serverPhase]);
@@ -778,6 +851,7 @@ export default function BattlePage() {
 
   useEffect(() => {
     if (!typingDone || phase !== "live") return;
+    if (!isDemo) return;
     setTypingDone(false);
     spawnEmojis(["🔥", "💯", "🎯", "👏", "💡"]);
 
@@ -856,16 +930,94 @@ export default function BattlePage() {
     }
   }, [typingDone, phase, turn, roundIndex, roundScores, spawnEmojis, isDemo, receivedRounds, battleId]);
 
+  // Real battles: once all on-chain rounds are over, request Venice verdict once.
+  // If Venice/settlement fails, do not refund or fake a winner; the contract stays
+  // in JUDGING_READY until a valid settlement or explicit cancellation path runs.
+  useEffect(() => {
+    if (isDemo) return;
+    if (verdictCalledRef.current) return;
+    if (streamStatus !== "judging_ready" && serverPhase !== "JUDGING_READY") return;
+
+    verdictCalledRef.current = true;
+    setPhase("verdict");
+
+    fetch("/api/battle/verdict", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ battleId }),
+    })
+      .then(async (r) => {
+        const result = await r.json().catch(() => ({}));
+        if (!r.ok) {
+          throw new Error(result.error ?? `Verdict failed with ${r.status}`);
+        }
+        return result as { winnerSide?: "A" | "B" };
+      })
+      .then((result) => {
+        setWinner(result.winnerSide ?? null);
+        setStreamStatus("settled");
+        if (result.winnerSide) {
+          setTimeout(() => {
+            setShowWinner(true);
+            spawnEmojis(["🏆", "🎉", "👑", "🥇", "🔥", "💰"]);
+          }, 600);
+        }
+      })
+      .catch((err) => {
+        setStreamStatus("error");
+        setStreamError(
+          err instanceof Error
+            ? err.message
+            : "Verdict failed. Funds remain locked until settlement is retried."
+        );
+      });
+  }, [battleId, isDemo, serverPhase, spawnEmojis, streamStatus]);
+
   // ─── Derived ─────────────────────────────────────────────────────────────
 
   const activeRounds = isDemo ? DEMO_ROUNDS : receivedRounds;
   const displayedRound = isContractRoundPhase(serverPhase)
     ? roundNumberFromPhase(serverPhase) + 1
-    : roundIndex + 1;
+    : serverPhase === "JUDGING_READY" || serverPhase === "SETTLED"
+      ? battle.totalRounds ?? Math.max(activeRounds.length, 2)
+      : roundIndex + 1;
   const displayedTotalRounds = battle.totalRounds ?? (activeRounds.length || 2);
+  const hasLiveText = phase === "live" && currentText.trim().length > 0;
+  const isTerminalPhase =
+    serverPhase === "JUDGING_READY" ||
+    serverPhase === "SETTLED" ||
+    streamStatus === "judging_ready" ||
+    streamStatus === "settled";
+  const arenaStatusLabel =
+    streamStatus === "error" ? "Needs Review" :
+    streamStatus === "settled" || serverPhase === "SETTLED" ? "Settled" :
+    streamStatus === "judging_ready" || serverPhase === "JUDGING_READY" ? "Judging Ready" :
+    phase === "live" ? "Live Round" :
+    streamStatus === "research" ? "Researching" :
+    "Syncing";
+  const tickerLabel =
+    streamStatus === "error" ? "ISSUE" :
+    streamStatus === "settled" || serverPhase === "SETTLED" ? "SETTLED" :
+    streamStatus === "judging_ready" || serverPhase === "JUDGING_READY" ? "JUDGING" :
+    phase === "live" ? "LIVE" :
+    streamStatus === "research" ? "RESEARCH" :
+    "SYNC";
+  const waitingTitle =
+    streamStatus === "error" ? "BATTLE NEEDS REVIEW" :
+    isTerminalPhase ? "WAITING FOR VERDICT" :
+    streamStatus === "research" ? "AGENTS BUYING RESEARCH" :
+    "SYNCING ARENA";
+  const waitingCopy =
+    streamStatus === "error"
+      ? streamError ?? "The battle stream failed. Funds remain locked until the verdict is retried or a contract cancellation path is used."
+      : isTerminalPhase
+        ? "All on-chain rounds are complete. Venice judging is being requested; no funds are released until settleBattle succeeds."
+        : streamStatus === "research"
+          ? "Agents are buying research artifacts before arguments begin."
+          : "Loading the battle stream and contract state.";
 
   const bettingPhase: BattlePhase =
-    phase === "betting" ? "RESEARCH" :
+    streamStatus === "research" ? "RESEARCH" :
     phase === "live" ? "LIVE" :
     phase === "verdict" ? "VERDICT" : "BETTING";
 
@@ -876,16 +1028,16 @@ export default function BattlePage() {
       <div className="border-b border-white/8 bg-clash-black/80 sticky top-0 z-20 backdrop-blur-sm">
         <div className="max-w-[1440px] mx-auto px-6 sm:px-10 lg:px-16 py-3 flex items-center justify-between gap-4">
           <div className="flex items-center gap-3 min-w-0">
-            {phase === "live" || phase === "verdict" ? (
+            {phase === "live" || phase === "verdict" || streamStatus === "error" ? (
               <span className="flex-shrink-0 flex items-center gap-1.5 bg-red-500/15 rounded-full px-2.5 py-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
-                <span className="font-display text-[10px] text-red-400 font-bold uppercase tracking-widest">LIVE</span>
+                <span className="font-display text-[10px] text-red-400 font-bold uppercase tracking-widest">{tickerLabel}</span>
               </span>
             ) : (
               <span className="flex-shrink-0 flex items-center gap-1.5 bg-clash-gold/15 rounded-full px-2.5 py-1">
                 <span className="w-1.5 h-1.5 rounded-full bg-clash-gold animate-pulse" />
                 <span className="font-display text-[10px] text-clash-gold font-bold uppercase tracking-widest">
-                  {phase === "betting" ? "WARMUP" : "LOADING"}
+                  {tickerLabel}
                 </span>
               </span>
             )}
@@ -897,7 +1049,7 @@ export default function BattlePage() {
             </div>
           </div>
 
-          {phase === "live" && (
+          {(phase === "live" || phase === "verdict") && (
             <div className="flex-shrink-0 text-right">
               <div className="font-body text-[10px] text-white/25 uppercase tracking-widest">Round</div>
               <div className="font-display text-sm font-bold text-white">
@@ -951,21 +1103,21 @@ export default function BattlePage() {
                     Round {roundIndex + 1} of {activeRounds.length || 3}
                   </span>
                 </motion.div>
-              ) : phase === "betting" ? (
+              ) : phase === "betting" || phase === "verdict" ? (
                 <motion.div
-                  key="betting-indicator"
+                  key="sync-indicator"
                   initial={{ opacity: 0 }}
                   animate={{ opacity: 1 }}
                   className="font-display text-xs text-clash-gold/50 uppercase tracking-widest"
                 >
-                  Agents entering the arena
+                  {arenaStatusLabel}
                 </motion.div>
               ) : null}
             </AnimatePresence>
           </div>
 
           <AnimatePresence mode="wait">
-            {phase === "live" && currentText ? (
+            {hasLiveText ? (
               <ArgumentPanel
                 key={`${roundIndex}-${turn}`}
                 turn={turn}
@@ -973,20 +1125,27 @@ export default function BattlePage() {
                 text={currentText}
                 battle={battle}
                 onDone={() => setTypingDone(true)}
+                liveStreaming={!isDemo}
               />
-            ) : phase === "betting" ? (
+            ) : phase === "betting" || phase === "verdict" ? (
               <motion.div
-                key="betting-msg"
+                key={`waiting-${streamStatus}-${serverPhase}`}
                 initial={{ opacity: 0, y: 8 }}
                 animate={{ opacity: 1, y: 0 }}
                 exit={{ opacity: 0 }}
-                className="rounded-xl border border-clash-gold/25 bg-clash-gold/05 p-6 text-center"
+                className={`rounded-xl border p-6 text-center ${
+                  streamStatus === "error"
+                    ? "border-red-500/25 bg-red-500/05"
+                    : "border-clash-gold/25 bg-clash-gold/05"
+                }`}
               >
-                <div className="font-display text-xl font-extrabold text-clash-gold mb-2">
-                  ARENA WARMING UP
+                <div className={`font-display text-xl font-extrabold mb-2 ${
+                  streamStatus === "error" ? "text-red-400" : "text-clash-gold"
+                }`}>
+                  {waitingTitle}
                 </div>
                 <p className="font-body text-sm text-white/35 max-w-sm mx-auto">
-                  Venice is loading the first arguments. The live show starts in a moment.
+                  {waitingCopy}
                 </p>
               </motion.div>
             ) : null}
@@ -1027,7 +1186,7 @@ export default function BattlePage() {
 
             <div className="space-y-3">
               {[
-                ["State", phase === "live" ? "Live Round" : phase === "verdict" ? "Judging" : "Loading"],
+                ["State", arenaStatusLabel],
                 ["Round", `${displayedRound} / ${displayedTotalRounds}`],
                 ["Pool", `$${(Number(battle.poolA + battle.poolB) / 1_000_000).toFixed(2)}`],
               ].map(([label, value]) => (
