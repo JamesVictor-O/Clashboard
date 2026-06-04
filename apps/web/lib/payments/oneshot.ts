@@ -94,36 +94,6 @@ export async function executeArenaActionWith1Shot(
   });
 }
 
-export async function payResearchWith1Shot(
-  params: ExecuteWith1ShotParams
-): Promise<OneShotExecutionResult> {
-  // TODO(hackathon): wire exact x402 + 1Shot settlement receipt fields.
-  return postOneShot("/relay", {
-    type: "RESEARCH_PURCHASE",
-    permissionContext: params.permissionContext,
-    recipient: params.recipient,
-    amountUSDC: params.amountUSDC,
-    token: process.env.NEXT_PUBLIC_USDC_ADDRESS,
-    chainId: params.chainId,
-    actionData: params.actionData,
-  });
-}
-
-export async function payAgentResearchWith1Shot(
-  params: ExecuteWith1ShotParams
-): Promise<OneShotExecutionResult> {
-  // TODO(hackathon): replace with final ERC-7710 transfer/delegation payload.
-  return postOneShot("/relay", {
-    type: "AGENT_RESEARCH_PURCHASE",
-    permissionContext: params.permissionContext,
-    recipient: params.recipient,
-    amountUSDC: params.amountUSDC,
-    token: process.env.NEXT_PUBLIC_USDC_ADDRESS,
-    chainId: params.chainId,
-    actionData: params.actionData,
-  });
-}
-
 /**
  * Pay a recipient via the 1Shot relayer.
  * Used for instant payout to winning bettors after battle settlement.

@@ -5,14 +5,11 @@ import {
   generateRebuttal,
 } from "@/lib/venice";
 import { getPersona } from "@/lib/agents/personas";
-import {
-  executeArenaActionWith1Shot,
-  payAgentResearchWith1Shot,
-  payResearchWith1Shot,
-} from "@/lib/payments/oneshot";
+import { decodePaymentResponseHeader } from "@x402/core/http";
+import { executeArenaActionWith1Shot } from "@/lib/payments/oneshot";
 import { validateAutonomousAction, remainingOperatingBudgetUSDC } from "@/lib/policy";
 import { researchStore } from "@/lib/research-store";
-import { inferResearchCategory, researchEndpointForCategory } from "@/lib/research-pricing";
+import { inferResearchCategory, priceResearchArtifact, researchEndpointForCategory } from "@/lib/research-pricing";
 import { battleStore } from "@/lib/battle-store";
 import { getServerResearchSession } from "@/lib/agent-research-session-store";
 import { createResearchBuyerFromSession } from "@/lib/x402/buyer";
@@ -197,11 +194,11 @@ async function buyMarketplaceArtifact(params: {
   const url = `${params.appUrl}/api/agent-research/buy?artifactId=${encodeURIComponent(params.artifact.id)}&buyerAgentId=${encodeURIComponent(params.agentId)}`;
   const response = await researchFetchForAgent(params.agentId)(url);
   if (!response.ok) {
-    throw new Error(`A2A research purchase failed: ${response.status}`);
+    throw new Error(`A2A research purchase failed: ${response.status} — ${await response.text()}`);
   }
 
   const data = (await response.json()) as { artifact: ResearchArtifact };
-  return data.artifact;
+  return withSettlementTx(data.artifact, response);
 }
 
 async function buyExternalResearchForStream(params: {
@@ -214,12 +211,13 @@ async function buyExternalResearchForStream(params: {
   const url = `${params.appUrl}${endpoint}?topic=${encodeURIComponent(params.topic)}&ownerAgentId=${encodeURIComponent(params.agentId)}&ownerWalletAddress=${params.agentId}`;
   const response = await researchFetchForAgent(params.agentId)(url);
   if (!response.ok) {
-    throw new Error(`Research endpoint ${endpoint} failed: ${response.status}`);
+    throw new Error(`Research endpoint ${endpoint} failed: ${response.status} — ${await response.text()}`);
   }
 
   const data = (await response.json()) as { artifact: ResearchArtifact };
-  researchStore.markPurchased(params.agentId, data.artifact.id);
-  return data.artifact;
+  const artifact = withSettlementTx(data.artifact, response);
+  researchStore.markPurchased(params.agentId, artifact.id);
+  return artifact;
 }
 
 function researchFetchForAgent(agentId: string): typeof fetch {
@@ -236,10 +234,37 @@ function researchFetchForAgent(agentId: string): typeof fetch {
   });
 }
 
+function isResearchPaymentEnforced() {
+  return process.env.X402_ENFORCE === "true";
+}
+
 function researchSourceName(category: ResearchArtifact["category"]): string {
   if (category === "sports") return "x402 Sports Research";
   if (category === "tech" || category === "crypto") return "x402 News Research";
   return "x402 History Research";
+}
+
+function settlementTxFromResponse(response: Response): `0x${string}` | undefined {
+  const header = response.headers.get("PAYMENT-RESPONSE") ?? response.headers.get("X-PAYMENT-RESPONSE");
+  if (!header) return undefined;
+  try {
+    const decoded = decodePaymentResponseHeader(header) as {
+      transaction?: string;
+      txHash?: string;
+    };
+    const txHash = decoded.transaction ?? decoded.txHash;
+    return txHash && /^0x[0-9a-fA-F]{64}$/.test(txHash)
+      ? (txHash as `0x${string}`)
+      : undefined;
+  } catch (err) {
+    console.warn("Failed to decode x402 PAYMENT-RESPONSE:", err);
+    return undefined;
+  }
+}
+
+function withSettlementTx(artifact: ResearchArtifact, response: Response): ResearchArtifact {
+  const txHash = settlementTxFromResponse(response);
+  return txHash ? { ...artifact, txHash } : artifact;
 }
 
 function artifactToPurchase(params: {
@@ -382,42 +407,36 @@ async function buyExternalResearch(params: {
   agentId: string;
   topic: string;
   category: ResearchArtifact["category"];
-  permission: PermissionMetadata;
   spentUSDC: number;
 }): Promise<{ artifact: ResearchArtifact; txHash?: `0x${string}` }> {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
   const endpoint = researchEndpointForCategory(params.category);
-  const url = `${appUrl}${endpoint}?topic=${encodeURIComponent(params.topic)}&ownerAgentId=${encodeURIComponent(params.agentId)}&ownerWalletAddress=${params.permission.walletAddress}`;
-  const response = await fetch(url);
-  if (!response.ok) throw new Error(`Research endpoint failed: ${response.status}`);
+  const session = getServerResearchSession(params.agentId);
+  const researchPermission = session?.researchPermission;
+
+  if (isResearchPaymentEnforced()) {
+    const policy = validateAutonomousAction({
+      permission: researchPermission,
+      action: "BUY_RESEARCH",
+      amountUSDC: priceResearchArtifact(params.category),
+      spentUSDC: params.spentUSDC,
+      target: endpoint,
+      allowedTargets: ["/api/research/sports", "/api/research/news", "/api/research/history"],
+    });
+    if (!policy.ok) throw new Error(policy.reason);
+  }
+
+  const ownerWalletAddress = researchPermission?.walletAddress ?? params.agentId;
+  const url = `${appUrl}${endpoint}?topic=${encodeURIComponent(params.topic)}&ownerAgentId=${encodeURIComponent(params.agentId)}&ownerWalletAddress=${ownerWalletAddress}`;
+  const response = await researchFetchForAgent(params.agentId)(url);
+  if (!response.ok) throw new Error(`Research endpoint failed: ${response.status} — ${await response.text()}`);
   const data = (await response.json()) as { artifact: ResearchArtifact };
-
-  const policy = validateAutonomousAction({
-    permission: params.permission,
-    action: "BUY_RESEARCH",
-    amountUSDC: data.artifact.priceUSDC,
-    spentUSDC: params.spentUSDC,
-    target: endpoint,
-    allowedTargets: ["/api/research/sports", "/api/research/news", "/api/research/history"],
-  });
-  if (!policy.ok) throw new Error(policy.reason);
-
-  const execution = await payResearchWith1Shot({
-    permissionContext: params.permission,
-    amountUSDC: data.artifact.priceUSDC,
-    recipient: defaultRecipient(),
-    chainId: params.permission.chainId,
-    actionData: {
-      endpoint,
-      artifactId: data.artifact.id,
-      agentId: params.agentId,
-      topic: params.topic,
-    },
-  });
+  const artifact = withSettlementTx(data.artifact, response);
+  researchStore.markPurchased(params.agentId, artifact.id);
 
   return {
-    artifact: { ...data.artifact, txHash: execution.txHash },
-    txHash: execution.txHash,
+    artifact,
+    txHash: artifact.txHash,
   };
 }
 
@@ -532,30 +551,31 @@ export async function runAutonomousBattleAgent(
 
   if (researchDecision.action === "BUY_AGENT_RESEARCH" && availableArtifacts[0]) {
     const artifact = availableArtifacts[0];
-    const policy = validateAutonomousAction({
-      permission,
-      action: "BUY_AGENT_RESEARCH",
-      amountUSDC: artifact.priceUSDC,
-      spentUSDC: spent,
-      target: artifact.ownerWalletAddress,
-    });
-    if (policy.ok && permission) {
-      const execution = await payAgentResearchWith1Shot({
-        permissionContext: permission,
-        amountUSDC: artifact.priceUSDC,
-        recipient: artifact.ownerWalletAddress,
-        chainId: permission.chainId,
-        actionData: { artifactId: artifact.id, buyerAgentId: agentId, sellerAgentId: artifact.ownerAgentId },
+    const researchPermission = getServerResearchSession(agentId)?.researchPermission;
+    const policy = isResearchPaymentEnforced()
+      ? validateAutonomousAction({
+          permission: researchPermission,
+          action: "BUY_AGENT_RESEARCH",
+          amountUSDC: artifact.priceUSDC,
+          spentUSDC: spent,
+          target: artifact.ownerWalletAddress,
+        })
+      : ({ ok: true } as const);
+
+    if (policy.ok && (researchPermission || !isResearchPaymentEnforced())) {
+      const purchased = await buyMarketplaceArtifact({
+        appUrl: process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000",
+        agentId,
+        artifact,
       });
-      spent += Number(artifact.priceUSDC);
-      researchStore.markPurchased(agentId, artifact.id);
-      purchasedResearch.push({ ...artifact, txHash: execution.txHash });
+      spent += Number(purchased.priceUSDC);
+      purchasedResearch.push(purchased);
       log({
         action: "BUY_AGENT_RESEARCH",
         reason: researchDecision.reason,
-        amountUSDC: artifact.priceUSDC,
-        artifactId: artifact.id,
-        txHash: execution.txHash,
+        amountUSDC: purchased.priceUSDC,
+        artifactId: purchased.id,
+        txHash: purchased.txHash,
       });
     } else {
       log({ action: "SKIP_ACTION", reason: policy.ok ? "Missing permission for agent research purchase" : policy.reason });
@@ -565,7 +585,6 @@ export async function runAutonomousBattleAgent(
       agentId,
       topic: battle.topic,
       category: researchDecision.category ?? category,
-      permission: permission as PermissionMetadata,
       spentUSDC: spent,
     });
     spent += Number(purchased.artifact.priceUSDC);

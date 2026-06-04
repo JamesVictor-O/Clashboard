@@ -121,7 +121,7 @@ function usdcAddress(): `0x${string}` {
   return address as `0x${string}`;
 }
 
-async function relayerRpc<T>(chainId: number, method: string, params: unknown): Promise<T> {
+export async function relayerRpc<T>(chainId: number, method: string, params: unknown): Promise<T> {
   const res = await fetch(relayerUrl(chainId), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -142,7 +142,7 @@ async function relayerRpc<T>(chainId: number, method: string, params: unknown): 
   return data.result;
 }
 
-function normalizePermissionContext(context: unknown): unknown[] {
+export function normalizePermissionContext(context: unknown): unknown[] {
   // Already an array of delegation objects — use directly
   if (Array.isArray(context)) return context;
 
@@ -178,16 +178,16 @@ function normalizePermissionContext(context: unknown): unknown[] {
   );
 }
 
-function decimalsOf(token: TokenDetails): number {
+export function decimalsOf(token: TokenDetails): number {
   return typeof token.decimals === "string" ? Number(token.decimals) : token.decimals;
 }
 
-function feeAmountToAtoms(amount: string, decimals: number): bigint {
+export function feeAmountToAtoms(amount: string, decimals: number): bigint {
   if (/^\d+$/.test(amount)) return BigInt(amount);
   return parseUnits(amount, decimals);
 }
 
-async function getCapabilities(chainId: number): Promise<RelayerCapability> {
+export async function getCapabilities(chainId: number): Promise<RelayerCapability> {
   const caps = await relayerRpc<Record<string, RelayerCapability>>(
     chainId,
     "relayer_getCapabilities",
@@ -198,14 +198,14 @@ async function getCapabilities(chainId: number): Promise<RelayerCapability> {
   return capability;
 }
 
-async function getFeeData(chainId: number, token: `0x${string}`): Promise<FeeData> {
+export async function getFeeData(chainId: number, token: `0x${string}`): Promise<FeeData> {
   return relayerRpc<FeeData>(chainId, "relayer_getFeeData", {
     chainId: String(chainId),
     token,
   });
 }
 
-async function pollStatus(chainId: number, taskId: `0x${string}`): Promise<StatusResult> {
+export async function pollStatus(chainId: number, taskId: `0x${string}`): Promise<StatusResult> {
   let last: StatusResult | null = null;
   for (let i = 0; i < 30; i++) {
     const status = await relayerRpc<StatusResult>(chainId, "relayer_getStatus", {

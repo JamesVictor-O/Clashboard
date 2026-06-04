@@ -5,7 +5,7 @@ export const X402_NETWORK_ID = "eip155:84532" as const;
 
 export const X402_FACILITATOR_URL =
   process.env.X402_FACILITATOR_URL ??
-  "https://tx-sentinel-base-sepolia.dev-api.cx.metamask.io/platform/v2/x402";
+  `${process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000"}/api/facilitator`;
 
 let resourceServerPromise: Promise<x402ResourceServer> | null = null;
 

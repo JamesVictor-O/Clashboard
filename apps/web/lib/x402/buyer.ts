@@ -49,11 +49,13 @@ export function createResearchBuyerFromSession(
     transport: http(),
   }).extend(erc7710WalletActions());
 
-  const delegationProvider: x402DelegationProvider = async () => {
-    const redelegation = await walletClient.redelegatePermissionContextOpen({
+  const delegationProvider: x402DelegationProvider = async (paymentRequirements) => {
+    const facilitatorAddress = selectFacilitatorAddress(paymentRequirements);
+    const redelegation = await walletClient.redelegatePermissionContext({
       environment: getSmartAccountsEnvironment(chain.id),
       permissionContext: params.permission.context as `0x${string}`,
       chainId: chain.id,
+      to: facilitatorAddress,
     });
 
     return {
@@ -68,4 +70,23 @@ export function createResearchBuyerFromSession(
     fetchImpl: params.fetchImpl,
     network: `eip155:${chain.id}` as Network,
   });
+}
+
+function selectFacilitatorAddress(paymentRequirements: {
+  extra?: Record<string, unknown>;
+}): `0x${string}` {
+  const configured = process.env.FACILITATOR_SIGNER_ADDRESS;
+  const advertised = paymentRequirements.extra?.facilitatorAddresses;
+  const candidates = Array.isArray(advertised) ? advertised : [];
+  const address = candidates.find(
+    (value): value is string => typeof value === "string" && /^0x[0-9a-fA-F]{40}$/.test(value)
+  ) ?? configured;
+
+  if (!address || !/^0x[0-9a-fA-F]{40}$/.test(address)) {
+    throw new Error(
+      "x402 facilitator signer address was not advertised. Check /api/facilitator/supported and FACILITATOR_SIGNER_ADDRESS."
+    );
+  }
+
+  return address as `0x${string}`;
 }
