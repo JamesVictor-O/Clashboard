@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect } from "react";
+import { useState, useEffect, type ReactNode } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import { parseAbiItem } from "viem";
@@ -11,6 +11,15 @@ import {
   clearPermissionContext,
   permissionExpiryLabel,
 } from "@/lib/permissions";
+import {
+  defaultAutonomyPreferences,
+  readAutonomyPreferences,
+  saveAutonomyPreferences,
+  type AgentAutonomyPreferences,
+  type AutonomyMode,
+  type OpponentRule,
+} from "@/lib/autonomy/preferences";
+import type { ResearchCategory, RiskMode } from "@/lib/types";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -37,6 +46,12 @@ interface BattleHistoryItem {
   result: "W" | "L" | "LIVE";
   payout: number;
   date: number;
+}
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000" as const;
+
+function asAddress(value: string): `0x${string}` {
+  return /^0x[0-9a-fA-F]{40}$/.test(value) ? (value as `0x${string}`) : ZERO_ADDRESS;
 }
 
 async function fetchBattleHistory(walletAddress: string): Promise<BattleHistoryItem[]> {
@@ -435,15 +450,26 @@ function CombatLogTab({ battles, accent, glow }: { battles: BattleHistoryItem[];
 // ─── Agent config tab ─────────────────────────────────────────────────────────
 
 function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: string; glow: string }) {
+  const agentOwner = asAddress(agent.walletAddress);
   const [operatingBudget, setOperatingBudget] = useState(agent.operatingBudgetUSDC ?? agent.researchBudget ?? 10);
-  const [dailyLimit, setDailyLimit] = useState(3);
   const [released, setReleased] = useState(false);
   const [releasing, setReleasing] = useState(false);
   const [releaseError, setReleaseError] = useState<string | null>(null);
   const [permExpiry, setPermExpiry] = useState<number | null>(null);
   const [activeBudget, setActiveBudget] = useState<number | null>(null);
-  const categories = ["Sports", "Music", "Tech", "Culture", "Politics", "Finance"];
-  const [enabledCats, setEnabledCats] = useState(["Sports", "Music", "Tech", "Culture"]);
+  const [savingPrefs, setSavingPrefs] = useState(false);
+  const [prefsMessage, setPrefsMessage] = useState<string | null>(null);
+  const [autonomyPrefs, setAutonomyPrefs] = useState<AgentAutonomyPreferences>(() =>
+    defaultAutonomyPreferences(agentOwner)
+  );
+
+  const categoryOptions: Array<{ label: string; value: ResearchCategory }> = [
+    { label: "Sports", value: "sports" },
+    { label: "Music", value: "music" },
+    { label: "Tech", value: "tech" },
+    { label: "Culture", value: "culture" },
+    { label: "Crypto", value: "crypto" },
+  ];
 
   // Restore released state from localStorage on mount
   useEffect(() => {
@@ -453,10 +479,54 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
       setPermExpiry(perm.expiry);
       setActiveBudget(perm.totalBudgetUSDC ?? perm.budgetUSDC);
     }
+    const prefs = readAutonomyPreferences(agentOwner);
+    setAutonomyPrefs(prefs);
   }, [agent.walletAddress]);
 
-  const toggleCat = (c: string) =>
-    setEnabledCats(prev => prev.includes(c) ? prev.filter(x => x !== c) : [...prev, c]);
+  const patchPrefs = (patch: Partial<AgentAutonomyPreferences>) => {
+    setPrefsMessage(null);
+    setAutonomyPrefs((prev) => ({
+      ...prev,
+      ...patch,
+      agentOwner,
+      updatedAt: Date.now(),
+    }));
+  };
+
+  const toggleCat = (category: ResearchCategory) =>
+    patchPrefs({
+      battleCategories: autonomyPrefs.battleCategories.includes(category)
+        ? autonomyPrefs.battleCategories.filter((x) => x !== category)
+        : [...autonomyPrefs.battleCategories, category],
+    });
+
+  const persistAutonomyPreferences = async (nextPrefs = autonomyPrefs) => {
+    setSavingPrefs(true);
+    setPrefsMessage(null);
+    try {
+      const saved = saveAutonomyPreferences({
+        ...nextPrefs,
+        agentOwner,
+        updatedAt: Date.now(),
+      });
+      const res = await fetch("/api/autonomy/preferences", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(saved),
+      });
+      if (!res.ok) {
+        const payload = await res.json().catch(() => ({}));
+        throw new Error(payload.error ?? "Could not save autonomy preferences");
+      }
+      const payload = await res.json();
+      setAutonomyPrefs(payload.preferences ?? saved);
+      setPrefsMessage("Autonomy rules saved");
+    } catch (err) {
+      setPrefsMessage(err instanceof Error ? err.message : "Could not save autonomy rules");
+    } finally {
+      setSavingPrefs(false);
+    }
+  };
 
   const revoke = () => {
     clearPermissionContext(agent.walletAddress);
@@ -503,6 +573,11 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
 
       setPermExpiry(expiry);
       setActiveBudget(result.totalBudgetUSDC ?? result.budgetUSDC);
+      await persistAutonomyPreferences({
+        ...autonomyPrefs,
+        agentOwner: account,
+        updatedAt: Date.now(),
+      });
       setReleased(true);
     } catch (err) {
       const msg = err instanceof Error ? err.message
@@ -515,7 +590,21 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
     }
   };
 
-  function SliderRow({ label, value, max, onChange }: { label: string; value: number; max: number; onChange: (v: number) => void }) {
+  function SliderRow({
+    label,
+    value,
+    max,
+    min = 1,
+    step = 1,
+    onChange,
+  }: {
+    label: string;
+    value: number;
+    max: number;
+    min?: number;
+    step?: number;
+    onChange: (v: number) => void;
+  }) {
     return (
       <div>
         <div className="flex justify-between items-center mb-3">
@@ -529,12 +618,81 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
             <div className="h-full transition-all" style={{ width: `${(value / max) * 100}%`, background: accent }} />
           </div>
           <input
-            type="range" min={1} max={max} value={value}
+            type="range" min={min} max={max} step={step} value={value}
             onChange={e => onChange(Number(e.target.value))}
             className="absolute inset-0 w-full opacity-0 cursor-pointer h-[3px]"
           />
         </div>
       </div>
+    );
+  }
+
+  function SegmentedButton<T extends string>({
+    value,
+    current,
+    children,
+    onClick,
+  }: {
+    value: T;
+    current: T;
+    children: ReactNode;
+    onClick: (value: T) => void;
+  }) {
+    const on = value === current;
+    return (
+      <button
+        type="button"
+        onClick={() => onClick(value)}
+        className="flex-1 py-2.5 border font-mono text-[9px] uppercase tracking-widest transition-all"
+        style={{
+          borderColor: on ? `${accent}60` : "rgba(255,255,255,0.08)",
+          color: on ? accent : "rgba(255,255,255,0.28)",
+          background: on ? `rgba(${glow},0.1)` : "transparent",
+        }}
+      >
+        {children}
+      </button>
+    );
+  }
+
+  function ToggleRow({
+    label,
+    description,
+    checked,
+    onChange,
+  }: {
+    label: string;
+    description: string;
+    checked: boolean;
+    onChange: (checked: boolean) => void;
+  }) {
+    return (
+      <button
+        type="button"
+        onClick={() => onChange(!checked)}
+        className="w-full border border-white/6 px-3 py-3 flex items-center justify-between gap-4 text-left transition-all"
+        style={{ background: checked ? `rgba(${glow},0.07)` : "rgba(255,255,255,0.015)" }}
+      >
+        <span>
+          <span className="block font-display text-xs font-bold uppercase tracking-widest text-clash-white">{label}</span>
+          <span className="block font-body text-[11px] text-white/32 mt-1">{description}</span>
+        </span>
+        <span
+          className="relative h-6 w-11 flex-shrink-0 border transition-all"
+          style={{
+            borderColor: checked ? `${accent}70` : "rgba(255,255,255,0.12)",
+            background: checked ? `rgba(${glow},0.18)` : "rgba(255,255,255,0.03)",
+          }}
+        >
+          <span
+            className="absolute top-1 h-4 w-4 transition-all"
+            style={{
+              left: checked ? "22px" : "4px",
+              background: checked ? accent : "rgba(255,255,255,0.28)",
+            }}
+          />
+        </span>
+      </button>
     );
   }
 
@@ -586,19 +744,47 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
           <div>
             <div className="flex justify-between items-center mb-3">
               <label className="font-mono text-[10px] uppercase tracking-widest text-white/40">Daily Battle Limit</label>
-              <span className="font-display text-sm font-bold" style={{ color: accent }}>{dailyLimit}/day</span>
+              <span className="font-display text-sm font-bold" style={{ color: accent }}>{autonomyPrefs.dailyBattleLimit}/day</span>
             </div>
             <div className="flex gap-2">
               {[1, 2, 3, 5, 10].map(n => (
-                <button key={n} onClick={() => setDailyLimit(n)}
+                <button key={n} onClick={() => patchPrefs({ dailyBattleLimit: n })}
                   className="flex-1 py-2.5 border font-display text-xs font-bold transition-all"
                   style={{
-                    borderColor: dailyLimit === n ? `${accent}60` : "rgba(255,255,255,0.08)",
-                    color: dailyLimit === n ? accent : "rgba(255,255,255,0.25)",
-                    background: dailyLimit === n ? `rgba(${glow},0.1)` : "transparent",
+                    borderColor: autonomyPrefs.dailyBattleLimit === n ? `${accent}60` : "rgba(255,255,255,0.08)",
+                    color: autonomyPrefs.dailyBattleLimit === n ? accent : "rgba(255,255,255,0.25)",
+                    background: autonomyPrefs.dailyBattleLimit === n ? `rgba(${glow},0.1)` : "transparent",
                   }}>
                   {n}
                 </button>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="flex justify-between items-center mb-3">
+              <label className="font-mono text-[10px] uppercase tracking-widest text-white/40">Autonomy Mode</label>
+              <span className="font-display text-sm font-bold" style={{ color: accent }}>{autonomyPrefs.mode}</span>
+            </div>
+            <div className="flex gap-2">
+              {(["off", "assisted", "autonomous"] as AutonomyMode[]).map((mode) => (
+                <SegmentedButton key={mode} value={mode} current={autonomyPrefs.mode} onClick={(value) => patchPrefs({ mode: value })}>
+                  {mode}
+                </SegmentedButton>
+              ))}
+            </div>
+          </div>
+
+          <div>
+            <div className="flex justify-between items-center mb-3">
+              <label className="font-mono text-[10px] uppercase tracking-widest text-white/40">Risk Profile</label>
+              <span className="font-display text-sm font-bold" style={{ color: accent }}>{autonomyPrefs.riskMode}</span>
+            </div>
+            <div className="flex gap-2">
+              {(["Conservative", "Balanced", "Aggressive"] as RiskMode[]).map((riskMode) => (
+                <SegmentedButton key={riskMode} value={riskMode} current={autonomyPrefs.riskMode} onClick={(value) => patchPrefs({ riskMode: value })}>
+                  {riskMode}
+                </SegmentedButton>
               ))}
             </div>
           </div>
@@ -607,22 +793,122 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
           <div>
             <p className="font-mono text-[10px] uppercase tracking-widest text-white/40 mb-3">Battle Categories</p>
             <div className="flex flex-wrap gap-2">
-              {categories.map(c => {
-                const on = enabledCats.includes(c);
+              {categoryOptions.map(({ label, value }) => {
+                const on = autonomyPrefs.battleCategories.includes(value);
                 return (
-                  <button key={c} onClick={() => toggleCat(c)}
+                  <button key={value} onClick={() => toggleCat(value)}
                     className="px-3.5 py-2 border font-mono text-[10px] uppercase tracking-widest transition-all"
                     style={{
                       borderColor: on ? `${accent}50` : "rgba(255,255,255,0.06)",
                       color: on ? accent : "rgba(255,255,255,0.2)",
                       background: on ? `rgba(${glow},0.08)` : "transparent",
                     }}>
-                    {on ? "✓ " : ""}{c}
+                    {on ? "✓ " : ""}{label}
                   </button>
                 );
               })}
             </div>
           </div>
+
+          <div className="grid sm:grid-cols-2 gap-4">
+            <SliderRow
+              label="Max Arena Stake"
+              value={autonomyPrefs.maxArenaStakeUSDC}
+              max={25}
+              onChange={(v) => patchPrefs({ maxArenaStakeUSDC: v })}
+            />
+            <SliderRow
+              label="Max Research Spend"
+              value={autonomyPrefs.maxResearchSpendUSDC}
+              max={10}
+              min={0}
+              step={0.05}
+              onChange={(v) => patchPrefs({ maxResearchSpendUSDC: v })}
+            />
+          </div>
+
+          <div className="grid sm:grid-cols-3 gap-2">
+            <ToggleRow
+              label="Create"
+              description="Let this agent issue matching challenges."
+              checked={autonomyPrefs.autoCreateChallenges}
+              onChange={(checked) => patchPrefs({ autoCreateChallenges: checked })}
+            />
+            <ToggleRow
+              label="Accept"
+              description="Let this agent enter matching open challenges."
+              checked={autonomyPrefs.autoAcceptChallenges}
+              onChange={(checked) => patchPrefs({ autoAcceptChallenges: checked })}
+            />
+            <ToggleRow
+              label="Stake"
+              description="Let this agent back eligible live battles."
+              checked={autonomyPrefs.autoBetOnBattles}
+              onChange={(checked) => patchPrefs({ autoBetOnBattles: checked })}
+            />
+          </div>
+
+          <div>
+            <div className="flex justify-between items-center mb-3">
+              <label className="font-mono text-[10px] uppercase tracking-widest text-white/40">Opponent Filter</label>
+              <span className="font-display text-sm font-bold" style={{ color: accent }}>
+                {autonomyPrefs.minOpponentWinRate}-{autonomyPrefs.maxOpponentWinRate}%
+              </span>
+            </div>
+            <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 mb-3">
+              {([
+                ["any", "Any"],
+                ["higher_win_rate", "Stronger"],
+                ["lower_win_rate", "Softer"],
+                ["same_category", "Same Cat"],
+              ] as Array<[OpponentRule, string]>).map(([value, label]) => (
+                <SegmentedButton key={value} value={value} current={autonomyPrefs.opponentRule} onClick={(next) => patchPrefs({ opponentRule: next })}>
+                  {label}
+                </SegmentedButton>
+              ))}
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={autonomyPrefs.minOpponentWinRate}
+                onChange={(e) => patchPrefs({ minOpponentWinRate: Number(e.target.value) })}
+                className="w-full border border-white/8 bg-transparent px-3 py-2.5 font-mono text-xs text-white/70 outline-none focus:border-white/20"
+                aria-label="Minimum opponent win rate"
+              />
+              <input
+                type="number"
+                min={0}
+                max={100}
+                value={autonomyPrefs.maxOpponentWinRate}
+                onChange={(e) => patchPrefs({ maxOpponentWinRate: Number(e.target.value) })}
+                className="w-full border border-white/8 bg-transparent px-3 py-2.5 font-mono text-xs text-white/70 outline-none focus:border-white/20"
+                aria-label="Maximum opponent win rate"
+              />
+            </div>
+          </div>
+
+          <div className="flex items-center justify-between gap-3 border border-white/6 px-3 py-3" style={{ background: "rgba(255,255,255,0.015)" }}>
+            <div>
+              <p className="font-display text-xs font-bold uppercase tracking-widest text-clash-white">Backend Autonomy Rules</p>
+              <p className="font-body text-[11px] text-white/32 mt-1">Saved rules are used by the agent runtime before Venice decisions and 1Shot execution.</p>
+            </div>
+            <button
+              type="button"
+              onClick={() => persistAutonomyPreferences()}
+              disabled={savingPrefs}
+              className="flex-shrink-0 px-4 py-2.5 border font-display text-[10px] font-bold uppercase tracking-widest transition-all disabled:opacity-50"
+              style={{ borderColor: `${accent}55`, color: accent, background: `rgba(${glow},0.08)` }}
+            >
+              {savingPrefs ? "Saving..." : "Save Rules"}
+            </button>
+          </div>
+          {prefsMessage && (
+            <p className="font-mono text-[9px] text-center uppercase tracking-widest" style={{ color: prefsMessage.includes("Could not") ? "#EF4444" : accent }}>
+              {prefsMessage}
+            </p>
+          )}
         </div>
       </div>
 
@@ -655,7 +941,7 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
             {releasing ? (
               <>
                 <span className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full animate-spin" />
-                Signing ERC-7715…
+                Granting Agent Permission…
               </>
             ) : "⚡ Release Fighter"}
           </button>

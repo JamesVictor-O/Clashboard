@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useRef } from "react";
+import { forwardRef, useState, useEffect, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -9,7 +9,7 @@ import { ConnectWallet } from "@/components/shared/ConnectWallet";
 import { AutonomyLog } from "@/components/autonomy/AutonomyLog";
 import { HOTTAKEROOMS_ABI } from "@/lib/chain";
 import { inferChallengeCategory, type Room } from "@/lib/challenges";
-import { blockRanges, getEventScanStartBlock, mapWithConcurrency } from "@/lib/event-scan";
+import { blockRanges, getEventScanStartBlock, mapWithConcurrency, withRpcRetry } from "@/lib/event-scan";
 import {
   sendUserBatch,
   buildUSDCApprovalCall,
@@ -92,19 +92,21 @@ function LiveTicker() {
 }
 
 // ─── Challenge card ───────────────────────────────────────────────────────────
-function ChallengeCard({
-  room,
-  index,
-  onAccept,
-  hasAgent,
-  walletAddress,
-}: {
+type ChallengeCardProps = {
   room: Room;
   index: number;
   onAccept: (room: Room) => void;
   hasAgent?: boolean | null;
   walletAddress?: string | null;
-}) {
+};
+
+const ChallengeCard = forwardRef<HTMLDivElement, ChallengeCardProps>(function ChallengeCard({
+  room,
+  index,
+  onAccept,
+  hasAgent,
+  walletAddress,
+}, ref) {
   const cat = CATEGORY_COLORS[room.category] ?? CATEGORY_COLORS.Custom;
   const isWaiting = room.state === "WAITING";
   const isCreator =
@@ -120,6 +122,7 @@ function ChallengeCard({
 
   return (
     <motion.div
+      ref={ref}
       initial={{ opacity: 0, y: 10 }}
       animate={{ opacity: 1, y: 0 }}
       transition={{ delay: index * 0.045, duration: 0.24, ease: [0, 0, 0.2, 1] }}
@@ -432,7 +435,7 @@ function ChallengeCard({
       </div>
     </motion.div>
   );
-}
+});
 
 // ─── Create room drawer ───────────────────────────────────────────────────────
 function CreateDrawer({
@@ -906,6 +909,10 @@ function PulseRing({ color }: { color: string }) {
 // ─── Rooms cache ──────────────────────────────────────────────────────────────
 const ROOMS_CACHE_KEY = "clashboard_lobby_rooms";
 const ROOMS_CACHE_TTL = 60; // seconds
+const ROOM_EVENT_SCAN_CONCURRENCY = 2;
+const ROOM_STATE_READ_CONCURRENCY = 2;
+const MAX_VISIBLE_ROOMS = 20;
+let roomsRequest: Promise<Room[]> | null = null;
 
 function loadRoomsCache(): Room[] | null {
   if (typeof window === "undefined") return null;
@@ -926,6 +933,16 @@ function saveRoomsCache(rooms: Room[]) {
 }
 
 async function fetchRooms(): Promise<Room[]> {
+  if (roomsRequest) return roomsRequest;
+
+  roomsRequest = fetchRoomsUncached().finally(() => {
+    roomsRequest = null;
+  });
+
+  return roomsRequest;
+}
+
+async function fetchRoomsUncached(): Promise<Room[]> {
   const { getPublicClient, HOTTAKEROOMS_ABI: roomsAbi } = await import("@/lib/chain");
   const client = getPublicClient();
   const roomsAddress = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
@@ -936,58 +953,63 @@ async function fetchRooms(): Promise<Room[]> {
     "event RoomCreated(bytes32 indexed roomId, address indexed creator, uint256 stake, string topicPreview, uint256 expiresAt)"
   );
 
-  const chunks = await mapWithConcurrency(ranges, 4, async ({ fromBlock, toBlock }) => {
+  const chunks = await mapWithConcurrency(ranges, ROOM_EVENT_SCAN_CONCURRENCY, async ({ fromBlock, toBlock }) => {
     try {
-      return await client.getLogs({ address: roomsAddress, event, fromBlock, toBlock });
+      return await withRpcRetry(() => client.getLogs({ address: roomsAddress, event, fromBlock, toBlock }));
     } catch {
       return [];
     }
   });
   const allLogs = chunks.flat();
 
-  const topLogs = [...allLogs].reverse().slice(0, 30);
+  const topLogs = [...allLogs].reverse().slice(0, MAX_VISIBLE_ROOMS);
 
-  // Fetch all room states in parallel (eth_call, not eth_getLogs — fine to batch)
-  const roomResults = await Promise.allSettled(
-    topLogs.map(async (log) => {
-      const roomId = log.args.roomId as `0x${string}`;
-      const creator = log.args.creator as `0x${string}`;
-      const stakeWei = log.args.stake as bigint;
-      const topicPreview = (log.args.topicPreview as string) ?? "";
+  const roomResults = await mapWithConcurrency(
+    topLogs,
+    ROOM_STATE_READ_CONCURRENCY,
+    async (log) => {
+      try {
+        const roomId = log.args.roomId as `0x${string}`;
+        const creator = log.args.creator as `0x${string}`;
+        const stakeWei = log.args.stake as bigint;
+        const topicPreview = (log.args.topicPreview as string) ?? "";
 
-      const roomData = (await client.readContract({
-        address: roomsAddress,
-        abi: roomsAbi,
-        functionName: "getRoom",
-        args: [roomId],
-      }) as unknown) as { state: number; createdAt: bigint; expiresAt: bigint };
+        const roomData = (await withRpcRetry(() => client.readContract({
+          address: roomsAddress,
+          abi: roomsAbi,
+          functionName: "getRoom",
+          args: [roomId],
+        })) as unknown) as { state: number; createdAt: bigint; expiresAt: bigint };
 
-      // 0=OPEN, 1=LOCKED, 2=SETTLED, 3=CANCELLED — skip finished rooms
-      if (roomData.state === 2 || roomData.state === 3) return null;
+        // 0=OPEN, 1=LOCKED, 2=SETTLED, 3=CANCELLED — skip finished rooms
+        if (roomData.state === 2 || roomData.state === 3) return null;
 
-      const state: Room["state"] = roomData.state === 1 ? "LOCKED" : "WAITING";
-      const topic = topicPreview;
-      const categoryGuess =
-        /sport|football|soccer|basketball|nba|nfl|kobe|lebron|messi|ronaldo/i.test(topic) ? "Sports" :
-        /music|rap|hip.?hop|wizkid|burna|singer|song/i.test(topic) ? "Music" :
-        /crypto|bitcoin|eth|web3|defi/i.test(topic) ? "Crypto" :
-        /tech|iphone|android|ai|apple|google/i.test(topic) ? "Tech" : "Culture";
+        const state: Room["state"] = roomData.state === 1 ? "LOCKED" : "WAITING";
+        const topic = topicPreview;
+        const categoryGuess =
+          /sport|football|soccer|basketball|nba|nfl|kobe|lebron|messi|ronaldo/i.test(topic) ? "Sports" :
+          /music|rap|hip.?hop|wizkid|burna|singer|song/i.test(topic) ? "Music" :
+          /crypto|bitcoin|eth|web3|defi/i.test(topic) ? "Crypto" :
+          /tech|iphone|android|ai|apple|google/i.test(topic) ? "Tech" : "Culture";
 
-      return {
-        id: roomId,
-        topic,
-        creatorName: `${creator.slice(0, 6)}…${creator.slice(-4)}`,
-        creatorAddress: creator,
-        stake: Number(stakeWei) / 1e6,
-        state,
-        createdAt: Number(roomData.createdAt) * 1000,
-        category: categoryGuess,
-        bettors: 0,
-      } as Room;
-    })
+        return {
+          id: roomId,
+          topic,
+          creatorName: `${creator.slice(0, 6)}…${creator.slice(-4)}`,
+          creatorAddress: creator,
+          stake: Number(stakeWei) / 1e6,
+          state,
+          createdAt: Number(roomData.createdAt) * 1000,
+          category: categoryGuess,
+          bettors: 0,
+        } as Room;
+      } catch {
+        return null;
+      }
+    }
   );
 
-  return roomResults.flatMap((r) => r.status === "fulfilled" && r.value !== null ? [r.value] : []);
+  return roomResults.flatMap((room) => room ? [room] : []);
 }
 
 // ─── My open challenges (cancel + refund) ────────────────────────────────────
@@ -1296,19 +1318,19 @@ export default function LobbyPage() {
     if (cached && cached.length > 0) {
       setRooms(cached);
       setLoadingRooms(false);
+    } else {
+      fetchRooms()
+        .then((fresh) => {
+          // Only update state if we actually received rooms — prevents an RPC failure
+          // returning [] from wiping rooms that were already shown from cache.
+          if (fresh.length > 0) {
+            setRooms(fresh);
+            saveRoomsCache(fresh);
+          }
+        })
+        .catch(() => {})
+        .finally(() => setLoadingRooms(false));
     }
-
-    fetchRooms()
-      .then((fresh) => {
-        // Only update state if we actually received rooms — prevents an RPC failure
-        // returning [] from wiping rooms that were already shown from cache.
-        if (fresh.length > 0) {
-          setRooms(fresh);
-          saveRoomsCache(fresh);
-        }
-      })
-      .catch(() => {})
-      .finally(() => setLoadingRooms(false));
 
     const checkAgent = async (addr: string) => {
       try {

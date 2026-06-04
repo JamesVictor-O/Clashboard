@@ -8,7 +8,7 @@ import { parseAbi, parseAbiItem } from "viem";
 import { ConnectWallet } from "@/components/shared/ConnectWallet";
 import { getConnectedWalletAccount, placeUserArenaStake } from "@/lib/wallet-contract";
 import { executePlaceBet } from "@/lib/autonomy/executor";
-import { blockRanges, getEventScanStartBlock, mapWithConcurrency } from "@/lib/event-scan";
+import { blockRanges, getEventScanStartBlock, mapWithConcurrency, withRpcRetry } from "@/lib/event-scan";
 
 const StagingArena3D = dynamic(() => import("@/components/lobby/StagingArena3D"), {
   ssr: false,
@@ -1120,8 +1120,23 @@ function MatchQueueStrip({ agents }: { agents: StagedAgent[] }) {
 // ─── Main ──────────────────────────────────────────────────────────────────────
 
 const BATTLES_CACHE_KEY = "clashboard_game_lobby_battles";
-const BATTLES_CACHE_VERSION = 2; // bump to invalidate stale positional-access caches
-const BATTLES_CACHE_TTL = 30; // seconds — short so new battles appear quickly
+const BATTLES_CACHE_VERSION = 3; // bump to invalidate stale positional-access caches
+const BATTLES_CACHE_TTL = 45; // seconds — short enough for new battles, long enough to protect public RPC
+const MAX_VISIBLE_BATTLES = 8;
+const EVENT_SCAN_CONCURRENCY = 2;
+const CONTRACT_READ_CONCURRENCY = 2;
+
+type CachedAgentProfile = {
+  name: string;
+  persona: string;
+  totalBattles: number;
+  winRate: number;
+  cachedAt: number;
+};
+
+const agentProfileCache = new Map<string, CachedAgentProfile>();
+const AGENT_PROFILE_CACHE_TTL_MS = 5 * 60 * 1000;
+let liveBattlesRequest: Promise<StagedAgent[]> | null = null;
 
 function loadBattlesCache(): StagedAgent[] | null {
   if (typeof window === "undefined") return null;
@@ -1143,6 +1158,16 @@ function saveBattlesCache(battles: StagedAgent[]) {
 }
 
 async function fetchLiveBattles(): Promise<StagedAgent[]> {
+  if (liveBattlesRequest) return liveBattlesRequest;
+
+  liveBattlesRequest = fetchLiveBattlesUncached().finally(() => {
+    liveBattlesRequest = null;
+  });
+
+  return liveBattlesRequest;
+}
+
+async function fetchLiveBattlesUncached(): Promise<StagedAgent[]> {
   const { getPublicClient, ARENA_ABI: arenaAbi, REGISTRY_ABI: registryAbi } = await import("@/lib/chain");
   const client = getPublicClient();
   const arenaAddress = process.env.NEXT_PUBLIC_ARENA_CONTRACT as `0x${string}`;
@@ -1173,11 +1198,11 @@ async function fetchLiveBattles(): Promise<StagedAgent[]> {
       topic?: string;
     };
   };
-  const chunks = await mapWithConcurrency(ranges, 4, async ({ fromBlock, toBlock }) => {
+  const chunks = await mapWithConcurrency(ranges, EVENT_SCAN_CONCURRENCY, async ({ fromBlock, toBlock }) => {
     try {
       const [currentChunk, legacyChunk] = await Promise.allSettled([
-        client.getLogs({ address: arenaAddress, event: battleCreatedEvent, fromBlock, toBlock }),
-        client.getLogs({ address: arenaAddress, event: legacyBattleCreatedEvent, fromBlock, toBlock }),
+        withRpcRetry(() => client.getLogs({ address: arenaAddress, event: battleCreatedEvent, fromBlock, toBlock })),
+        withRpcRetry(() => client.getLogs({ address: arenaAddress, event: legacyBattleCreatedEvent, fromBlock, toBlock })),
       ]);
       const logs: RawLog[] = [];
       if (currentChunk.status === "fulfilled") logs.push(...(currentChunk.value as unknown as RawLog[]));
@@ -1192,11 +1217,50 @@ async function fetchLiveBattles(): Promise<StagedAgent[]> {
   const recent = [...allLogs]
     .reverse()
     .filter((log, index, logs) => logs.findIndex(l => l.args.battleId === log.args.battleId) === index)
-    .slice(0, 20);
+    .slice(0, MAX_VISIBLE_BATTLES);
   const results: StagedAgent[] = [];
 
-  // Parallel battle + both-agent reads
-  await Promise.allSettled(recent.map(async (log) => {
+  async function readAgentProfile(address: `0x${string}`, fallbackPersona: string): Promise<CachedAgentProfile> {
+    const key = address.toLowerCase();
+    const cached = agentProfileCache.get(key);
+    if (cached && Date.now() - cached.cachedAt < AGENT_PROFILE_CACHE_TTL_MS) return cached;
+
+    const fallback: CachedAgentProfile = {
+      name: `${address.slice(0, 6)}…${address.slice(-4)}`,
+      persona: fallbackPersona,
+      totalBattles: 0,
+      winRate: 50,
+      cachedAt: Date.now(),
+    };
+
+    try {
+      const [onChain, rep] = (await withRpcRetry(() =>
+        client.readContract({
+          address: registryAddress,
+          abi: registryAbi,
+          functionName: "getAgent",
+          args: [address],
+        })
+      ) as unknown) as [{ name: string; exists: boolean }, { totalBattles: bigint; wins: bigint }];
+
+      const totalBattles = Number(rep?.totalBattles ?? 0n);
+      const wins = Number(rep?.wins ?? 0n);
+      const profile: CachedAgentProfile = {
+        name: onChain?.exists && onChain.name ? onChain.name.toUpperCase() : fallback.name,
+        persona: wins > totalBattles * 0.6 ? "Analyst" : fallbackPersona,
+        totalBattles,
+        winRate: totalBattles > 0 ? Math.round((wins / totalBattles) * 100) : 50,
+        cachedAt: Date.now(),
+      };
+      agentProfileCache.set(key, profile);
+      return profile;
+    } catch {
+      agentProfileCache.set(key, fallback);
+      return fallback;
+    }
+  }
+
+  await mapWithConcurrency(recent, CONTRACT_READ_CONCURRENCY, async (log) => {
     try {
       const battleId = log.args.battleId;
       const agentAAddr = log.args.agentA;
@@ -1232,20 +1296,20 @@ async function fetchLiveBattles(): Promise<StagedAgent[]> {
       let onChainTopic: string | null = null;
 
       try {
-        battleData = (await client.readContract({
+        battleData = (await withRpcRetry(() => client.readContract({
           address: arenaAddress,
           abi: arenaAbi,
           functionName: "battles",
           args: [battleId],
-        }) as unknown) as typeof battleData;
+        })) as unknown) as typeof battleData;
         onChainTopic = typeof battleData[15] === "string" ? battleData[15].trim() : null;
       } catch {
-        battleData = (await client.readContract({
+        battleData = (await withRpcRetry(() => client.readContract({
           address: arenaAddress,
           abi: legacyArenaAbi,
           functionName: "battles",
           args: [battleId],
-        }) as unknown) as typeof battleData;
+        })) as unknown) as typeof battleData;
       }
 
       // BattleState: OPEN=0, SETTLED=1, CANCELLED=2 — only show OPEN
@@ -1263,31 +1327,11 @@ async function fetchLiveBattles(): Promise<StagedAgent[]> {
       const totalRounds = Number(battleData[11] ?? 3);
       const roundsEnd = bettingDeadlineSec + roundDuration * totalRounds;
 
-      // Fetch both agents in parallel
-      const [agentAResult, agentBResult] = await Promise.allSettled([
-        client.readContract({ address: registryAddress, abi: registryAbi, functionName: "getAgent", args: [agentAAddr] }),
-        client.readContract({ address: registryAddress, abi: registryAbi, functionName: "getAgent", args: [agentBAddr] }),
-      ]);
-
-      let agentAName = `${agentAAddr.slice(0, 6)}…${agentAAddr.slice(-4)}`;
-      let personaA = "Analyst";
-      let totalBattles = 0;
-
-      if (agentAResult.status === "fulfilled") {
-        const [onChain, rep] = (agentAResult.value as unknown) as [{ name: string; exists: boolean }, { totalBattles: bigint; wins: bigint }];
-        if (onChain?.exists && onChain.name) agentAName = onChain.name.toUpperCase();
-        totalBattles = Number(rep?.totalBattles ?? 0n);
-        personaA = Number(rep?.wins ?? 0n) > totalBattles * 0.6 ? "Analyst" : "Historian";
-      }
-
-      let agentBName = `${agentBAddr.slice(0, 6)}…${agentBAddr.slice(-4)}`;
       const PERSONAS = ["Roaster", "Contrarian", "Professor", "Historian", "Analyst"];
-      let personaB = PERSONAS[parseInt(agentBAddr.slice(-2), 16) % PERSONAS.length];
-
-      if (agentBResult.status === "fulfilled") {
-        const [onChain] = (agentBResult.value as unknown) as [{ name: string; exists: boolean }];
-        if (onChain?.exists && onChain.name) agentBName = onChain.name.toUpperCase();
-      }
+      const [agentAProfile, agentBProfile] = await Promise.all([
+        readAgentProfile(agentAAddr, "Historian"),
+        readAgentProfile(agentBAddr, PERSONAS[parseInt(agentBAddr.slice(-2), 16) % PERSONAS.length]),
+      ]);
 
       const nowSec = Math.floor(Date.now() / 1000);
       const status: StagedAgent["status"] =
@@ -1307,16 +1351,16 @@ async function fetchLiveBattles(): Promise<StagedAgent[]> {
 
       results.push({
         id: battleId,
-        topic: topic ?? fallbackHotTake(battleId, agentAName, agentBName),
-        name: agentAName,
-        persona: personaA,
-        agentBName,
+        topic: topic ?? fallbackHotTake(battleId, agentAProfile.name, agentBProfile.name),
+        name: agentAProfile.name,
+        persona: agentAProfile.persona,
+        agentBName: agentBProfile.name,
         agentBAddress: agentBAddr,
-        agentBPersona: personaB,
+        agentBPersona: agentBProfile.persona,
         fightingStyle: "Balanced",
         specialties: [],
-        winRate: totalBattles > 0 ? Math.round(totalBattles * 0.55) : 50,
-        totalBattles,
+        winRate: agentAProfile.winRate,
+        totalBattles: agentAProfile.totalBattles,
         earnings: 0,
         status,
         entryFee: Number(entryFee) / 1e6,
@@ -1328,7 +1372,7 @@ async function fetchLiveBattles(): Promise<StagedAgent[]> {
         walletAddress: agentAAddr,
       });
     } catch {}
-  }));
+  });
 
   return results;
 }
@@ -1361,6 +1405,7 @@ export default function GameLobbyPage() {
     if (cached && cached.length > 0) {
       setStagedAgents(cached);
       setLoadingAgents(false);
+      return;
     }
     fetchLiveBattles()
       .then(fresh => {
@@ -1385,7 +1430,7 @@ export default function GameLobbyPage() {
         .catch(() => {});
     };
 
-    const id = window.setInterval(refresh, 15000);
+    const id = window.setInterval(refresh, 30000);
     return () => window.clearInterval(id);
   }, []);
 

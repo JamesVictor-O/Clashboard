@@ -42,3 +42,32 @@ export async function mapWithConcurrency<T, R>(
 
   return results;
 }
+
+export function sleep(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+export function isRpcRateLimitError(error: unknown) {
+  const message = error instanceof Error ? error.message : String(error);
+  return /429|too many requests|over rate limit|rate limit/i.test(message);
+}
+
+export async function withRpcRetry<T>(
+  task: () => Promise<T>,
+  retries = 3,
+  baseDelayMs = 450
+): Promise<T> {
+  let lastError: unknown;
+
+  for (let attempt = 0; attempt <= retries; attempt += 1) {
+    try {
+      return await task();
+    } catch (error) {
+      lastError = error;
+      if (!isRpcRateLimitError(error) || attempt === retries) break;
+      await sleep(baseDelayMs * 2 ** attempt);
+    }
+  }
+
+  throw lastError;
+}

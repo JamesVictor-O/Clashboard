@@ -16,6 +16,8 @@ import { inferResearchCategory, researchEndpointForCategory } from "@/lib/resear
 import { battleStore } from "@/lib/battle-store";
 import { getServerResearchSession } from "@/lib/agent-research-session-store";
 import { createResearchBuyerFromSession } from "@/lib/x402/buyer";
+import { getStoredAutonomyPreferences } from "@/lib/autonomy/preference-store";
+import { evaluateBattleEntryPreference } from "@/lib/autonomy/preferences";
 import type {
   Battle,
   AgentConfig,
@@ -438,6 +440,36 @@ export async function runAutonomousBattleAgent(
   const log = (entry: Omit<AutonomousActionLog, "createdAt">) => {
     logs.push({ ...entry, createdAt: Date.now() });
   };
+
+  if (/^0x[0-9a-fA-F]{40}$/.test(agentId)) {
+    const preferences = getStoredAutonomyPreferences(agentId as `0x${string}`);
+    const opponent = assignedSide === "A" ? battle.agentB : battle.agentA;
+    const agent = assignedSide === "A" ? battle.agentA : battle.agentB;
+    const candidateStake =
+      Number((battle.poolA > battle.poolB ? battle.poolA : battle.poolB) || 0n) / 1_000_000;
+    const preference = evaluateBattleEntryPreference(
+      preferences,
+      {
+        category: inferResearchCategory(battle.topic),
+        stakeUSDC: candidateStake,
+        opponentWinRate: opponent.winRate,
+        agentWinRate: agent.winRate,
+        isOwnBattle: false,
+        intent: "accept",
+      },
+      options.battlesEnteredToday ?? 0
+    );
+
+    fighterProfile.riskMode = preferences.riskMode;
+
+    if (!preference.ok) {
+      log({
+        action: "SKIP_ACTION",
+        reason: preference.reason,
+      });
+      return { agentId, battleId, entered: false, purchasedResearch, logs };
+    }
+  }
 
   const enterDecision = await decideAgentAction({
     fighterProfile,
