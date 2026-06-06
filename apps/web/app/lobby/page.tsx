@@ -16,7 +16,7 @@ import {
   waitForTx,
 } from "@/lib/wallet-contract";
 
-// Rooms are fetched live from on-chain RoomCreated events
+
 
 const HOT_TAKES = [
   { label: "Kobe vs LeBron — GOAT debate", category: "Sports" },
@@ -39,6 +39,13 @@ const CATEGORY_COLORS: Record<
   Culture: { fg: "#7C3AED", bg: "rgba(124,58,237,0.1)", glow: "124,58,237" },
   Custom: { fg: "#F5F5F0", bg: "rgba(245,245,240,0.08)", glow: "245,245,240" },
 };
+
+const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
+const ZERO_BYTES32 = `0x${"0".repeat(64)}` as `0x${string}`;
+
+function shortAddress(address: string): string {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`;
+}
 
 // ─── Live ticker ──────────────────────────────────────────────────────────────
 const TICKER_ITEMS = [
@@ -109,6 +116,8 @@ const ChallengeCard = forwardRef<HTMLDivElement, ChallengeCardProps>(function Ch
 }, ref) {
   const cat = CATEGORY_COLORS[room.category] ?? CATEGORY_COLORS.Custom;
   const isWaiting = room.state === "WAITING";
+  const isSettled = room.state === "SETTLED";
+  const hasBattle = !!room.battleId && room.battleId !== ZERO_BYTES32;
   const isCreator =
     !!walletAddress &&
     room.creatorAddress.toLowerCase() === walletAddress.toLowerCase();
@@ -138,7 +147,7 @@ const ChallengeCard = forwardRef<HTMLDivElement, ChallengeCardProps>(function Ch
         }}
       />
 
-      {/* Category glow — stronger on OPEN, whisper on LOCKED */}
+      {/* Category glow — stronger on OPEN, whisper on closed cards */}
       <div
         className="absolute inset-y-0 left-0 w-3/4 pointer-events-none transition-opacity duration-500"
         style={{
@@ -270,6 +279,11 @@ const ChallengeCard = forwardRef<HTMLDivElement, ChallengeCardProps>(function Ch
                   />
                   OPEN
                 </>
+              ) : isSettled ? (
+                <>
+                  <span className="opacity-70">●</span>
+                  SETTLED
+                </>
               ) : (
                 <>
                   <span className="opacity-60">🔒</span>
@@ -352,6 +366,12 @@ const ChallengeCard = forwardRef<HTMLDivElement, ChallengeCardProps>(function Ch
               Challenged by{" "}
               <span className="font-medium text-white/48">{room.creatorName}</span>
             </span>
+            {room.challengerAddress && !isWaiting && (
+              <span className="font-body text-xs text-white/22">
+                Accepted by{" "}
+                <span className="font-medium text-white/42">{shortAddress(room.challengerAddress)}</span>
+              </span>
+            )}
 
             {/* Watcher heat bar */}
             {isWaiting && (
@@ -422,14 +442,38 @@ const ChallengeCard = forwardRef<HTMLDivElement, ChallengeCardProps>(function Ch
                 <span className="relative whitespace-nowrap">Accept →</span>
               </motion.button>
             )
-          ) : (
+          ) : isSettled ? (
+            <div
+              className="w-full md:w-[188px] min-h-12 flex flex-col items-center justify-center border px-4 py-3 text-center"
+              style={{
+                background: "rgba(34,197,94,0.035)",
+                borderColor: "rgba(34,197,94,0.18)",
+              }}
+            >
+              <span className="font-mono text-[8px] uppercase tracking-widest text-emerald-300/55">
+                Winner
+              </span>
+              <span className="font-display text-xs font-bold uppercase tracking-widest text-emerald-200/80 truncate max-w-full">
+                {room.winnerName ?? (room.winnerAddress ? shortAddress(room.winnerAddress) : "Recorded")}
+              </span>
+              {typeof room.winnerEarnedUSDC === "number" && (
+                <span className="font-mono text-[8px] uppercase tracking-widest text-white/25">
+                  ${room.winnerEarnedUSDC.toFixed(2)} earned
+                </span>
+              )}
+            </div>
+          ) : hasBattle ? (
             <Link
-              href={`/arena/${room.id}`}
+              href={`/arena/${room.battleId}`}
               onClick={(e) => e.stopPropagation()}
               className="w-full md:w-auto min-h-12 inline-flex items-center justify-center font-mono text-[10px] uppercase tracking-widest text-white/25 hover:text-white/55 transition-colors px-5 py-3 border border-white/8 hover:border-white/18 whitespace-nowrap"
             >
-              Watch →
+              Watch Battle →
             </Link>
+          ) : (
+            <div className="w-full md:w-[156px] min-h-12 inline-flex items-center justify-center border border-white/8 px-5 py-3 font-mono text-[10px] uppercase tracking-widest text-white/22 whitespace-nowrap">
+              Battle Syncing
+            </div>
           )}
         </div>
       </div>
@@ -822,7 +866,7 @@ function CreateDrawer({
                   {submitting ? (
                     <>
                       <span className="w-4 h-4 border-2 border-black/25 border-t-black/70 rounded-full animate-spin flex-shrink-0" />
-                      Creating challenge…
+                      1Shot funding challenge…
                     </>
                   ) : (
                     <>
@@ -943,9 +987,10 @@ async function fetchRooms(): Promise<Room[]> {
 }
 
 async function fetchRoomsUncached(): Promise<Room[]> {
-  const { getPublicClient, HOTTAKEROOMS_ABI: roomsAbi } = await import("@/lib/chain");
+  const { getPublicClient, HOTTAKEROOMS_ABI: roomsAbi, ARENA_ABI: arenaAbi } = await import("@/lib/chain");
   const client = getPublicClient();
   const roomsAddress = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
+  const arenaAddress = process.env.NEXT_PUBLIC_ARENA_CONTRACT as `0x${string}`;
 
   const latestBlock = await client.getBlockNumber();
   const ranges = blockRanges(getEventScanStartBlock(latestBlock), latestBlock);
@@ -979,12 +1024,58 @@ async function fetchRoomsUncached(): Promise<Room[]> {
           abi: roomsAbi,
           functionName: "getRoom",
           args: [roomId],
-        })) as unknown) as { state: number; createdAt: bigint; expiresAt: bigint };
+        })) as unknown) as {
+          state: number;
+          creator: `0x${string}`;
+          challenger: `0x${string}`;
+          stake: bigint;
+          topicPreview: string;
+          battleId: `0x${string}`;
+          createdAt: bigint;
+          expiresAt: bigint;
+        };
 
-        // 0=OPEN, 1=LOCKED, 2=SETTLED, 3=CANCELLED — skip finished rooms
+        // 0=OPEN, 1=LOCKED, 2=SETTLED, 3=CANCELLED — hide finished rooms
         if (roomData.state === 2 || roomData.state === 3) return null;
 
-        const state: Room["state"] = roomData.state === 1 ? "LOCKED" : "WAITING";
+        const battleId = roomData.battleId && roomData.battleId !== ZERO_BYTES32
+          ? roomData.battleId
+          : undefined;
+        let state: Room["state"] =
+          roomData.state === 2 ? "SETTLED" : roomData.state === 1 ? "LOCKED" : "WAITING";
+        let winnerAddress: string | undefined;
+        let winnerEarnedUSDC: number | undefined;
+
+        if (battleId && arenaAddress) {
+          try {
+            const battle = (await withRpcRetry(() => client.readContract({
+              address: arenaAddress,
+              abi: arenaAbi,
+              functionName: "battles",
+              args: [battleId],
+            })) as unknown) as {
+              state: number;
+              agentA: `0x${string}`;
+              agentB: `0x${string}`;
+              winner: `0x${string}`;
+              fighterPoolA: bigint;
+              fighterPoolB: bigint;
+              phase: number;
+            };
+            if (battle.agentA === ZERO_ADDRESS) return null;
+            // BattleState: SETTLED=1; phase>=5 means JUDGING_READY/SETTLED/CANCELLED/EXPIRED
+            const isFinished = battle.state === 1 || Number(battle.phase) >= 5;
+            if (isFinished) {
+              state = "SETTLED";
+              if (battle.winner && battle.winner !== ZERO_ADDRESS) {
+                winnerAddress = battle.winner;
+                const fighterPool = battle.fighterPoolA + battle.fighterPoolB;
+                winnerEarnedUSDC = Number((fighterPool * 7000n) / 10000n) / 1e6;
+              }
+            }
+          } catch {}
+        }
+
         const topic = topicPreview;
         const categoryGuess =
           /sport|football|soccer|basketball|nba|nfl|kobe|lebron|messi|ronaldo/i.test(topic) ? "Sports" :
@@ -997,6 +1088,12 @@ async function fetchRoomsUncached(): Promise<Room[]> {
           topic,
           creatorName: `${creator.slice(0, 6)}…${creator.slice(-4)}`,
           creatorAddress: creator,
+          challengerAddress:
+            roomData.challenger && roomData.challenger !== ZERO_ADDRESS ? roomData.challenger : undefined,
+          battleId,
+          winnerAddress,
+          winnerName: winnerAddress ? shortAddress(winnerAddress) : undefined,
+          winnerEarnedUSDC,
           stake: Number(stakeWei) / 1e6,
           state,
           createdAt: Number(roomData.createdAt) * 1000,
@@ -1303,7 +1400,7 @@ function ChallengesLoader() {
 export default function LobbyPage() {
   const router = useRouter();
   const [showCreate, setShowCreate] = useState(false);
-  const [filter, setFilter] = useState<"ALL" | "WAITING" | "LOCKED">("ALL");
+  const [filter, setFilter] = useState<"ALL" | "WAITING" | "LOCKED" | "SETTLED">("ALL");
   const [rooms, setRooms] = useState<Room[]>([]);
   const [loadingRooms, setLoadingRooms] = useState(true);
   const [walletAddress, setWalletAddress] = useState<string | null>(null);
@@ -1382,7 +1479,7 @@ export default function LobbyPage() {
   const totalPool = rooms.reduce((acc, r) => acc + r.stake * 2, 0);
 
   const filtered = rooms.filter((r) =>
-    filter === "ALL" ? true : r.state === filter,
+    filter === "ALL" ? r.state !== "SETTLED" : r.state === filter,
   );
 
   function handleAccept(room: Room) {
@@ -1432,6 +1529,13 @@ export default function LobbyPage() {
       if (execution.mode === "autonomous_oneshot") {
         // 1Shot executed — no wallet popup.
         setAcceptTxState("accepting");
+        setRooms((prev) =>
+          prev.map((r) =>
+            r.id === room.id
+              ? { ...r, state: "LOCKED" as const, challengerAddress: account, battleId }
+              : r
+          )
+        );
         router.push("/game-lobby");
         return;
       }
@@ -1448,6 +1552,13 @@ export default function LobbyPage() {
       const calls = approvalCall ? [approvalCall, acceptCall] : [acceptCall];
       const txHash = await sendUserBatch(account, calls);
       await waitForTx(txHash);
+      setRooms((prev) =>
+        prev.map((r) =>
+          r.id === room.id
+            ? { ...r, state: "LOCKED" as const, challengerAddress: account, battleId }
+            : r
+        )
+      );
       router.push("/game-lobby");
     } catch (err) {
       let msg = "Accept failed";
@@ -1798,7 +1909,7 @@ export default function LobbyPage() {
 
         {/* ── Filter strip (mobile) ────────────────────────────────────────── */}
         <div className="sm:hidden flex gap-1 mb-5 border border-white/6 p-0.5 overflow-hidden">
-          {["ALL", "WAITING", "LOCKED"].map((f) => (
+          {["ALL", "WAITING", "LOCKED", "SETTLED"].map((f) => (
             <button
               key={f}
               onClick={() => setFilter(f as any)}
