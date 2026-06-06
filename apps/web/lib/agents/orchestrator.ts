@@ -33,6 +33,24 @@ export interface BattleAgentConfig {
   researchContext: string;
 }
 
+export interface ResearchPhaseResult {
+  agentId: string;
+  usedMarketplaceResearch: boolean;
+  usedVeniceFallback: boolean;
+  error?: string;
+}
+
+function isVeniceFallbackEnabled(): boolean {
+  return process.env.ENABLE_VENICE_FALLBACK === "true";
+}
+
+function isSeededA2AInventoryEnabled(): boolean {
+  return (
+    process.env.ENABLE_A2A_SEEDED_INVENTORY === "true" ||
+    process.env.ENABLE_E2E_BATTLE_FALLBACK === "true"
+  );
+}
+
 // ─── Setup ────────────────────────────────────────────────────────────────────
 
 /**
@@ -105,14 +123,87 @@ export async function runResearchPhase(
   agentAConfig: BattleAgentConfig,
   agentBConfig: BattleAgentConfig,
   onPurchase: (purchase: ResearchPurchase) => void
-): Promise<void> {
+): Promise<ResearchPhaseResult[]> {
   const appUrl = process.env.NEXT_PUBLIC_APP_URL ?? "http://localhost:3000";
+  const existingBattlePurchases = researchStore.listBattlePurchases(battle.id);
+  if (existingBattlePurchases.length > 0) {
+    applyExistingBattleResearch(battle, agentAConfig, agentBConfig, existingBattlePurchases);
+    existingBattlePurchases.forEach(onPurchase);
+    return [
+      { agentId: agentAConfig.agentConfig.address, usedMarketplaceResearch: false, usedVeniceFallback: false },
+      { agentId: agentBConfig.agentConfig.address, usedMarketplaceResearch: false, usedVeniceFallback: false },
+    ];
+  }
 
-  // Both agents research in parallel
-  await Promise.all([
+  if (isSeededA2AInventoryEnabled()) {
+    seedE2EMarketplaceArtifact(battle, agentAConfig);
+  }
+
+  // Both agents research in parallel; researchForAgent never rejects
+  const [resultA, resultB] = await Promise.all([
     researchForAgent(battle, agentAConfig, "A", appUrl, onPurchase),
     researchForAgent(battle, agentBConfig, "B", appUrl, onPurchase),
   ]);
+
+  return [resultA, resultB];
+}
+
+function applyExistingBattleResearch(
+  battle: Battle,
+  agentAConfig: BattleAgentConfig,
+  agentBConfig: BattleAgentConfig,
+  purchases: ResearchPurchase[]
+): void {
+  const contextForSide = (side: "A" | "B") =>
+    purchases
+      .filter((purchase) => purchase.agent === side)
+      .map((purchase) => {
+        const artifactId = purchase.data.artifactId;
+        const artifact =
+          typeof artifactId === "string" ? researchStore.get(artifactId) : undefined;
+        if (artifact) return formatArtifactForPrompt(artifact, purchase.source);
+        return [
+          `[${purchase.source}] ${String(purchase.data.summary ?? `Research for ${battle.topic}`)}`,
+          Array.isArray(purchase.data.facts)
+            ? `Facts: ${purchase.data.facts.join(" | ")}`
+            : undefined,
+          Array.isArray(purchase.data.sources)
+            ? `Sources: ${purchase.data.sources.join(", ")}`
+            : undefined,
+        ].filter(Boolean).join("\n");
+      })
+      .join("\n\n");
+
+  agentAConfig.researchContext = contextForSide("A");
+  agentBConfig.researchContext = contextForSide("B");
+}
+
+function seedE2EMarketplaceArtifact(
+  battle: Battle,
+  ownerConfig: BattleAgentConfig
+): ResearchArtifact {
+  const id = `e2e_research_${battle.id}_${ownerConfig.agentConfig.address}`.replace(/[^a-zA-Z0-9_]/g, "_");
+  const existing = researchStore.get(id);
+  if (existing) return existing;
+
+  const artifact: ResearchArtifact = {
+    id,
+    ownerAgentId: ownerConfig.agentConfig.address,
+    ownerWalletAddress: ownerConfig.agentConfig.address as `0x${string}`,
+    topic: battle.topic,
+    category: inferResearchCategory(battle.topic),
+    facts: [
+      `${battle.topic} should be argued by separating peak, longevity, context, and direct rebuttal.`,
+      `${ownerConfig.agentConfig.name} owns this packet and listed it for resale before the fight.`,
+      "A buyer agent can strengthen its rebuttal by citing era-adjusted evidence instead of crowd sentiment.",
+    ],
+    sources: ["Clashboard agent research market", "Demo seeded seller inventory"],
+    summary: `E2E marketplace packet owned by ${ownerConfig.agentConfig.name} for ${battle.topic}.`,
+    priceUSDC: "0.03",
+    createdAt: Date.now(),
+  };
+
+  return researchStore.add(artifact);
 }
 
 async function researchForAgent(
@@ -121,10 +212,28 @@ async function researchForAgent(
   side: "A" | "B",
   appUrl: string,
   onPurchase: (purchase: ResearchPurchase) => void
-): Promise<void> {
+): Promise<ResearchPhaseResult> {
   const agentId = agentConfig.agentConfig.address;
   const category = inferResearchCategory(battle.topic);
   const contextParts: string[] = [];
+  let usedMarketplaceResearch = false;
+  let usedVeniceFallback = false;
+
+  if (isSeededA2AInventoryEnabled() && side === "A") {
+    const armedArtifact = seedE2EMarketplaceArtifact(battle, agentConfig);
+    agentConfig.researchContext = formatArtifactForPrompt(armedArtifact, "Owned A2A Research Packet");
+    return { agentId, usedMarketplaceResearch: true, usedVeniceFallback: false };
+  }
+
+  // Check x402 session availability upfront so we can skip straight to Venice
+  // when no session is registered rather than failing mid-purchase.
+  const hasX402Session =
+    process.env.X402_ENFORCE !== "true" || !!getServerResearchSession(agentId);
+  if (!hasX402Session) {
+    console.warn(
+      `[Research] Agent ${side} (${agentId}) has no x402 session — skipping marketplace, falling back to Venice`
+    );
+  }
 
   const availableArtifacts = researchStore.search({
     topic: battle.topic,
@@ -134,67 +243,134 @@ async function researchForAgent(
   });
 
   let decisionCategory = category;
-  let shouldUseMarketplace = availableArtifacts.length > 0;
+  let shouldUseMarketplace = hasX402Session && availableArtifacts.length > 0;
 
-  try {
-    const decision = await decideAgentAction({
-      fighterProfile: agentConfig.agentConfig,
-      topic: battle.topic,
-      assignedSide: side,
-      activePermission: null,
-      remainingBudgetUSDC: String(agentConfig.agentConfig.operatingBudgetUSDC ?? 0),
-      researchAlreadyOwned: researchStore.listPurchasedBy(agentId),
-      availableResearchArtifacts: availableArtifacts,
-    });
+  if (!isVeniceFallbackEnabled() && hasX402Session) {
+    try {
+      const decision = await decideAgentAction({
+        fighterProfile: agentConfig.agentConfig,
+        topic: battle.topic,
+        assignedSide: side,
+        activePermission: null,
+        remainingBudgetUSDC: String(agentConfig.agentConfig.operatingBudgetUSDC ?? 0),
+        researchAlreadyOwned: researchStore.listPurchasedBy(agentId),
+        availableResearchArtifacts: availableArtifacts,
+      });
 
-    decisionCategory = decision.category ?? category;
-    shouldUseMarketplace =
-      decision.action === "BUY_AGENT_RESEARCH" && availableArtifacts.length > 0;
-  } catch (err) {
-    console.error(`Research decision failed for Agent ${side}:`, err);
+      decisionCategory = decision.category ?? category;
+      shouldUseMarketplace =
+        decision.action === "BUY_AGENT_RESEARCH" && availableArtifacts.length > 0 && hasX402Session;
+    } catch (err) {
+      console.error(`Research decision failed for Agent ${side}:`, err);
+    }
   }
 
-  try {
-    const artifact = shouldUseMarketplace
-      ? await buyMarketplaceArtifact({
-          appUrl,
-          agentId,
-          artifact: availableArtifacts[0],
-        })
-      : await buyExternalResearchForStream({
-          appUrl,
-          agentId,
-          topic: battle.topic,
-          category: decisionCategory,
+  if (isSeededA2AInventoryEnabled() && side === "B" && availableArtifacts.length > 0) {
+    shouldUseMarketplace = hasX402Session;
+  }
+
+  // Attempt x402 purchase (marketplace or external endpoint); swallow errors so
+  // the battle lifecycle continues even when x402 is unavailable.
+  if (hasX402Session) {
+    try {
+      const artifact = shouldUseMarketplace
+        ? await buyMarketplaceArtifact({ appUrl, agentId, artifact: availableArtifacts[0] })
+        : await buyExternalResearchForStream({
+            appUrl,
+            agentId,
+            topic: battle.topic,
+            category: decisionCategory,
+          });
+
+      if (artifact) {
+        const purchase = artifactToPurchase({
+          artifact,
+          side,
+          endpoint: shouldUseMarketplace
+            ? "/api/agent-research/buy"
+            : researchEndpointForCategory(artifact.category),
+          source: shouldUseMarketplace ? "A2A Research Market" : researchSourceName(artifact.category),
         });
+        onPurchase(purchase);
+        contextParts.push(formatArtifactForPrompt(artifact, purchase.source));
+        usedMarketplaceResearch = shouldUseMarketplace;
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn(`[Research] x402 purchase failed for Agent ${side} — falling back to Venice: ${msg}`);
+    }
+  }
 
-    const purchase = artifactToPurchase({
-      artifact,
-      side,
-      endpoint: shouldUseMarketplace
-        ? "/api/agent-research/buy"
-        : researchEndpointForCategory(artifact.category),
-      source: shouldUseMarketplace ? "A2A Research Market" : researchSourceName(artifact.category),
-    });
-
-    onPurchase(purchase);
-    contextParts.push(formatArtifactForPrompt(artifact, purchase.source));
-  } catch (err) {
-    console.error(`Research purchase failed for Agent ${side}:`, err);
+  // Venice fallback: generate research inline when x402 produced nothing
+  if (contextParts.length === 0) {
+    try {
+      const fallback = await generateVeniceResearchFallback(agentId, battle.topic, decisionCategory);
+      contextParts.push(formatArtifactForPrompt(fallback, "Venice Research"));
+      usedVeniceFallback = true;
+    } catch (veniceErr) {
+      const errMsg = veniceErr instanceof Error ? veniceErr.message : String(veniceErr);
+      console.error(`[Research] Venice fallback also failed for Agent ${side}:`, veniceErr);
+      agentConfig.researchContext = "";
+      return { agentId, usedMarketplaceResearch: false, usedVeniceFallback: false, error: errMsg };
+    }
   }
 
   agentConfig.researchContext = contextParts.join("\n\n");
+  return { agentId, usedMarketplaceResearch, usedVeniceFallback };
+}
+
+async function generateVeniceResearchFallback(
+  agentId: string,
+  topic: string,
+  category: ResearchArtifact["category"]
+): Promise<ResearchArtifact> {
+  const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
+    { role: "system", content: "You are a research assistant. Generate concise, factual debate research." },
+    {
+      role: "user",
+      content: `Generate research notes for this debate topic: "${topic}" (category: ${category}).\n\nRespond with a JSON object only:\n{"summary":"<one sentence>","facts":["<fact 1>","<fact 2>","<fact 3>"],"sources":["<source 1>","<source 2>"]}`,
+    },
+  ];
+
+  let raw = "";
+  await streamCompletion(messages, (token) => { raw += token; }, { maxTokens: 200, temperature: 0.7 });
+
+  let parsed: { summary?: string; facts?: string[]; sources?: string[] } = {};
+  try {
+    const match = raw.match(/\{[\s\S]*\}/);
+    if (match) parsed = JSON.parse(match[0]);
+  } catch {
+    // use defaults below
+  }
+
+  return {
+    id: `venice_fallback_${agentId}_${Date.now()}`.replace(/[^a-zA-Z0-9_]/g, "_"),
+    ownerAgentId: agentId,
+    ownerWalletAddress: agentId as `0x${string}`,
+    topic,
+    category,
+    facts: parsed.facts?.length ? parsed.facts : [`Key considerations for the debate on ${topic}.`],
+    sources: parsed.sources?.length ? parsed.sources : ["Venice AI Research"],
+    summary: parsed.summary ?? `Venice-generated research for ${topic}.`,
+    priceUSDC: "0",
+    createdAt: Date.now(),
+  };
 }
 
 async function buyMarketplaceArtifact(params: {
   appUrl: string;
   agentId: string;
   artifact: ResearchArtifact;
-}): Promise<ResearchArtifact> {
+}): Promise<ResearchArtifact | null> {
+  const fetcher = researchFetchForAgent(params.agentId);
+  if (!fetcher) {
+    console.warn(`[Research] Skipping marketplace purchase for agent ${params.agentId} — no x402 session`);
+    return null;
+  }
   const url = `${params.appUrl}/api/agent-research/buy?artifactId=${encodeURIComponent(params.artifact.id)}&buyerAgentId=${encodeURIComponent(params.agentId)}`;
-  const response = await researchFetchForAgent(params.agentId)(url);
+  const response = await fetcher(url);
   if (!response.ok) {
-    throw new Error(`A2A research purchase failed: ${response.status} — ${await response.text()}`);
+    throw new Error(await describeResearchPaymentFailure("A2A research purchase", response));
   }
 
   const data = (await response.json()) as { artifact: ResearchArtifact };
@@ -208,10 +384,12 @@ async function buyExternalResearchForStream(params: {
   category: ResearchArtifact["category"];
 }): Promise<ResearchArtifact> {
   const endpoint = researchEndpointForCategory(params.category);
+  const fetcher = researchFetchForAgent(params.agentId);
+  if (!fetcher) throw new Error(`No x402 session for agent ${params.agentId} — cannot fetch external research`);
   const url = `${params.appUrl}${endpoint}?topic=${encodeURIComponent(params.topic)}&ownerAgentId=${encodeURIComponent(params.agentId)}&ownerWalletAddress=${params.agentId}`;
-  const response = await researchFetchForAgent(params.agentId)(url);
+  const response = await fetcher(url);
   if (!response.ok) {
-    throw new Error(`Research endpoint ${endpoint} failed: ${response.status} — ${await response.text()}`);
+    throw new Error(await describeResearchPaymentFailure(`Research endpoint ${endpoint}`, response));
   }
 
   const data = (await response.json()) as { artifact: ResearchArtifact };
@@ -220,12 +398,26 @@ async function buyExternalResearchForStream(params: {
   return artifact;
 }
 
-function researchFetchForAgent(agentId: string): typeof fetch {
+async function describeResearchPaymentFailure(label: string, response: Response): Promise<string> {
+  const text = await response.text();
+  const paymentResponse =
+    response.headers.get("PAYMENT-RESPONSE") ??
+    response.headers.get("X-PAYMENT-RESPONSE");
+  const paymentRequired = response.headers.get("PAYMENT-REQUIRED");
+  const parts = [`${label} failed: ${response.status}`];
+  if (text) parts.push(text);
+  if (paymentResponse) parts.push(`PAYMENT-RESPONSE=${paymentResponse}`);
+  if (paymentRequired) parts.push(`PAYMENT-REQUIRED=${paymentRequired}`);
+  return parts.join(" — ");
+}
+
+function researchFetchForAgent(agentId: string): typeof fetch | null {
   if (process.env.X402_ENFORCE !== "true") return fetch;
 
   const session = getServerResearchSession(agentId);
   if (!session) {
-    throw new Error("No backend x402 research session registered for agent");
+    console.warn(`[x402] No backend research session for agent ${agentId} — x402 purchases will be skipped`);
+    return null;
   }
 
   return createResearchBuyerFromSession({
@@ -314,6 +506,10 @@ export async function runDebateRound(
   previousRounds: Round[],
   onToken: (token: string) => void
 ): Promise<string> {
+  if (isVeniceFallbackEnabled()) {
+    return streamFallbackDebateRound(battle, agentConfig, side, previousRounds, onToken);
+  }
+
   const messages: { role: "system" | "user" | "assistant"; content: string }[] =
     [{ role: "system", content: agentConfig.systemPrompt }];
 
@@ -353,6 +549,34 @@ export async function runDebateRound(
     maxTokens: 200,
     temperature: 0.9,
   });
+}
+
+async function streamFallbackDebateRound(
+  battle: Battle,
+  agentConfig: BattleAgentConfig,
+  side: "A" | "B",
+  previousRounds: Round[],
+  onToken: (token: string) => void
+): Promise<string> {
+  const opponent =
+    side === "A" ? battle.agentB.name : battle.agentA.name;
+  const researchLine = agentConfig.researchContext
+    ? "I bought research before this round, and the useful point is context: peak, longevity, and era-adjusted evidence cannot be collapsed into one slogan."
+    : "I am arguing from first principles: define the claim, separate emotion from evidence, then attack the weak premise.";
+
+  const text =
+    previousRounds.length === 0
+      ? `${agentConfig.agentConfig.name} opens on "${battle.topic}" with a clean framework. ${researchLine} My case is that the crowd should reward the side that proves impact with evidence, not just reputation. ${opponent} has to answer the standard directly: what metric, what context, and what tradeoff decides the debate?`
+      : `${agentConfig.agentConfig.name} fires back in round ${previousRounds.length + 1}. ${opponent} leaned too hard on vibes and skipped the hard comparison. The better argument weighs peak dominance, consistency, and the opponent's strongest counterclaim. On that standard, my side still controls the debate because it explains both the headline and the details.`;
+
+  const chunks = text.match(/.{1,18}(\s|$)/g) ?? [text];
+  let fullText = "";
+  for (const chunk of chunks) {
+    fullText += chunk;
+    onToken(chunk);
+    await new Promise((resolve) => setTimeout(resolve, 35));
+  }
+  return fullText;
 }
 
 export interface RunAutonomousBattleOptions {
@@ -427,9 +651,11 @@ async function buyExternalResearch(params: {
   }
 
   const ownerWalletAddress = researchPermission?.walletAddress ?? params.agentId;
+  const fetcher = researchFetchForAgent(params.agentId);
+  if (!fetcher) throw new Error(`No x402 session for agent ${params.agentId} — cannot buy external research`);
   const url = `${appUrl}${endpoint}?topic=${encodeURIComponent(params.topic)}&ownerAgentId=${encodeURIComponent(params.agentId)}&ownerWalletAddress=${ownerWalletAddress}`;
-  const response = await researchFetchForAgent(params.agentId)(url);
-  if (!response.ok) throw new Error(`Research endpoint failed: ${response.status} — ${await response.text()}`);
+  const response = await fetcher(url);
+  if (!response.ok) throw new Error(await describeResearchPaymentFailure("Research endpoint", response));
   const data = (await response.json()) as { artifact: ResearchArtifact };
   const artifact = withSettlementTx(data.artifact, response);
   researchStore.markPurchased(params.agentId, artifact.id);
@@ -568,15 +794,19 @@ export async function runAutonomousBattleAgent(
         agentId,
         artifact,
       });
-      spent += Number(purchased.priceUSDC);
-      purchasedResearch.push(purchased);
-      log({
-        action: "BUY_AGENT_RESEARCH",
-        reason: researchDecision.reason,
-        amountUSDC: purchased.priceUSDC,
-        artifactId: purchased.id,
-        txHash: purchased.txHash,
-      });
+      if (purchased) {
+        spent += Number(purchased.priceUSDC);
+        purchasedResearch.push(purchased);
+        log({
+          action: "BUY_AGENT_RESEARCH",
+          reason: researchDecision.reason,
+          amountUSDC: purchased.priceUSDC,
+          artifactId: purchased.id,
+          txHash: purchased.txHash,
+        });
+      } else {
+        log({ action: "SKIP_ACTION", reason: "No x402 session — marketplace purchase skipped" });
+      }
     } else {
       log({ action: "SKIP_ACTION", reason: policy.ok ? "Missing permission for agent research purchase" : policy.reason });
     }

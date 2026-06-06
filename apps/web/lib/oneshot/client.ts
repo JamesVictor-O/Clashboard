@@ -26,6 +26,24 @@ const ERC20_TRANSFER_ABI = parseAbi([
   "function transfer(address to, uint256 amount) returns (bool)",
 ]);
 
+// Graduated poll intervals: fast start so quick confirmations are caught immediately,
+// then back off to a steady 2 s cadence. Flat 2 s polling was the primary source of
+// the 1-2 minute delay — a tx that confirms in 3 s was not detected until 4 s+.
+const RELAYER_POLL_SCHEDULE_MS = [300, 500, 700, 1_000, 1_500, 2_000];
+const RELAYER_STATUS_MAX_ATTEMPTS = 120; // ~4 minutes total at plateau cadence
+
+// ─── In-process relayer metadata caches ──────────────────────────────────────
+// getCapabilities is essentially static (fee collector, token list never change
+// mid-session). getFeeData changes with gas prices but is stable enough to reuse
+// for 30 s — the minFee on testnet rarely shifts between two sequential actions.
+
+const CAPABILITY_TTL_MS = 5 * 60 * 1_000; // 5 min
+const FEE_DATA_TTL_MS = 30_000;            // 30 s
+
+type CacheEntry<T> = { value: T; expiresAt: number };
+const capabilityCache = new Map<number, CacheEntry<RelayerCapability>>();
+const feeDataCache    = new Map<string,  CacheEntry<FeeData>>();
+
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 export interface OneShotCall {
@@ -188,6 +206,9 @@ export function feeAmountToAtoms(amount: string, decimals: number): bigint {
 }
 
 export async function getCapabilities(chainId: number): Promise<RelayerCapability> {
+  const cached = capabilityCache.get(chainId);
+  if (cached && Date.now() < cached.expiresAt) return cached.value;
+
   const caps = await relayerRpc<Record<string, RelayerCapability>>(
     chainId,
     "relayer_getCapabilities",
@@ -195,26 +216,34 @@ export async function getCapabilities(chainId: number): Promise<RelayerCapabilit
   );
   const capability = caps[String(chainId)];
   if (!capability) throw new Error(`1Shot relayer does not support chain ${chainId}`);
+  capabilityCache.set(chainId, { value: capability, expiresAt: Date.now() + CAPABILITY_TTL_MS });
   return capability;
 }
 
 export async function getFeeData(chainId: number, token: `0x${string}`): Promise<FeeData> {
-  return relayerRpc<FeeData>(chainId, "relayer_getFeeData", {
+  const key = `${chainId}:${token}`;
+  const cached = feeDataCache.get(key);
+  if (cached && Date.now() < cached.expiresAt) return cached.value;
+
+  const data = await relayerRpc<FeeData>(chainId, "relayer_getFeeData", {
     chainId: String(chainId),
     token,
   });
+  feeDataCache.set(key, { value: data, expiresAt: Date.now() + FEE_DATA_TTL_MS });
+  return data;
 }
 
 export async function pollStatus(chainId: number, taskId: `0x${string}`): Promise<StatusResult> {
   let last: StatusResult | null = null;
-  for (let i = 0; i < 30; i++) {
+  for (let i = 0; i < RELAYER_STATUS_MAX_ATTEMPTS; i++) {
     const status = await relayerRpc<StatusResult>(chainId, "relayer_getStatus", {
       id: taskId,
       logs: false,
     });
     last = status;
     if (status.status === 200 || status.status === 400 || status.status === 500) return status;
-    await new Promise((resolve) => setTimeout(resolve, 2000));
+    const delay = RELAYER_POLL_SCHEDULE_MS[Math.min(i, RELAYER_POLL_SCHEDULE_MS.length - 1)];
+    await new Promise((resolve) => setTimeout(resolve, delay));
   }
   return last ?? { id: taskId, chainId: String(chainId), status: 100 };
 }
@@ -294,9 +323,17 @@ export async function execute1Shot(req: OneShotExecuteRequest): Promise<OneShotE
   if (status.status === 400 || status.status === 500) {
     throw new Error(`1Shot task ${taskId} failed: ${status.message ?? JSON.stringify(status.data ?? {})}`);
   }
+  if (status.status !== 200) {
+    const plateauMs = RELAYER_POLL_SCHEDULE_MS[RELAYER_POLL_SCHEDULE_MS.length - 1];
+    const waitedSeconds = Math.round((plateauMs * RELAYER_STATUS_MAX_ATTEMPTS) / 1000);
+    throw new Error(`1Shot task ${taskId} did not confirm within ${waitedSeconds}s (last status ${status.status})`);
+  }
+  if (!status.receipt?.transactionHash && !status.hash) {
+    throw new Error(`1Shot task ${taskId} confirmed without an explorer transaction hash`);
+  }
 
   return {
-    status: status.status === 200 ? "confirmed" : "submitted",
+    status: "confirmed",
     taskId,
     txHash: status.receipt?.transactionHash ?? status.hash,
     actionType: req.actionType,

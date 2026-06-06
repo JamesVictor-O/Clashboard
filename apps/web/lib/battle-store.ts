@@ -9,12 +9,25 @@ export interface StoredBet {
   amount: bigint; // USDC 6-decimal
 }
 
+export interface PendingRound {
+  roundIndex: number;
+  agentAText?: string;
+  agentATxHash?: string;
+  agentBText?: string;
+  agentBTxHash?: string;
+}
+
 export interface StoredBattle {
   battle: Battle;
   rubricPreimage: string;
   rounds: Round[];
   bets: Map<string, StoredBet>; // address → bet
   phase: BattlePhase;
+  /** Research context strings persisted between step invocations */
+  researchContextA?: string;
+  researchContextB?: string;
+  /** Partial-round progress for the step-based state machine runner */
+  pendingRound?: PendingRound;
 }
 
 // ─── In-Memory Store ──────────────────────────────────────────────────────────

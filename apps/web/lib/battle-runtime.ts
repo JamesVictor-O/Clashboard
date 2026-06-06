@@ -1,5 +1,11 @@
-import { ARENA_ABI, REGISTRY_ABI, buildRubricCommitment, commitRubricOnChain, getPublicClient } from "@/lib/chain";
+import {
+  ARENA_ABI,
+  REGISTRY_ABI,
+  buildRubricCommitment,
+  getPublicClient,
+} from "@/lib/chain";
 import { battleStore, type StoredBattle } from "@/lib/battle-store";
+import { researchStore } from "@/lib/research-store";
 import type { Agent, Battle, BattlePhase, PersonalityType } from "@/lib/types";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
@@ -17,6 +23,12 @@ type BattleTuple = readonly [
   bigint,
   bigint,
   number,
+  number,
+  number,
+  bigint,
+  bigint,
+  bigint,
+  bigint,
   `0x${string}`,
   bigint,
   `0x${string}`,
@@ -27,14 +39,24 @@ type BattleTuple = readonly [
 
 function mapContractPhase(phase: number): BattlePhase {
   if (phase === 0) return "BETTING";
-  if (phase === 1) return "ROUND_1";
-  if (phase === 2) return "ROUND_2";
-  if (phase === 3) return "ROUND_3";
-  if (phase === 4) return "JUDGING_READY";
+  if (phase === 1) return "PREPARING";
+  if (phase === 2) return "ROUND_1";
+  if (phase === 3) return "ROUND_2";
+  if (phase === 4) return "ROUND_3";
+  if (phase === 5) return "JUDGING_READY";
+  if (phase === 6) return "SETTLED";
+  if (phase === 7) return "CANCELLED";
+  if (phase === 8) return "EXPIRED";
   return "SETTLED";
 }
 
-function deterministicRubricJson(battleId: string, topic: string) {
+function mapContractState(state: number): Battle["state"] {
+  if (state === 0) return "OPEN";
+  if (state === 1) return "SETTLED";
+  return "CANCELLED";
+}
+
+export function deterministicRubricJson(battleId: string, topic: string) {
   return JSON.stringify({
     battleId,
     topic,
@@ -90,24 +112,30 @@ async function readOnChainBattle(battleId: `0x${string}`): Promise<{
   const client = getPublicClient();
   const arenaAddress = process.env.NEXT_PUBLIC_ARENA_CONTRACT as `0x${string}`;
 
-  const [battleData, phase] = await Promise.all([
-    client.readContract({
+  try {
+    const battleData = (await client.readContract({
       address: arenaAddress,
       abi: ARENA_ABI,
       functionName: "battles",
       args: [battleId],
-    }) as Promise<unknown>,
-    client.readContract({
+    })) as unknown;
+
+    const tuple = battleData as BattleTuple;
+    if (!tuple[1] || tuple[1].toLowerCase() === ZERO_ADDRESS) return null;
+
+    const phase = (await client.readContract({
       address: arenaAddress,
       abi: ARENA_ABI,
       functionName: "getBattlePhase",
       args: [battleId],
-    }) as Promise<number>,
-  ]);
+    })) as number;
 
-  const tuple = battleData as BattleTuple;
-  if (!tuple[1] || tuple[1].toLowerCase() === ZERO_ADDRESS) return null;
-  return { tuple, phaseNum: Number(phase) };
+    return { tuple, phaseNum: Number(phase) };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (message.includes("Battle not found")) return null;
+    throw err;
+  }
 }
 
 export async function syncBattleRuntimeFromChain(battleId: `0x${string}`): Promise<StoredBattle | null> {
@@ -116,25 +144,13 @@ export async function syncBattleRuntimeFromChain(battleId: `0x${string}`): Promi
 
   const existing = battleStore.get(battleId);
   const { tuple, phaseNum } = onChain;
-  const topic = tuple[15];
+  const topic = tuple[21];
   const rubricJson = deterministicRubricJson(battleId, topic);
   const { preimage: rubricPreimage, hash: deterministicRubricHash } =
     buildRubricCommitment(rubricJson);
 
-  let rubricHash = tuple[12];
-  const rubricCommitted = tuple[17];
-  const isOpen = Number(tuple[0]) === 0;
-
-  if (isOpen && !rubricCommitted) {
-    try {
-      await commitRubricOnChain({ battleId, rubricHash: deterministicRubricHash });
-    } catch (err) {
-      // Another request may have hydrated the same accepted battle first.
-      // The rubric is deterministic, so a duplicate commit race can be ignored.
-      console.warn("Rubric commit during battle hydration failed:", err);
-    }
-    rubricHash = deterministicRubricHash;
-  }
+  const rubricHash = tuple[23] ? tuple[18] : deterministicRubricHash;
+  const stateNum = Number(tuple[0]);
 
   const [agentA, agentB] = await Promise.all([
     getAgentDisplay(tuple[1], "A"),
@@ -146,24 +162,62 @@ export async function syncBattleRuntimeFromChain(battleId: `0x${string}`): Promi
     topic,
     agentA,
     agentB,
-    state: isOpen ? "OPEN" : "SETTLED",
+    state: mapContractState(stateNum),
     poolA: tuple[5] + tuple[7],
     poolB: tuple[6] + tuple[8],
     bettingDeadline: tuple[9],
     roundDuration: Number(tuple[10]),
     totalRounds: Number(tuple[11]),
+    currentRound: Number(tuple[13] ?? 0),
+    debateStartedAt: tuple[14],
+    currentRoundDeadline: tuple[16],
+    prepareDeadline: tuple[17],
     rubricHash,
     winner: tuple[3].toLowerCase() === ZERO_ADDRESS ? null : tuple[3],
     bettorCount: 0,
     createdAt: Number(tuple[9] - 300n) * 1000,
   };
 
+  const nowSec = BigInt(Math.floor(Date.now() / 1000));
+  let phase = mapContractPhase(phaseNum);
+  if (phase === "BETTING" && nowSec >= battle.bettingDeadline) {
+    phase = "PREPARING";
+  }
+
+  const existingRounds = existing?.rounds ?? [];
+  const completedRoundCount =
+    phase === "ROUND_2" ? 1 :
+    phase === "ROUND_3" ? 2 :
+    phase === "JUDGING_READY" || phase === "SETTLED" ? Number(battle.totalRounds ?? 2) :
+    0;
+  const restoredRounds =
+    existingRounds.length >= completedRoundCount
+      ? existingRounds
+      : [
+          ...existingRounds,
+          ...Array.from({ length: completedRoundCount - existingRounds.length }, (_, index) => {
+            const roundNumber = existingRounds.length + index + 1;
+            return {
+              index: roundNumber - 1,
+              agentAText: `Round ${roundNumber} argument was already submitted on-chain before this runtime loaded.`,
+              agentBText: `Round ${roundNumber} argument was already submitted on-chain before this runtime loaded.`,
+              timestamp: Date.now(),
+            };
+          }),
+        ];
+
   const stored: StoredBattle = {
     battle,
     rubricPreimage: existing?.rubricPreimage ?? rubricPreimage,
-    rounds: existing?.rounds ?? [],
+    rounds: restoredRounds,
     bets: existing?.bets ?? new Map(),
-    phase: mapContractPhase(phaseNum),
+    phase,
+    // Preserve step-runner state — these are never on-chain, only in-process.
+    // Dropping them on every chain sync wipes pendingRound and causes _runStep
+    // to re-generate arguments that were already submitted.
+    researchContextA: existing?.researchContextA,
+    researchContextB: existing?.researchContextB,
+    pendingRound: existing?.pendingRound,
   };
 
   battleStore.set(battleId, stored);
@@ -179,6 +233,13 @@ export async function getBattleSnapshot(battleId: `0x${string}`) {
   if (!stored) return null;
 
   const { battle, phase, rounds } = stored;
+  const purchaseMap = new Map(
+    [
+      ...(battle.researchPurchases ?? []),
+      ...researchStore.listBattlePurchases(battleId),
+    ].map((purchase) => [purchase.id, purchase])
+  );
+
   return {
     id: battle.id,
     topic: battle.topic,
@@ -191,7 +252,17 @@ export async function getBattleSnapshot(battleId: `0x${string}`) {
     bettingDeadline: battle.bettingDeadline.toString(),
     roundDuration: battle.roundDuration,
     totalRounds: battle.totalRounds ?? 2,
+    currentRound: battle.currentRound ?? 0,
+    currentRoundDeadline: battle.currentRoundDeadline?.toString(),
+    prepareDeadline: battle.prepareDeadline?.toString(),
     roundsCompleted: rounds.length,
+    rounds: rounds.map((r) => ({
+      index: r.index,
+      agentAText: r.agentAText,
+      agentBText: r.agentBText,
+      timestamp: r.timestamp,
+    })),
+    researchPurchases: Array.from(purchaseMap.values()),
     createdAt: battle.createdAt,
   };
 }

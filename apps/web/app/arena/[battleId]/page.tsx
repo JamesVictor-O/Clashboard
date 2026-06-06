@@ -68,6 +68,39 @@ const DEMO_BATTLE: Battle = {
   createdAt: Date.now() - 120_000,
 };
 
+function createLoadingBattle(id: string): Battle {
+  return {
+    id,
+    topic: "Loading battle...",
+    agentA: {
+      address: "0x0000000000000000000000000000000000000000",
+      name: "Agent A",
+      personality: "Analyst",
+      color: "#FFB800",
+      winRate: 0,
+      totalBattles: 0,
+    },
+    agentB: {
+      address: "0x0000000000000000000000000000000000000000",
+      name: "Agent B",
+      personality: "Historian",
+      color: "#4466FF",
+      winRate: 0,
+      totalBattles: 0,
+    },
+    state: "OPEN",
+    poolA: 0n,
+    poolB: 0n,
+    bettingDeadline: 0n,
+    roundDuration: 0,
+    totalRounds: 2,
+    rubricHash: "0x",
+    winner: null,
+    bettorCount: 0,
+    createdAt: Date.now(),
+  };
+}
+
 // ─── Types ───────────────────────────────────────────────────────────────────
 
 type Phase = "countdown" | "betting" | "live" | "verdict";
@@ -616,7 +649,7 @@ export default function BattlePage() {
   const router = useRouter();
   const isDemo = !battleId || battleId === "demo" || !battleId.startsWith("0x");
 
-  const [phase, setPhase] = useState<Phase>("countdown");
+  const [phase, setPhase] = useState<Phase>(isDemo ? "countdown" : "betting");
   const [countdown, setCountdown] = useState(3);
 
   const [roundIndex, setRoundIndex] = useState(0);
@@ -634,12 +667,17 @@ export default function BattlePage() {
   const [floatingEmojis, setFloatingEmojis] = useState<FloatingEmoji[]>([]);
 
   // Real battle data
-  const [battle, setBattle] = useState<Battle>(DEMO_BATTLE);
+  const [battle, setBattle] = useState<Battle>(
+    isDemo ? DEMO_BATTLE : createLoadingBattle(battleId ?? "unknown")
+  );
+  const [battleLoaded, setBattleLoaded] = useState(isDemo);
+  const [battleLookupError, setBattleLookupError] = useState<string | null>(null);
   const [serverPhase, setServerPhase] = useState<BattlePhase | null>(null);
   const [streamStatus, setStreamStatus] = useState<StreamStatus>(
     isDemo ? "debate" : "idle"
   );
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [researchSessionsReady, setResearchSessionsReady] = useState(isDemo);
   const [receivedRounds, setReceivedRounds] = useState<DebateRound[]>(
     isDemo ? DEMO_ROUNDS : []
   );
@@ -648,6 +686,65 @@ export default function BattlePage() {
   );
   const verdictCalledRef = useRef(false);
   const currentStreamingAgentRef = useRef<"A" | "B" | null>(null);
+  const driverStoppedRef = useRef(false);
+  const driverInFlightRef = useRef(false);
+
+  useEffect(() => {
+    if (isDemo) return;
+    setResearchSessionsReady(false);
+    const allFighterAddresses = [battle.agentA.address, battle.agentB.address].filter(
+      (address): address is `0x${string}` => /^0x[0-9a-fA-F]{40}$/.test(address)
+    );
+    if (allFighterAddresses.length < 2) {
+      return;
+    }
+
+    // In the hackathon A2A demo rail, Agent A is preloaded as the seller and
+    // Agent B performs the real x402 purchase. Requiring Agent A's backend
+    // research session here can block a valid buyer flow when the current
+    // browser only owns Agent B.
+    const addresses =
+      process.env.NEXT_PUBLIC_ENABLE_A2A_SEEDED_INVENTORY !== "false"
+        ? [allFighterAddresses[1]]
+        : allFighterAddresses;
+
+    let cancelled = false;
+    import("@/lib/research-session-client")
+      .then(async ({ registerResearchSessionForBackend }) => {
+        const failures: string[] = [];
+        for (const address of addresses) {
+          if (cancelled) return;
+          try {
+            await registerResearchSessionForBackend(address);
+          } catch (err) {
+            const message =
+              err instanceof Error
+                ? err.message
+                : `Research session registration failed for ${address}`;
+            console.warn("Research session registration failed:", message);
+            failures.push(message);
+          }
+        }
+        if (failures.length > 0) {
+          throw new Error(failures.join(" "));
+        }
+        if (!cancelled) setResearchSessionsReady(true);
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        setStreamStatus("error");
+        setStreamError(
+          err instanceof Error
+            ? err.message
+            : "Research session registration failed."
+        );
+        setPhase("verdict");
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [battle.agentA.address, battle.agentB.address, isDemo]);
 
   // ─── Fetch battle metadata (non-demo) ────────────────────────────────────
 
@@ -658,21 +755,41 @@ export default function BattlePage() {
 
     const loadSnapshot = () => {
       fetch(`/api/battle/${battleId}`, { cache: "no-store" })
-        .then((r) => (r.ok ? r.json() : null))
+        .then(async (r) => {
+          if (r.ok) return r.json();
+          const body = await r.json().catch(() => ({}));
+          throw new Error(body.error ?? `Battle lookup failed (${r.status})`);
+        })
         .then((data) => {
           if (!alive) return;
           if (!data) return;
+          setBattleLoaded(true);
+          setBattleLookupError(null);
+          const bettingDeadlineSec = Number(data.bettingDeadline ?? 0);
+          const bettingDeadlinePassed =
+            bettingDeadlineSec > 0 &&
+            Math.floor(Date.now() / 1000) >= bettingDeadlineSec;
+
           if (data.phase === "BETTING") {
-            router.replace("/game-lobby");
-            return;
+            if (!bettingDeadlinePassed) {
+              router.replace("/game-lobby");
+              return;
+            }
+            setServerPhase("PREPARING");
+            setStreamStatus("research");
+            setPhase((current) => (current === "countdown" ? "betting" : current));
+          } else {
+            setServerPhase(data.phase ?? null);
           }
-          setServerPhase(data.phase ?? null);
           if (data.phase === "SETTLED") {
             setStreamStatus("settled");
             setPhase("verdict");
           } else if (data.phase === "JUDGING_READY") {
             setStreamStatus("judging_ready");
             setPhase("verdict");
+          } else if (data.phase === "PREPARING") {
+            setStreamStatus("research");
+            setPhase((current) => (current === "countdown" ? "betting" : current));
           } else if (isContractRoundPhase(data.phase) && receivedRounds.length === 0) {
             setPhase((current) => (current === "countdown" ? "betting" : current));
           }
@@ -686,6 +803,10 @@ export default function BattlePage() {
           poolB: BigInt(data.poolB),
           bettingDeadline: BigInt(data.bettingDeadline),
           roundDuration: data.roundDuration,
+          totalRounds: data.totalRounds,
+          currentRound: data.currentRound,
+          currentRoundDeadline: data.currentRoundDeadline ? BigInt(data.currentRoundDeadline) : undefined,
+          prepareDeadline: data.prepareDeadline ? BigInt(data.prepareDeadline) : undefined,
           rubricHash: "0x",
           winner: null,
           createdAt: data.createdAt,
@@ -694,8 +815,20 @@ export default function BattlePage() {
           if (Array.isArray(data.researchPurchases)) {
             setResearchPurchases(data.researchPurchases);
           }
+          if (Array.isArray(data.rounds) && data.rounds.length > 0) {
+            setReceivedRounds(
+              (data.rounds as { agentAText: string; agentBText: string }[])
+                .map((r) => ({ a: r.agentAText, b: r.agentBText }))
+            );
+          }
         })
-        .catch(() => {});
+        .catch((err) => {
+          if (!alive) return;
+          setBattleLookupError(err instanceof Error ? err.message : "Battle lookup failed");
+          setStreamStatus("error");
+          setStreamError(err instanceof Error ? err.message : "Battle lookup failed");
+          setPhase("verdict");
+        });
     };
 
     loadSnapshot();
@@ -706,93 +839,166 @@ export default function BattlePage() {
     };
   }, [battleId, isDemo, router, receivedRounds.length]);
 
-  // ─── Connect SSE stream (non-demo) ───────────────────────────────────────
+  // ─── Arena polling driver (non-demo) ────────────────────────────────────
+  // Calls POST /api/battle/worker every 5–8 s, advancing the battle one step
+  // at a time until SETTLED. Replaces the SSE-based lifecycle for hackathon.
 
   useEffect(() => {
     if (isDemo) return;
-    if (!isContractRoundPhase(serverPhase)) return;
+    if (!battleLoaded) return;
+    if (!researchSessionsReady) return;
 
-    const sse = new EventSource(
-      `/api/battle/stream?battleId=${encodeURIComponent(battleId!)}`
-    );
+    const TERMINAL = new Set(["SETTLED", "CANCELLED", "EXPIRED"]);
+    const POLL_MIN = 5_000;
+    const POLL_MAX = 8_000;
 
-    sse.onmessage = (e) => {
+    driverStoppedRef.current = false;
+    driverInFlightRef.current = false;
+    let timerId: ReturnType<typeof setTimeout>;
+
+    const refreshSnapshot = async () => {
       try {
-        const { type, data } = JSON.parse(e.data) as {
-          type: string;
-          data: unknown;
-        };
-
-        if (type === "phase") {
-          if (data === "RESEARCH") {
-            setStreamStatus("research");
-            setPhase((current) => (current === "countdown" ? "betting" : current));
-          } else if (data === "DEBATE") {
-            setStreamStatus("debate");
-            setPhase("live");
-          } else if (data === "DONE") {
-            setStreamStatus("judging_ready");
-            setPhase("verdict");
-          }
-        } else if (type === "round_start") {
-          const event = data as { round?: number; totalRounds?: number };
-          const nextRound = Math.max(0, (event.round ?? 1) - 1);
-          setRoundIndex(nextRound);
-          setTurn("A");
-          setCurrentText("");
-          setTypingDone(false);
-          setPhase("live");
-          setStreamStatus("debate");
-        } else if (type === "turn") {
-          const event = data as { agent?: "A" | "B"; round?: number };
-          const nextTurn = event.agent === "B" ? "B" : "A";
-          currentStreamingAgentRef.current = nextTurn;
-          setTurn(nextTurn);
-          setCurrentText("");
-          setTypingDone(false);
-          if (event.round) setRoundIndex(Math.max(0, event.round - 1));
-          setPhase("live");
-          setStreamStatus("debate");
-        } else if (type === "token") {
-          const token = data as { agent?: "A" | "B"; text?: string };
-          if (!token.text) return;
-          const tokenAgent = token.agent === "B" ? "B" : "A";
-          if (currentStreamingAgentRef.current !== tokenAgent) {
-            currentStreamingAgentRef.current = tokenAgent;
-            setTurn(tokenAgent);
-            setCurrentText("");
-          }
-          setPhase("live");
-          setStreamStatus("debate");
-          setCurrentText((prev) => `${prev}${token.text}`);
-        } else if (type === "round") {
-          const round = data as { agentAText: string; agentBText: string };
-          setReceivedRounds((prev) => [
-            ...prev,
-            { a: round.agentAText, b: round.agentBText },
-          ]);
-        } else if (type === "research") {
-          const purchase = data as ResearchPurchase;
-          setResearchPurchases((prev) => {
-            if (prev.some((item) => item.id === purchase.id)) return prev;
-            return [...prev, purchase];
-          });
-        } else if (type === "error") {
-          setStreamStatus("error");
-          setStreamError(String(data || "Battle stream failed"));
-          setPhase("verdict");
+        const r = await fetch(`/api/battle/${battleId}`, { cache: "no-store" });
+        if (!r.ok) return;
+        const data = await r.json() as Record<string, unknown>;
+        if (data.phase) setServerPhase(data.phase as BattlePhase);
+        if (Array.isArray(data.rounds) && (data.rounds as unknown[]).length > 0) {
+          setReceivedRounds(
+            (data.rounds as { agentAText: string; agentBText: string }[])
+              .map((r) => ({ a: r.agentAText, b: r.agentBText }))
+          );
+        }
+        if (Array.isArray(data.researchPurchases)) {
+          setResearchPurchases(data.researchPurchases as ResearchPurchase[]);
         }
       } catch {}
     };
 
-    sse.onerror = () => {
-      setStreamStatus("error");
-      setStreamError("Battle stream disconnected. Funds remain locked until judging or cancellation resolves on-chain.");
-      sse.close();
+    const tick = async () => {
+      if (driverStoppedRef.current || driverInFlightRef.current) return;
+      driverInFlightRef.current = true;
+      console.log("[Arena Driver] worker tick started");
+
+      try {
+        const r = await fetch("/api/battle/worker", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ battleId }),
+        });
+
+        if (!r.ok) {
+          const body = await r.json().catch(() => ({})) as Record<string, unknown>;
+          console.warn("[Arena Driver] worker error:", body.error);
+          // Retry after backoff
+          if (!driverStoppedRef.current) {
+            timerId = setTimeout(tick, POLL_MAX);
+          }
+          return;
+        }
+
+        const { step } = await r.json() as { step: { action: string; phase: string; roundIndex?: number; txHash?: string; agentAText?: string; agentBText?: string; winnerSide?: "A" | "B" } };
+        console.log(`[Arena Driver] action=${step.action} phase=${step.phase}`);
+
+        if (typeof step.roundIndex === "number") setRoundIndex(step.roundIndex);
+        setServerPhase(step.phase as BattlePhase);
+
+        switch (step.action) {
+          case "WAITING":
+            break;
+
+          case "CLOSE_BETTING":
+            setStreamStatus("research");
+            setPhase((p) => (p === "countdown" ? "betting" : p));
+            break;
+
+          case "START_DEBATE":
+            setStreamStatus("debate");
+            setPhase("live");
+            break;
+
+          case "SUBMITTED_A":
+            currentStreamingAgentRef.current = "A";
+            setTurn("A");
+            setStreamStatus("debate");
+            setPhase("live");
+            if (step.agentAText) {
+              setCurrentText(step.agentAText);
+              setTypingDone(false);
+            }
+            break;
+
+          case "SUBMITTED_B":
+            currentStreamingAgentRef.current = "B";
+            setTurn("B");
+            setStreamStatus("debate");
+            setPhase("live");
+            if (step.agentBText) {
+              setCurrentText(step.agentBText);
+              setTypingDone(false);
+            }
+            break;
+
+          case "ADVANCED_ROUND":
+            setStreamStatus("debate");
+            await refreshSnapshot();
+            break;
+
+          case "SETTLED":
+            setStreamStatus("settled");
+            setPhase("verdict");
+            verdictCalledRef.current = true;
+            if (step.winnerSide) {
+              setWinner(step.winnerSide);
+              setTimeout(() => {
+                setShowWinner(true);
+                spawnEmojis(["🏆", "🎉", "👑", "🥇", "🔥", "💰"]);
+              }, 600);
+            }
+            driverStoppedRef.current = true;
+            console.log("[Arena Driver] stopped: SETTLED");
+            return;
+
+          case "NO_OP":
+            driverStoppedRef.current = true;
+            console.log(`[Arena Driver] stopped: ${step.phase}`);
+            return;
+        }
+
+        if (TERMINAL.has(step.phase)) {
+          driverStoppedRef.current = true;
+          console.log(`[Arena Driver] stopped: ${step.phase}`);
+          return;
+        }
+
+        const delay = POLL_MIN + Math.random() * (POLL_MAX - POLL_MIN);
+        console.log(`[Arena Driver] next tick in ${Math.round(delay)}ms`);
+        timerId = setTimeout(tick, delay);
+      } catch (err) {
+        console.warn("[Arena Driver] tick error:", err);
+        if (!driverStoppedRef.current) {
+          timerId = setTimeout(tick, POLL_MAX);
+        }
+      } finally {
+        driverInFlightRef.current = false;
+      }
     };
 
-    return () => sse.close();
-  }, [battleId, isDemo, serverPhase]);
+    // Start immediately if past betting deadline, otherwise wait for it.
+    const bettingDeadlineSec = Number(battle.bettingDeadline ?? 0n);
+    const nowSec = Math.floor(Date.now() / 1000);
+    if (bettingDeadlineSec === 0 || nowSec >= bettingDeadlineSec) {
+      tick();
+    } else {
+      const waitMs = Math.max(1_000, (bettingDeadlineSec - nowSec) * 1000 + 500);
+      timerId = setTimeout(tick, waitMs);
+    }
+
+    return () => {
+      driverStoppedRef.current = true;
+      clearTimeout(timerId);
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [battleId, isDemo, battleLoaded, researchSessionsReady]);
 
   // ─── Spawn floating crowd emojis ─────────────────────────────────────────
 
@@ -930,48 +1136,7 @@ export default function BattlePage() {
     }
   }, [typingDone, phase, turn, roundIndex, roundScores, spawnEmojis, isDemo, receivedRounds, battleId]);
 
-  // Real battles: once all on-chain rounds are over, request Venice verdict once.
-  // If Venice/settlement fails, do not refund or fake a winner; the contract stays
-  // in JUDGING_READY until a valid settlement or explicit cancellation path runs.
-  useEffect(() => {
-    if (isDemo) return;
-    if (verdictCalledRef.current) return;
-    if (streamStatus !== "judging_ready" && serverPhase !== "JUDGING_READY") return;
-
-    verdictCalledRef.current = true;
-    setPhase("verdict");
-
-    fetch("/api/battle/verdict", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ battleId }),
-    })
-      .then(async (r) => {
-        const result = await r.json().catch(() => ({}));
-        if (!r.ok) {
-          throw new Error(result.error ?? `Verdict failed with ${r.status}`);
-        }
-        return result as { winnerSide?: "A" | "B" };
-      })
-      .then((result) => {
-        setWinner(result.winnerSide ?? null);
-        setStreamStatus("settled");
-        if (result.winnerSide) {
-          setTimeout(() => {
-            setShowWinner(true);
-            spawnEmojis(["🏆", "🎉", "👑", "🥇", "🔥", "💰"]);
-          }, 600);
-        }
-      })
-      .catch((err) => {
-        setStreamStatus("error");
-        setStreamError(
-          err instanceof Error
-            ? err.message
-            : "Verdict failed. Funds remain locked until settlement is retried."
-        );
-      });
-  }, [battleId, isDemo, serverPhase, spawnEmojis, streamStatus]);
+  // Settlement is handled by the polling driver (JUDGING_READY → SETTLED tick).
 
   // ─── Derived ─────────────────────────────────────────────────────────────
 
@@ -1004,22 +1169,30 @@ export default function BattlePage() {
     "SYNC";
   const waitingTitle =
     streamStatus === "error" ? "BATTLE NEEDS REVIEW" :
+    !battleLoaded ? "LOADING BATTLE" :
     isTerminalPhase ? "WAITING FOR VERDICT" :
     streamStatus === "research" ? "AGENTS BUYING RESEARCH" :
     "SYNCING ARENA";
   const waitingCopy =
     streamStatus === "error"
       ? streamError ?? "The battle stream failed. Funds remain locked until the verdict is retried or a contract cancellation path is used."
-      : isTerminalPhase
+      : !battleLoaded
+        ? "Reading the on-chain battle state and preparing the live arena."
+        : isTerminalPhase
         ? "All on-chain rounds are complete. Venice judging is being requested; no funds are released until settleBattle succeeds."
         : streamStatus === "research"
           ? "Agents are buying research artifacts before arguments begin."
           : "Loading the battle stream and contract state.";
 
-  const bettingPhase: BattlePhase =
+  const arenaVisualPhase: BattlePhase =
+    streamStatus === "error" ? "PREPARING" :
     streamStatus === "research" ? "RESEARCH" :
     phase === "live" ? "LIVE" :
-    phase === "verdict" ? "VERDICT" : "BETTING";
+    phase === "verdict" ? "VERDICT" :
+    serverPhase === "BETTING" ? "BETTING" :
+    serverPhase === "PREPARING" ? "RESEARCH" :
+    isContractRoundPhase(serverPhase) ? serverPhase :
+    "PREPARING";
 
   return (
     <div className="min-h-screen bg-clash-black flex flex-col">
@@ -1076,7 +1249,7 @@ export default function BattlePage() {
             battle={battle}
             activeAgent={turn}
             currentText={phase === "live" ? currentText : ""}
-            phase={bettingPhase}
+            phase={arenaVisualPhase}
           />
 
           <div className="flex items-center justify-center h-12">
