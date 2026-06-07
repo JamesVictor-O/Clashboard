@@ -26,6 +26,11 @@ export async function settleBattleWithVenice(
   }
 
   const judgeResult = await runJudge(stored.battle, stored.rounds);
+
+  if (judgeResult.winner !== "A" && judgeResult.winner !== "B") {
+    throw new Error(`Invalid Venice judge winner: "${judgeResult.winner}"`);
+  }
+
   const settleTxHash = await settleBattleOnChain({
     battleId,
     winnerSide: judgeResult.winner === "A" ? 1 : 2,

@@ -252,6 +252,8 @@ export interface BattleStepResult {
   agentBText?: string;
   /** Winner side — present for SETTLED */
   winnerSide?: "A" | "B";
+  /** Aggregate judge scores (0-100 each) — present for SETTLED */
+  judgeScores?: { A: number; B: number };
 }
 
 function phaseFromContractNum(n: number): BattlePhase {
@@ -494,11 +496,18 @@ async function _runStep(
     log(`winner=${settlement.winnerSide} (${settlement.winner})`);
     emit({ type: "phase", data: "DONE" });
 
+    const { scores, confidence } = settlement.judgeResult;
+    const winnerComposite = Math.round((scores.accuracy * 40 + scores.wit * 30 + scores.rebuttal * 30) / 100);
+    const loserComposite  = Math.round(winnerComposite * (1 - confidence * 0.45));
+    const judgeScores = settlement.winnerSide === "A"
+      ? { A: winnerComposite, B: loserComposite }
+      : { A: loserComposite, B: winnerComposite };
     return {
       battleId, action: "SETTLED", phase: "SETTLED",
       txHash: settlement.settleTxHash,
       details: `Winner: side ${settlement.winnerSide} — ${settlement.winner}`,
       winnerSide: settlement.winnerSide,
+      judgeScores,
       logs,
     };
   }

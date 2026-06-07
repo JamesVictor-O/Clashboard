@@ -5,6 +5,7 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import dynamic from "next/dynamic";
 import { ResearchFeed } from "@/components/battle/ResearchFeed";
+import { useTTS } from "@/lib/use-tts";
 import type { Battle, BattlePhase, ResearchPurchase } from "@/lib/types";
 
 // ─── 3D Arena (no SSR) ───────────────────────────────────────────────────────
@@ -324,14 +325,25 @@ function RoundBreakOverlay({
 function WinnerOverlay({
   winner,
   battle,
-  scores,
+  judgeScores,
+  txHash,
 }: {
   winner: "A" | "B";
   battle: Battle;
-  scores: { A: number; B: number };
+  judgeScores: { A: number; B: number } | null;
+  txHash: string | null;
 }) {
   const agent = winner === "A" ? battle.agentA : battle.agentB;
   const loser = winner === "A" ? battle.agentB : battle.agentA;
+
+  // Total prize pool in USDC (1e6 decimals)
+  const totalPool  = Number(battle.poolA + battle.poolB) / 1_000_000;
+  const winnerPool = Number(winner === "A" ? battle.poolA : battle.poolB) / 1_000_000;
+  const loserPool  = Number(winner === "A" ? battle.poolB : battle.poolA) / 1_000_000;
+
+  // Determine block explorer URL
+  const chainId   = process.env.NEXT_PUBLIC_CHAIN_ID ?? "84532";
+  const explorerBase = chainId === "8453" ? "https://basescan.org" : "https://sepolia.basescan.org";
 
   return (
     <motion.div
@@ -341,6 +353,7 @@ function WinnerOverlay({
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
     >
+      {/* Rotating conic glow */}
       <motion.div
         className="absolute top-0 left-1/2 -translate-x-1/2 w-[800px] h-[800px] pointer-events-none"
         style={{
@@ -349,7 +362,6 @@ function WinnerOverlay({
         animate={{ rotate: [0, 360] }}
         transition={{ duration: 12, repeat: Infinity, ease: "linear" }}
       />
-
       <div
         className="absolute inset-0 pointer-events-none"
         style={{
@@ -358,27 +370,25 @@ function WinnerOverlay({
       />
 
       <motion.div
-        className="relative z-10 text-center px-8 max-w-md"
+        className="relative z-10 text-center px-8 max-w-lg w-full"
         initial={{ scale: 0.6, opacity: 0 }}
         animate={{ scale: 1, opacity: 1 }}
         transition={{ delay: 0.2, type: "spring", damping: 14, stiffness: 100 }}
       >
         <motion.div
-          className="text-7xl mb-5"
+          className="text-7xl mb-4"
           animate={{ rotate: [0, -8, 8, -4, 4, 0], scale: [1, 1.15, 1] }}
           transition={{ delay: 0.7, duration: 0.9 }}
         >
           🏆
         </motion.div>
 
-        <p className="font-body text-[10px] text-white/30 uppercase tracking-[0.4em] mb-3">
-          Winner
-        </p>
+        <p className="font-body text-[10px] text-white/30 uppercase tracking-[0.4em] mb-2">Winner</p>
 
         <motion.h2
-          className="font-display font-extrabold uppercase mb-2"
+          className="font-display font-extrabold uppercase mb-1"
           style={{
-            fontSize: "clamp(3.2rem, 11vw, 6.5rem)",
+            fontSize: "clamp(3rem, 11vw, 6rem)",
             color: agent.color,
             textShadow: `0 0 120px ${agent.color}55, 0 0 40px ${agent.color}25`,
           }}
@@ -389,38 +399,80 @@ function WinnerOverlay({
           {agent.name}
         </motion.h2>
 
-        <p className="font-body text-white/40 text-sm mb-2">
-          {agent.personality} · Victorious
-        </p>
+        <p className="font-body text-white/40 text-sm mb-5">{agent.personality} · Victorious</p>
 
+        {/* Pool / payout info */}
         <motion.div
-          className="flex items-center justify-center gap-6 mt-6 mb-8"
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          transition={{ delay: 0.9 }}
+          className="grid grid-cols-3 gap-3 mb-5"
+          initial={{ opacity: 0, y: 10 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 0.85 }}
         >
-          <div className="text-center">
-            <div className="font-display text-2xl font-extrabold" style={{ color: agent.color }}>
-              {scores[winner]}
+          {([
+            { label: agent.name,  val: winnerPool, color: agent.color },
+            { label: "Total Pool", val: totalPool,  color: "#F5F5F0"  },
+            { label: loser.name,  val: loserPool,  color: loser.color },
+          ] as { label: string; val: number; color: string }[]).map(({ label, val, color }) => (
+            <div key={label} className="border border-white/10 bg-white/[0.03] rounded-xl p-3 text-center">
+              <div className="font-display text-xl font-extrabold" style={{ color }}>
+                ${val.toFixed(2)}
+              </div>
+              <div className="font-body text-[10px] text-white/25 mt-0.5 truncate">{label}</div>
             </div>
-            <div className="font-body text-[10px] text-white/25 mt-0.5">{agent.name}</div>
-          </div>
-          <div className="font-body text-white/15 text-lg">vs</div>
-          <div className="text-center">
-            <div className="font-display text-2xl font-extrabold text-white/40">
-              {scores[winner === "A" ? "B" : "A"]}
-            </div>
-            <div className="font-body text-[10px] text-white/25 mt-0.5">{loser.name}</div>
-          </div>
+          ))}
         </motion.div>
 
+        {/* Judge scores (if available) */}
+        {judgeScores && (
+          <motion.div
+            className="flex items-center justify-center gap-6 mb-5"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            transition={{ delay: 1.05 }}
+          >
+            <div className="text-center">
+              <div className="font-display text-2xl font-extrabold" style={{ color: agent.color }}>
+                {judgeScores[winner]}
+              </div>
+              <div className="font-body text-[10px] text-white/25 mt-0.5">{agent.name}</div>
+            </div>
+            <div className="font-body text-white/15">vs</div>
+            <div className="text-center">
+              <div className="font-display text-2xl font-extrabold text-white/40">
+                {judgeScores[winner === "A" ? "B" : "A"]}
+              </div>
+              <div className="font-body text-[10px] text-white/25 mt-0.5">{loser.name}</div>
+            </div>
+          </motion.div>
+        )}
+
+        {/* Settlement tx link */}
         <motion.div
-          className="font-body text-[11px] text-white/20 uppercase tracking-widest"
           initial={{ opacity: 0 }}
           animate={{ opacity: 1 }}
           transition={{ delay: 1.3 }}
+          className="space-y-2"
         >
-          Payouts settling on-chain...
+          {txHash ? (
+            <a
+              href={`${explorerBase}/tx/${txHash}`}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="inline-flex items-center gap-2 border border-clash-gold/25 bg-clash-gold/08 px-4 py-2 rounded-lg text-clash-gold hover:bg-clash-gold/15 transition-colors"
+            >
+              <span className="font-mono text-[11px] uppercase tracking-widest">View Settlement Tx</span>
+              <span className="font-mono text-[11px] text-clash-gold/60">
+                {txHash.slice(0, 6)}…{txHash.slice(-4)}
+              </span>
+              <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2">
+                <path d="M18 13v6a2 2 0 01-2 2H5a2 2 0 01-2-2V8a2 2 0 012-2h6M15 3h6v6M10 14L21 3" />
+              </svg>
+            </a>
+          ) : (
+            <p className="font-body text-[11px] text-white/20 uppercase tracking-widest">
+              Payouts settling on-chain…
+            </p>
+          )}
         </motion.div>
       </motion.div>
     </motion.div>
@@ -542,10 +594,11 @@ function AgentCard({
   phase: Phase;
 }) {
   const isLive = phase === "live";
+  const pressure = Math.max(18, Math.min(94, Math.round(agent.winRate * 70 + agent.totalBattles * 1.5 + (isActive ? 18 : 0))));
 
   return (
     <motion.div
-      className="relative rounded-xl p-4 border overflow-hidden"
+      className="relative min-w-0 rounded-xl p-4 border overflow-hidden"
       animate={{
         opacity: isLive ? (isActive ? 1 : 0.38) : 1,
         borderColor: isActive && isLive ? `${agent.color}55` : "rgba(255,255,255,0.07)",
@@ -577,18 +630,50 @@ function AgentCard({
       </AnimatePresence>
 
       <div className="font-body text-[10px] text-white/25 uppercase tracking-widest mb-1">Agent {side}</div>
-      <div className="font-display font-extrabold text-xl leading-tight mb-0.5" style={{ color: agent.color }}>
+      <div className="font-display font-extrabold text-xl leading-tight mb-0.5 truncate" style={{ color: agent.color }}>
         {agent.name}
       </div>
       <div className="font-body text-xs text-white/35">{agent.personality}</div>
       <div className="font-body text-[10px] text-white/20 mt-2">
         {(agent.winRate * 100).toFixed(0)}% win rate · {agent.totalBattles} battles
       </div>
+      <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-white/7">
+        <motion.div
+          className="h-full rounded-full"
+          style={{ background: `linear-gradient(90deg, ${agent.color}55, ${agent.color})` }}
+          animate={{ width: isLive ? `${pressure}%` : "28%" }}
+          transition={{ duration: 0.6, ease: [0.16, 1, 0.3, 1] }}
+        />
+      </div>
+      {isActive && isLive && (
+        <motion.div
+          className="absolute inset-x-0 bottom-0 h-[2px]"
+          style={{ background: agent.color }}
+          animate={{ opacity: [0.3, 1, 0.3] }}
+          transition={{ duration: 0.8, repeat: Infinity }}
+        />
+      )}
     </motion.div>
   );
 }
 
 // ─── Argument Panel ───────────────────────────────────────────────────────────
+
+function argumentMetrics(text: string) {
+  const words = text.trim().split(/\s+/).filter(Boolean).length;
+  const claims = Math.min(9, Math.max(1, Math.round(words / 18)));
+  const heat = Math.min(99, Math.max(24, words + (text.match(/[!?]/g)?.length ?? 0) * 8));
+  return { words, claims, heat };
+}
+
+function punchlineFromText(text: string): string {
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  const best = sentences.find((sentence) => sentence.length > 72) ?? sentences[0] ?? text;
+  return best.length > 150 ? `${best.slice(0, 147)}...` : best;
+}
 
 function ArgumentPanel({
   turn,
@@ -606,38 +691,111 @@ function ArgumentPanel({
   liveStreaming?: boolean;
 }) {
   const agent = turn === "A" ? battle.agentA : battle.agentB;
+  const opponent = turn === "A" ? battle.agentB : battle.agentA;
+  const metrics = argumentMetrics(text);
+  const punchline = punchlineFromText(text);
 
   return (
     <motion.div
       key={`arg-${roundIndex}-${turn}`}
-      initial={{ opacity: 0, y: 10 }}
-      animate={{ opacity: 1, y: 0 }}
-      exit={{ opacity: 0, y: -10 }}
+      initial={{ opacity: 0, y: 14, scale: 0.985 }}
+      animate={{ opacity: 1, y: 0, scale: 1 }}
+      exit={{ opacity: 0, y: -10, scale: 0.985 }}
       transition={{ duration: 0.3, ease: [0.16, 1, 0.3, 1] }}
-      className="relative rounded-xl p-5 sm:p-6 border overflow-hidden"
-      style={{ borderColor: `${agent.color}28`, background: `${agent.color}06` }}
+      className="relative overflow-hidden rounded-xl border"
+      style={{ borderColor: `${agent.color}38`, background: `linear-gradient(135deg, ${agent.color}10, rgba(255,255,255,0.025))` }}
     >
+      <div className="absolute inset-0 pointer-events-none opacity-35 bg-[linear-gradient(rgba(255,255,255,0.04)_1px,transparent_1px)] bg-[length:100%_10px]" />
       <div
-        className="absolute left-0 top-5 bottom-5 w-[3px] rounded-full"
-        style={{ background: `linear-gradient(180deg, ${agent.color}, ${agent.color}40)` }}
+        className="absolute inset-x-0 top-0 h-[2px]"
+        style={{ background: `linear-gradient(90deg, transparent, ${agent.color}, transparent)` }}
       />
-      <div className="font-display text-xs font-bold uppercase tracking-widest mb-3 ml-1" style={{ color: agent.color }}>
-        {agent.name}
+
+      <div className="relative grid gap-0 lg:grid-cols-[260px_1fr]">
+        <div className="border-b border-white/8 p-5 lg:border-b-0 lg:border-r">
+          <div className="flex items-center justify-between gap-3">
+            <span className="font-mono text-[9px] uppercase tracking-[0.32em] text-white/28">
+              Round {roundIndex + 1} Strike
+            </span>
+            <motion.span
+              className="h-2 w-2 rounded-full"
+              style={{ background: agent.color }}
+              animate={{ scale: [1, 1.8, 1], opacity: [1, 0.4, 1] }}
+              transition={{ duration: 0.85, repeat: Infinity }}
+            />
+          </div>
+
+          <div className="mt-4">
+            <div className="font-display text-2xl font-extrabold uppercase leading-none" style={{ color: agent.color }}>
+              {agent.name}
+            </div>
+            <div className="mt-1 font-body text-xs text-white/35">
+              attacking {opponent.name}
+            </div>
+          </div>
+
+          <div className="mt-5 grid grid-cols-3 gap-2">
+            {[
+              ["Words", metrics.words],
+              ["Claims", metrics.claims],
+              ["Heat", metrics.heat],
+            ].map(([label, value]) => (
+              <div key={label} className="border border-white/8 bg-black/25 px-2 py-2 text-center">
+                <div className="font-display text-lg font-extrabold text-white">{value}</div>
+                <div className="font-mono text-[8px] uppercase tracking-widest text-white/25">{label}</div>
+              </div>
+            ))}
+          </div>
+
+          <div className="mt-4">
+            <div className="mb-1 font-mono text-[8px] uppercase tracking-widest text-white/25">
+              Pressure Meter
+            </div>
+            <div className="h-2 overflow-hidden rounded-full bg-white/8">
+              <motion.div
+                className="h-full rounded-full"
+                style={{ background: agent.color, boxShadow: `0 0 18px ${agent.color}` }}
+                animate={{ width: `${Math.max(18, Math.min(100, metrics.heat))}%` }}
+              />
+            </div>
+          </div>
+        </div>
+
+        <div className="p-5 sm:p-6">
+          <div className="mb-4 border-l-2 pl-4" style={{ borderColor: agent.color }}>
+            <div className="font-mono text-[9px] uppercase tracking-[0.32em] text-white/30">
+              Thesis Shot
+            </div>
+            <div className="mt-1 font-display text-base font-extrabold uppercase leading-snug text-white">
+              {punchline}
+            </div>
+          </div>
+
+          <div className="rounded-lg border border-white/8 bg-black/28 p-4">
+            <div className="mb-2 flex items-center justify-between gap-3">
+              <span className="font-mono text-[9px] uppercase tracking-[0.32em]" style={{ color: agent.color }}>
+                Live Transcript
+              </span>
+              <span className="font-mono text-[8px] uppercase tracking-widest text-white/22">
+                {turn === "A" ? "Opening attack" : "Counterpunch"}
+              </span>
+            </div>
+            <p className="font-body text-sm sm:text-[15px] leading-relaxed text-white/78">
+              {liveStreaming ? (
+                <>
+                  {text}
+                  <span
+                    className="ml-1 inline-block h-[1.05em] w-[2px] animate-pulse align-middle"
+                    style={{ background: agent.color }}
+                  />
+                </>
+              ) : (
+                <TypewriterText key={`tw-${roundIndex}-${turn}`} text={text} onDone={onDone} speed={12} />
+              )}
+            </p>
+          </div>
+        </div>
       </div>
-      <p className="font-body text-sm sm:text-[15px] leading-relaxed ml-1" style={{ color: `${agent.color}CC` }}>
-        {liveStreaming ? (
-          <>
-            {text}
-            <span className="inline-block w-[2px] h-[1.1em] ml-0.5 bg-current align-middle animate-pulse opacity-80" />
-          </>
-        ) : (
-          <TypewriterText key={`tw-${roundIndex}-${turn}`} text={text} onDone={onDone} speed={14} />
-        )}
-      </p>
-      <div
-        className="absolute bottom-0 left-0 right-0 h-16 pointer-events-none"
-        style={{ background: `linear-gradient(0deg, ${agent.color}08, transparent)` }}
-      />
     </motion.div>
   );
 }
@@ -665,6 +823,11 @@ export default function BattlePage() {
   const [roundScores, setRoundScores] = useState({ A: 0, B: 0 });
   const [typingDone, setTypingDone] = useState(false);
   const [floatingEmojis, setFloatingEmojis] = useState<FloatingEmoji[]>([]);
+  const [settleTxHash, setSettleTxHash] = useState<string | null>(null);
+  const [judgeScores, setJudgeScores] = useState<{ A: number; B: number } | null>(null);
+
+  // Speak each agent's argument aloud as it arrives
+  useTTS(phase === "live" ? currentText : "", { enabled: !isDemo, side: turn });
 
   // Real battle data
   const [battle, setBattle] = useState<Battle>(
@@ -896,7 +1059,7 @@ export default function BattlePage() {
           return;
         }
 
-        const { step } = await r.json() as { step: { action: string; phase: string; roundIndex?: number; txHash?: string; agentAText?: string; agentBText?: string; winnerSide?: "A" | "B" } };
+        const { step } = await r.json() as { step: { action: string; phase: string; roundIndex?: number; txHash?: string; agentAText?: string; agentBText?: string; winnerSide?: "A" | "B"; judgeScores?: { A: number; B: number } } };
         console.log(`[Arena Driver] action=${step.action} phase=${step.phase}`);
 
         if (typeof step.roundIndex === "number") setRoundIndex(step.roundIndex);
@@ -947,6 +1110,8 @@ export default function BattlePage() {
             setStreamStatus("settled");
             setPhase("verdict");
             verdictCalledRef.current = true;
+            if (step.txHash) setSettleTxHash(step.txHash);
+            if (step.judgeScores) setJudgeScores(step.judgeScores);
             if (step.winnerSide) {
               setWinner(step.winnerSide);
               setTimeout(() => {
@@ -1240,8 +1405,23 @@ export default function BattlePage() {
         {/* Left: Arena + debate */}
         <div className="space-y-4">
 
-          <div className="grid grid-cols-2 gap-3">
+          <div className="grid grid-cols-[1fr_auto_1fr] items-stretch gap-3">
             <AgentCard side="A" agent={battle.agentA} isActive={turn === "A"} phase={phase} />
+            <div className="flex min-w-[76px] flex-col items-center justify-center border border-white/8 bg-white/[0.025] px-3">
+              <div className="font-mono text-[8px] uppercase tracking-widest text-white/22">
+                Clash
+              </div>
+              <motion.div
+                className="font-display text-2xl font-extrabold text-white"
+                animate={phase === "live" ? { scale: [1, 1.08, 1] } : { scale: 1 }}
+                transition={{ duration: 0.9, repeat: phase === "live" ? Infinity : 0 }}
+              >
+                VS
+              </motion.div>
+              <div className="font-mono text-[8px] uppercase tracking-widest text-clash-gold/60">
+                R{displayedRound}
+              </div>
+            </div>
             <AgentCard side="B" agent={battle.agentB} isActive={turn === "B"} phase={phase} />
           </div>
 
@@ -1250,9 +1430,13 @@ export default function BattlePage() {
             activeAgent={turn}
             currentText={phase === "live" ? currentText : ""}
             phase={arenaVisualPhase}
+            liveStreaming={!isDemo}
+            roundIndex={roundIndex}
+            onTextDone={() => setTypingDone(true)}
           />
 
-          <div className="flex items-center justify-center h-12">
+          {/* Round indicator dots */}
+          <div className="flex items-center justify-center h-10">
             <AnimatePresence mode="wait">
               {showRebuttal ? (
                 <RebuttalBadge key="rebuttal" />
@@ -1289,18 +1473,9 @@ export default function BattlePage() {
             </AnimatePresence>
           </div>
 
+          {/* Waiting state — shown only when not in live combat */}
           <AnimatePresence mode="wait">
-            {hasLiveText ? (
-              <ArgumentPanel
-                key={`${roundIndex}-${turn}`}
-                turn={turn}
-                roundIndex={roundIndex}
-                text={currentText}
-                battle={battle}
-                onDone={() => setTypingDone(true)}
-                liveStreaming={!isDemo}
-              />
-            ) : phase === "betting" || phase === "verdict" ? (
+            {!hasLiveText && (phase === "betting" || phase === "verdict") && (
               <motion.div
                 key={`waiting-${streamStatus}-${serverPhase}`}
                 initial={{ opacity: 0, y: 8 }}
@@ -1321,7 +1496,7 @@ export default function BattlePage() {
                   {waitingCopy}
                 </p>
               </motion.div>
-            ) : null}
+            )}
           </AnimatePresence>
 
           <AnimatePresence>
@@ -1447,7 +1622,7 @@ export default function BattlePage() {
 
       <AnimatePresence>
         {showWinner && winner && (
-          <WinnerOverlay key="winner" winner={winner} battle={battle} scores={roundScores} />
+          <WinnerOverlay key="winner" winner={winner} battle={battle} judgeScores={judgeScores} txHash={settleTxHash} />
         )}
       </AnimatePresence>
 
