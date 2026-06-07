@@ -1,3 +1,5 @@
+import fs from "fs";
+import path from "path";
 import type { AgentSession } from "@/lib/metamask";
 import type { PermissionMetadata } from "@/lib/types";
 
@@ -9,7 +11,43 @@ export interface ServerResearchSession {
   updatedAt: number;
 }
 
-const sessions = new Map<string, ServerResearchSession>();
+// ── Persistence ───────────────────────────────────────────────────────────────
+// Sessions are written to a JSON file so they survive server hot-reloads and
+// process restarts. Without this, the A2A x402 purchase fails every time the
+// Next.js dev server reloads between forge and battle.
+
+const SESSION_FILE = path.join(process.cwd(), ".clashboard-sessions.json");
+
+function loadFromDisk(): Map<string, ServerResearchSession> {
+  try {
+    const raw = fs.readFileSync(SESSION_FILE, "utf8");
+    const entries = JSON.parse(raw) as [string, ServerResearchSession][];
+    return new Map(entries);
+  } catch {
+    return new Map();
+  }
+}
+
+function saveToDisk(map: Map<string, ServerResearchSession>): void {
+  try {
+    fs.writeFileSync(SESSION_FILE, JSON.stringify([...map.entries()], null, 2), "utf8");
+  } catch (err) {
+    console.warn("[session-store] Could not write sessions to disk:", err);
+  }
+}
+
+// Use globalThis so the Map survives Next.js hot-module replacement in dev.
+const g = globalThis as typeof globalThis & {
+  __clashboardSessions?: Map<string, ServerResearchSession>;
+};
+
+if (!g.__clashboardSessions) {
+  g.__clashboardSessions = loadFromDisk();
+}
+
+const sessions = g.__clashboardSessions;
+
+// ── Public API ────────────────────────────────────────────────────────────────
 
 export function registerServerResearchSession(params: {
   session: AgentSession;
@@ -24,6 +62,7 @@ export function registerServerResearchSession(params: {
     updatedAt: Date.now(),
   };
   sessions.set(walletAddress, entry);
+  saveToDisk(sessions);
   return entry;
 }
 
