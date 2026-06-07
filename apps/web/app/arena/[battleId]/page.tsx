@@ -874,34 +874,27 @@ export default function BattlePage() {
     let cancelled = false;
     import("@/lib/research-session-client")
       .then(async ({ registerResearchSessionForBackend }) => {
-        const failures: string[] = [];
         for (const address of addresses) {
           if (cancelled) return;
           try {
             await registerResearchSessionForBackend(address);
           } catch (err) {
-            const message =
-              err instanceof Error
-                ? err.message
-                : `Research session registration failed for ${address}`;
-            console.warn("Research session registration failed:", message);
-            failures.push(message);
+            // Non-fatal: missing session/permission means x402 marketplace is
+            // unavailable for this agent. The orchestrator falls back to Venice
+            // inline research automatically — the battle still runs.
+            console.warn(
+              "[x402] Session registration skipped for",
+              address,
+              "—",
+              err instanceof Error ? err.message : err
+            );
           }
-        }
-        if (failures.length > 0) {
-          throw new Error(failures.join(" "));
         }
         if (!cancelled) setResearchSessionsReady(true);
       })
-      .catch((err) => {
-        if (cancelled) return;
-        setStreamStatus("error");
-        setStreamError(
-          err instanceof Error
-            ? err.message
-            : "Research session registration failed."
-        );
-        setPhase("verdict");
+      .catch(() => {
+        // Dynamic import itself failed — very unlikely, but still proceed.
+        if (!cancelled) setResearchSessionsReady(true);
       });
 
     return () => {
@@ -1037,10 +1030,27 @@ export default function BattlePage() {
       } catch {}
     };
 
+    // Re-register x402 sessions before each tick so server hot-reloads
+    // (which wipe the in-memory session Map) don't silently lose the session.
+    const sessionAddresses = [battle.agentA.address, battle.agentB.address].filter(
+      (a): a is `0x${string}` => /^0x[0-9a-fA-F]{40}$/.test(a)
+    ).slice(process.env.NEXT_PUBLIC_ENABLE_A2A_SEEDED_INVENTORY !== "false" ? 1 : 0);
+
+    const reRegisterSessions = async () => {
+      try {
+        const { registerResearchSessionForBackend } = await import("@/lib/research-session-client");
+        for (const address of sessionAddresses) {
+          try { await registerResearchSessionForBackend(address); } catch { /* non-fatal */ }
+        }
+      } catch { /* dynamic import failure — ignore */ }
+    };
+
     const tick = async () => {
       if (driverStoppedRef.current || driverInFlightRef.current) return;
       driverInFlightRef.current = true;
       console.log("[Arena Driver] worker tick started");
+
+      await reRegisterSessions();
 
       try {
         const r = await fetch("/api/battle/worker", {
