@@ -463,6 +463,11 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
     defaultAutonomyPreferences(agentOwner)
   );
 
+  // ── Autonomous loop state ───────────────────────────────────────────────────
+  const [loopRunning, setLoopRunning] = useState(false);
+  const [lastLoopResult, setLastLoopResult] = useState<{ action: string; reason?: string; room?: { topic: string; stake: number }; generatedTopic?: string; txHash?: string; scanned: number; timestamp: number } | null>(null);
+  const [loopLog, setLoopLog] = useState<Array<{ id: string; actionType: string; status: string; topic?: string; stakeUsdc?: number; txHash?: string; reason?: string; timestamp: number }>>([]);
+
   const categoryOptions: Array<{ label: string; value: ResearchCategory }> = [
     { label: "Sports", value: "sports" },
     { label: "Music", value: "music" },
@@ -520,6 +525,18 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
       }
       const payload = await res.json();
       setAutonomyPrefs(payload.preferences ?? saved);
+
+      // Register the arena permission server-side so the agent-loop can execute
+      // 1Shot actions without the browser being open.
+      const perm = getPermissionContext(agentOwner);
+      if (perm) {
+        fetch("/api/autonomy/register-permission", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ agentOwner, arenaPermission: perm, preferences: saved }),
+        }).catch(() => { /* non-fatal */ });
+      }
+
       setPrefsMessage("Autonomy rules saved");
     } catch (err) {
       setPrefsMessage(err instanceof Error ? err.message : "Could not save autonomy rules");
@@ -527,6 +544,39 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
       setSavingPrefs(false);
     }
   };
+
+  // ── Run one loop tick manually or on timer ──────────────────────────────────
+  const runLoopTick = async () => {
+    if (loopRunning) return;
+    setLoopRunning(true);
+    try {
+      const res = await fetch("/api/autonomy/agent-loop", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ agentOwner, agentWinRate: agent.wins + agent.losses > 0 ? agent.wins / (agent.wins + agent.losses) : 0 }),
+      });
+      const result = await res.json();
+      setLastLoopResult(result);
+      // Refresh log
+      const logRes = await fetch(`/api/autonomy/agent-loop?agentOwner=${agentOwner}`);
+      if (logRes.ok) {
+        const logData = await logRes.json();
+        setLoopLog(logData.loopLog ?? []);
+      }
+    } catch { /* ignore */ } finally {
+      setLoopRunning(false);
+    }
+  };
+
+  // Poll every 30 s when mode is autonomous and agent is released
+  useEffect(() => {
+    if (autonomyPrefs.mode !== "autonomous" || !released) return;
+    const id = setInterval(runLoopTick, 30_000);
+    // Run immediately on first enable
+    runLoopTick();
+    return () => clearInterval(id);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [autonomyPrefs.mode, released, agentOwner]);
 
   const revoke = () => {
     clearPermissionContext(agent.walletAddress);
@@ -559,16 +609,24 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
       const executor = process.env.NEXT_PUBLIC_ONESHOT_EXECUTOR_ADDRESS as `0x${string}` | undefined;
       const rooms = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}` | undefined;
       if (executor && rooms) {
-        const { HOTTAKEROOMS_ABI } = await import("@/lib/chain");
-        const { writeUserContract, waitForTx } = await import("@/lib/wallet-contract");
-        const txHash = await writeUserContract({
+        const { HOTTAKEROOMS_ABI, getPublicClient } = await import("@/lib/chain");
+        const already = await getPublicClient().readContract({
           address: rooms,
           abi: HOTTAKEROOMS_ABI,
-          functionName: "authorizeExecutor",
-          args: [executor, true],
-          account,
-        });
-        await waitForTx(txHash);
+          functionName: "authorizedExecutors",
+          args: [account, executor],
+        }) as boolean;
+        if (!already) {
+          const { writeUserContract, waitForTx } = await import("@/lib/wallet-contract");
+          const txHash = await writeUserContract({
+            address: rooms,
+            abi: HOTTAKEROOMS_ABI,
+            functionName: "authorizeExecutor",
+            args: [executor, true],
+            account,
+          });
+          await waitForTx(txHash);
+        }
       }
 
       setPermExpiry(expiry);
@@ -698,6 +756,8 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
 
   return (
     <div className="max-w-2xl space-y-4">
+
+      {/* ── Permission Config ─────────────────────────────────────────────── */}
       <div className="border overflow-hidden" style={{ borderColor: `rgba(${glow},0.2)`, background: "#0C0C11" }}>
         <div className="h-[2px]" style={{ background: accent }} />
         <div className="px-5 py-4 border-b border-white/6 flex items-start justify-between gap-4">
@@ -739,7 +799,67 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
             fighter will not ask for a new budget when entering a battle. Release
             also authorizes the 1Shot executor for autonomous challenge actions.
           </p>
+        </div>
 
+        <div className="px-5 pb-5 space-y-3">
+          {released ? (
+            <motion.div initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }}
+              className="border border-green-500/30 p-4 flex items-start gap-3"
+              style={{ background: "rgba(34,197,94,0.04)" }}>
+              <div className="w-8 h-8 flex items-center justify-center border border-green-500/30 bg-green-500/10 flex-shrink-0 mt-0.5">
+                <span className="text-green-400 text-sm">✓</span>
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="font-display text-sm font-bold text-green-400 uppercase tracking-widest">Agent Released</p>
+                <p className="font-body text-xs text-white/35 mt-0.5">Operating autonomously within one master testnet USDC budget.</p>
+                {permExpiry && (
+                  <p className="font-mono text-[9px] text-white/20 mt-1.5 uppercase tracking-widest">
+                    ${activeBudget ?? operatingBudget} budget · Permission expires in {permissionExpiryLabel(permExpiry)} · No MetaMask pop-ups
+                  </p>
+                )}
+              </div>
+              <button onClick={revoke}
+                className="flex-shrink-0 font-mono text-[9px] uppercase tracking-widest text-white/20 hover:text-clash-red/60 transition-colors mt-0.5 px-1">
+                Revoke
+              </button>
+            </motion.div>
+          ) : (
+            <>
+              <button onClick={release} disabled={releasing}
+                className="w-full py-4 font-display text-sm font-extrabold uppercase tracking-widest transition-all disabled:opacity-50 flex items-center justify-center gap-3 hover:brightness-110 active:scale-[0.99]"
+                style={{ background: accent, color: "#0A0A0F" }}>
+                {releasing ? (
+                  <>
+                    <span className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full animate-spin" />
+                    Granting Agent Permission…
+                  </>
+                ) : "⚡ Release Fighter"}
+              </button>
+              {releaseError && (
+                <p className="font-mono text-[9px] text-clash-red/70 text-center">{releaseError}</p>
+              )}
+            </>
+          )}
+          {!released && (
+            <p className="font-mono text-[9px] text-white/20 text-center uppercase tracking-widest">
+              MetaMask ERC-7715 · One master operating budget · Agent acts within limits
+            </p>
+          )}
+        </div>
+      </div>
+
+      {/* ── Autonomy Config ───────────────────────────────────────────────── */}
+      <div className="border overflow-hidden" style={{ borderColor: "rgba(255,255,255,0.08)", background: "#0C0C11" }}>
+        <div className="h-[2px]" style={{ background: "rgba(255,255,255,0.06)" }} />
+        <div className="px-5 py-4 border-b border-white/6">
+          <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/30 mb-1">Behavior Rules</p>
+          <p className="font-display text-base font-bold text-clash-white">Autonomy Config</p>
+          <p className="font-body text-xs text-white/35 mt-1 max-w-sm">
+            Configure how your agent selects and fights battles independently.
+          </p>
+        </div>
+
+        <div className="p-5 space-y-6">
           {/* Daily limit */}
           <div>
             <div className="flex justify-between items-center mb-3">
@@ -912,48 +1032,95 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
         </div>
       </div>
 
-      {released ? (
-        <motion.div initial={{ opacity: 0, scale: 0.97 }} animate={{ opacity: 1, scale: 1 }}
-          className="border border-green-500/30 p-4 flex items-start gap-3"
-          style={{ background: "rgba(34,197,94,0.04)" }}>
-          <div className="w-8 h-8 flex items-center justify-center border border-green-500/30 bg-green-500/10 flex-shrink-0 mt-0.5">
-            <span className="text-green-400 text-sm">✓</span>
-          </div>
-          <div className="flex-1 min-w-0">
-            <p className="font-display text-sm font-bold text-green-400 uppercase tracking-widest">Agent Released</p>
-            <p className="font-body text-xs text-white/35 mt-0.5">Operating autonomously within one master testnet USDC budget.</p>
-            {permExpiry && (
-              <p className="font-mono text-[9px] text-white/20 mt-1.5 uppercase tracking-widest">
-                ${activeBudget ?? operatingBudget} budget · Permission expires in {permissionExpiryLabel(permExpiry)} · No MetaMask pop-ups
+      {/* ── Agent Loop Status ─────────────────────────────────────────────── */}
+      {autonomyPrefs.mode !== "off" && released && (
+        <div className="border border-white/8 rounded-xl p-5 space-y-4" style={{ background: "rgba(255,255,255,0.02)" }}>
+          <div className="flex items-center justify-between">
+            <div className="flex items-center gap-2">
+              <motion.span
+                className="w-2 h-2 rounded-full flex-shrink-0"
+                style={{ background: autonomyPrefs.mode === "autonomous" ? "#22C55E" : "#FFB800" }}
+                animate={autonomyPrefs.mode === "autonomous" ? { scale: [1, 1.5, 1], opacity: [1, 0.4, 1] } : {}}
+                transition={{ duration: 1.2, repeat: Infinity }}
+              />
+              <p className="font-display text-sm font-bold text-clash-white">
+                {autonomyPrefs.mode === "autonomous" ? "Agent Loop · Running" : "Agent Loop · Assisted"}
               </p>
-            )}
+            </div>
+            <button
+              onClick={runLoopTick}
+              disabled={loopRunning}
+              className="font-mono text-[10px] uppercase tracking-widest px-3 py-1.5 rounded-lg border transition-colors disabled:opacity-40"
+              style={{ borderColor: `${accent}40`, color: accent, background: `rgba(${glow},0.06)` }}
+            >
+              {loopRunning ? "Scanning…" : "Run Now"}
+            </button>
           </div>
-          <button onClick={revoke}
-            className="flex-shrink-0 font-mono text-[9px] uppercase tracking-widest text-white/20 hover:text-clash-red/60 transition-colors mt-0.5 px-1">
-            Revoke
-          </button>
-        </motion.div>
-      ) : (
-        <>
-          <button onClick={release} disabled={releasing}
-            className="w-full py-4 font-display text-sm font-extrabold uppercase tracking-widest transition-all disabled:opacity-50 flex items-center justify-center gap-3 hover:brightness-110 active:scale-[0.99]"
-            style={{ background: accent, color: "#0A0A0F" }}>
-            {releasing ? (
-              <>
-                <span className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full animate-spin" />
-                Granting Agent Permission…
-              </>
-            ) : "⚡ Release Fighter"}
-          </button>
-          {releaseError && (
-            <p className="font-mono text-[9px] text-clash-red/70 text-center">{releaseError}</p>
+
+          {/* Last scan result */}
+          {lastLoopResult && (
+            <div className="border border-white/6 rounded-lg p-3 space-y-1" style={{ background: "rgba(0,0,0,0.3)" }}>
+              <div className="flex items-center gap-2">
+                <span className="text-[10px] font-mono uppercase tracking-widest" style={{
+                  color: lastLoopResult.action === "ACCEPTED" || lastLoopResult.action === "ISSUED" ? "#22C55E"
+                    : lastLoopResult.action.startsWith("RECOMMEND") ? "#FFB800"
+                    : lastLoopResult.action === "BLOCKED" ? "#EF4444"
+                    : "rgba(255,255,255,0.3)"
+                }}>
+                  {lastLoopResult.action}
+                </span>
+                <span className="text-[9px] text-white/20 font-mono">
+                  {new Date(lastLoopResult.timestamp).toLocaleTimeString()} · {lastLoopResult.scanned} scanned
+                </span>
+              </div>
+              {lastLoopResult.room && (
+                <p className="text-[11px] text-white/60 leading-snug">&ldquo;{lastLoopResult.room.topic}&rdquo; · ${lastLoopResult.room.stake}</p>
+              )}
+              {lastLoopResult.generatedTopic && (
+                <p className="text-[11px] text-white/60 leading-snug">Generated: &ldquo;{lastLoopResult.generatedTopic}&rdquo;</p>
+              )}
+              {lastLoopResult.reason && (
+                <p className="text-[10px] text-white/30 leading-snug">{lastLoopResult.reason}</p>
+              )}
+              {lastLoopResult.txHash && (
+                <a
+                  href={`https://sepolia.basescan.org/tx/${lastLoopResult.txHash}`}
+                  target="_blank" rel="noopener noreferrer"
+                  className="text-[10px] font-mono text-clash-gold/70 hover:text-clash-gold transition-colors"
+                >
+                  Tx: {lastLoopResult.txHash.slice(0, 10)}…{lastLoopResult.txHash.slice(-6)} ↗
+                </a>
+              )}
+            </div>
           )}
-        </>
-      )}
-      {!released && (
-        <p className="font-mono text-[9px] text-white/20 text-center uppercase tracking-widest">
-          MetaMask ERC-7715 · One master operating budget · Agent acts within limits
-        </p>
+
+          {/* Loop activity log */}
+          {loopLog.length > 0 && (
+            <div className="space-y-1 max-h-40 overflow-y-auto">
+              <p className="font-mono text-[9px] uppercase tracking-widest text-white/20 mb-2">Recent Activity</p>
+              {loopLog.slice(0, 10).map((entry) => (
+                <div key={entry.id} className="flex items-center gap-2 py-1 border-b border-white/4">
+                  <span className="w-1.5 h-1.5 rounded-full flex-shrink-0" style={{
+                    background: entry.status === "success" ? "#22C55E" : entry.status === "failed" ? "#EF4444" : "rgba(255,255,255,0.2)"
+                  }} />
+                  <span className="font-mono text-[9px] uppercase tracking-wide text-white/40 w-24 flex-shrink-0">{entry.actionType.replace("_", " ")}</span>
+                  <span className="text-[10px] text-white/50 flex-1 truncate">{entry.topic ?? "—"}</span>
+                  {entry.txHash && (
+                    <a href={`https://sepolia.basescan.org/tx/${entry.txHash}`} target="_blank" rel="noopener noreferrer"
+                      className="text-[9px] text-clash-gold/60 hover:text-clash-gold flex-shrink-0">↗</a>
+                  )}
+                  <span className="text-[8px] text-white/15 flex-shrink-0">{new Date(entry.timestamp).toLocaleTimeString()}</span>
+                </div>
+              ))}
+            </div>
+          )}
+
+          {autonomyPrefs.mode === "autonomous" && (
+            <p className="font-mono text-[9px] text-white/20 text-center">
+              Scanning for challenges every 30 s · 1Shot executes without wallet popup
+            </p>
+          )}
+        </div>
       )}
     </div>
   );
