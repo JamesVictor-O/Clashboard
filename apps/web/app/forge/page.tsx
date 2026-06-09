@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useCallback, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -786,8 +786,14 @@ function StepDeploy({
   const accent = PERSONAS.find((p) => p.id === config.persona)?.accent ?? "#FFB800";
   const p = PERSONAS.find((x) => x.id === config.persona);
 
+  // Ref-based guard: phase is stale inside useCallback deps [config, walletAddress],
+  // so we use a ref to block re-entrant calls (e.g. rapid double-click before
+  // the phase state change re-renders and removes the button from the DOM).
+  const deployingRef = useRef(false);
+
   const deploy = useCallback(async () => {
-    if (!walletAddress) return;
+    if (!walletAddress || deployingRef.current) return;
+    deployingRef.current = true;
     setPhase("deploying");
 
     const registryAddress = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT as `0x${string}`;
@@ -858,6 +864,7 @@ function StepDeploy({
     } catch (err) {
       const msg = err instanceof Error ? err.message : "Transaction failed";
       setDeployLog((p) => [...p, `Error: ${msg}`]);
+      deployingRef.current = false;
       // Return to config step so user can retry
       setTimeout(() => setPhase("review"), 2500);
     }
@@ -1004,7 +1011,7 @@ function StepDeploy({
         <button onClick={onBack} className="btn-ghost text-sm">← Back</button>
         <button
           onClick={deploy}
-          disabled={!walletAddress}
+          disabled={!walletAddress || phase !== "review"}
           className="btn-primary px-8 py-3 text-sm disabled:opacity-30 flex items-center gap-2"
         >
           Release Fighter →

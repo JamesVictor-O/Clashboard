@@ -1,5 +1,7 @@
-import { streamCompletion } from "@/lib/venice";
 import {
+  streamCompletion,
+  complete,
+  getVeniceModel,
   decideAgentAction,
   generateDebateArgument,
   generateRebuttal,
@@ -44,11 +46,97 @@ function isVeniceFallbackEnabled(): boolean {
   return process.env.ENABLE_VENICE_FALLBACK === "true";
 }
 
+function intFromEnv(name: string, fallback: number): number {
+  const value = process.env[name];
+  if (!value) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : fallback;
+}
+
+function veniceResearchTimeoutMs(): number {
+  return intFromEnv("VENICE_RESEARCH_ASSIST_TIMEOUT_MS", 18_000);
+}
+
+function veniceDebateMaxTokens(): number {
+  return intFromEnv("VENICE_DEBATE_MAX_TOKENS", 420);
+}
+
+function veniceDebateWordLimit(): number {
+  return intFromEnv("VENICE_DEBATE_WORD_LIMIT", 190);
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
 function isSeededA2AInventoryEnabled(): boolean {
   return (
     process.env.ENABLE_A2A_SEEDED_INVENTORY === "true" ||
     process.env.ENABLE_E2E_BATTLE_FALLBACK === "true"
   );
+}
+
+/**
+ * Derive the two debate positions from a topic string.
+ * Agent A always defends sideA; Agent B always defends sideB.
+ *
+ * Three patterns handled in priority order:
+ *
+ * 1. "X vs Y [— subtitle]"
+ *    → sideA = X, sideB = Y
+ *    "LeBron James vs Luka Doncic — GOAT debate" → "LeBron James" / "Luka Doncic"
+ *
+ * 2. Comparative proposition: "X <verb> … than Y"
+ *    → sideA = X (defends the claim), sideB = Y (defends the counter-claim)
+ *    "Afrobeat has more cultural relevance than hiphop" → "Afrobeat" / "hiphop"
+ *    "React is faster than Vue" → "React" / "Vue"
+ *
+ * 3. General proposition (everything else)
+ *    → Agent A argues the proposition is TRUE, Agent B argues it is FALSE
+ *    "AI will replace all programmers" → "AI will replace all programmers" / "AI will NOT replace all programmers"
+ */
+function parseSidesFromTopic(topic: string): { sideA: string; sideB: string } {
+  // ── Pattern 1: "X vs Y [— subtitle]" ──────────────────────────────────────
+  const vsIndex = topic.toLowerCase().indexOf(" vs ");
+  if (vsIndex !== -1) {
+    const sideA = topic.slice(0, vsIndex).trim();
+    const rest = topic.slice(vsIndex + 4);
+    const dashIdx = rest.search(/\s*[—–]\s|\s+-\s/);
+    const sideB = (dashIdx === -1 ? rest : rest.slice(0, dashIdx)).trim();
+    return { sideA, sideB };
+  }
+
+  // ── Pattern 2: comparative "X <verb> … than Y" ────────────────────────────
+  // Matches: "Afrobeat has more cultural relevance than hiphop"
+  //          "React is faster than Vue"
+  //          "Taylor Swift sold more records than Beyoncé"
+  const thanMatch = topic.match(
+    /^(.+?)\s+(?:has|is|are|was|were|does|did|will|would|can|should|gets?)\b.+?\bthan\s+(.+)$/i
+  );
+  if (thanMatch) {
+    const sideA = thanMatch[1].trim();
+    // Strip trailing punctuation from sideB
+    const sideB = thanMatch[2].replace(/[.!?]+$/, "").trim();
+    return { sideA, sideB };
+  }
+
+  // ── Pattern 3: general proposition ───────────────────────────────────────
+  // Agent A defends it as true; Agent B argues it's wrong.
+  const stripped = topic.replace(/[.!?]+$/, "").trim();
+  return {
+    sideA: stripped,
+    sideB: `NOT: ${stripped}`,
+  };
 }
 
 // ─── Setup ────────────────────────────────────────────────────────────────────
@@ -70,11 +158,17 @@ export async function setupBattle(battle: Battle): Promise<{
     side: "A" | "B",
     topic: string
   ) => {
+    const { sideA, sideB } = parseSidesFromTopic(topic);
+    const myStance    = side === "A" ? sideA : sideB;
+    const theirStance = side === "A" ? sideB : sideA;
+
     return `${persona.systemPrompt}
 
 Your name in this battle: ${agentName}
-Your side: Agent ${side}
 Battle topic: "${topic}"
+YOUR ASSIGNED POSITION: You are arguing FOR "${myStance}". Defend this side with everything you have.
+OPPONENT'S POSITION: "${theirStance}" — attack this directly every round.
+RULE: You believe in "${myStance}" completely. Never concede, never switch sides.
 
 Remember: You are arguing in a live arena. The crowd is watching. Make every word count.`;
   };
@@ -247,14 +341,27 @@ async function researchForAgent(
 
   if (!isVeniceFallbackEnabled() && hasX402Session) {
     try {
+      const opponent = side === "A" ? battle.agentB : battle.agentA;
+      const self = side === "A" ? battle.agentA : battle.agentB;
       const decision = await decideAgentAction({
         fighterProfile: agentConfig.agentConfig,
         topic: battle.topic,
+        battleCategory: category,
         assignedSide: side,
         activePermission: null,
         remainingBudgetUSDC: String(agentConfig.agentConfig.operatingBudgetUSDC ?? 0),
+        poolSizeA: String(Number(battle.poolA) / 1_000_000),
+        poolSizeB: String(Number(battle.poolB) / 1_000_000),
+        opponentProfile: { name: opponent.name, winRate: opponent.winRate, totalBattles: opponent.totalBattles },
+        agentReputation: {
+          wins: Math.round(self.winRate * self.totalBattles),
+          losses: Math.max(0, self.totalBattles - Math.round(self.winRate * self.totalBattles)),
+          totalBattles: self.totalBattles,
+          winRate: self.winRate,
+        },
         researchAlreadyOwned: researchStore.listPurchasedBy(agentId),
         availableResearchArtifacts: availableArtifacts,
+        battleId: battle.id,
       });
 
       decisionCategory = decision.category ?? category;
@@ -274,13 +381,21 @@ async function researchForAgent(
   if (hasX402Session) {
     try {
       const artifact = shouldUseMarketplace
-        ? await buyMarketplaceArtifact({ appUrl, agentId, artifact: availableArtifacts[0] })
-        : await buyExternalResearchForStream({
-            appUrl,
-            agentId,
-            topic: battle.topic,
-            category: decisionCategory,
-          });
+        ? await withTimeout(
+            buyMarketplaceArtifact({ appUrl, agentId, artifact: availableArtifacts[0] }),
+            veniceResearchTimeoutMs(),
+            `A2A research purchase for Agent ${side}`
+          )
+        : await withTimeout(
+            buyExternalResearchForStream({
+              appUrl,
+              agentId,
+              topic: battle.topic,
+              category: decisionCategory,
+            }),
+            veniceResearchTimeoutMs(),
+            `x402 research purchase for Agent ${side}`
+          );
 
       if (artifact) {
         const purchase = artifactToPurchase({
@@ -304,7 +419,7 @@ async function researchForAgent(
   // Venice fallback: generate research inline when x402 produced nothing
   if (contextParts.length === 0) {
     try {
-      const fallback = await generateVeniceResearchFallback(agentId, battle.topic, decisionCategory);
+      const fallback = await generateVeniceResearchFallback(agentId, battle.topic, decisionCategory, side);
       contextParts.push(formatArtifactForPrompt(fallback, "Venice Research"));
       usedVeniceFallback = true;
     } catch (veniceErr) {
@@ -322,20 +437,44 @@ async function researchForAgent(
 async function generateVeniceResearchFallback(
   agentId: string,
   topic: string,
-  category: ResearchArtifact["category"]
+  category: ResearchArtifact["category"],
+  side?: "A" | "B"
 ): Promise<ResearchArtifact> {
-  const messages: { role: "system" | "user" | "assistant"; content: string }[] = [
-    { role: "system", content: "You are a research assistant. Generate concise, factual debate research." },
-    {
-      role: "user",
-      content: `Generate research notes for this debate topic: "${topic}" (category: ${category}).\n\nRespond with a JSON object only:\n{"summary":"<one sentence>","facts":["<fact 1>","<fact 2>","<fact 3>"],"sources":["<source 1>","<source 2>"]}`,
-    },
-  ];
+  const { sideA, sideB } = parseSidesFromTopic(topic);
+  const sideContext = side
+    ? `\nYou are preparing research for the side defending "${side === "A" ? sideA : sideB}". Prioritize facts, stats, and talking points that strengthen the case for "${side === "A" ? sideA : sideB}" against "${side === "A" ? sideB : sideA}".`
+    : "";
 
-  let raw = "";
-  await streamCompletion(messages, (token) => { raw += token; }, { maxTokens: 200, temperature: 0.7 });
+  const raw = await complete(
+    [
+      {
+        role: "system",
+        content: [
+          "You are Venice AI acting as a debate research desk for Clashboard.",
+          "Generate factual, useful research that a live debate agent can weaponize immediately.",
+          "Be careful: use broadly reliable facts and source labels, avoid fabricated exact citations, and separate evidence from interpretation.",
+          "Output ONLY valid JSON.",
+        ].join(" "),
+      },
+      {
+        role: "user",
+        content:
+          `Generate research for this debate topic: "${topic}" (category: ${category}).${sideContext}\n\n` +
+          `Respond with a JSON object only:\n` +
+          `{"summary":"<two sentence research brief>","facts":["<specific useful fact 1>","<specific useful fact 2>","<specific useful fact 3>","<specific useful fact 4>","<specific useful fact 5>","<specific useful fact 6>"],"counterpoints":["<likely opponent claim>","<best answer to that claim>"],"sources":["<source label 1>","<source label 2>","<source label 3>"],"strongestAngle":"<key argument for the assigned side>","bestLine":"<one punchy line the agent can say aloud>"}`,
+      },
+    ],
+    { model: getVeniceModel("research"), maxTokens: intFromEnv("VENICE_RESEARCH_MAX_TOKENS", 750), temperature: 0.72 }
+  );
 
-  let parsed: { summary?: string; facts?: string[]; sources?: string[] } = {};
+  let parsed: {
+    summary?: string;
+    facts?: string[];
+    counterpoints?: string[];
+    sources?: string[];
+    strongestAngle?: string;
+    bestLine?: string;
+  } = {};
   try {
     const match = raw.match(/\{[\s\S]*\}/);
     if (match) parsed = JSON.parse(match[0]);
@@ -343,13 +482,24 @@ async function generateVeniceResearchFallback(
     // use defaults below
   }
 
+  const facts = parsed.facts?.length
+    ? parsed.strongestAngle
+      ? [
+          ...parsed.facts,
+          ...(parsed.counterpoints?.length ? parsed.counterpoints.map((point) => `Counterpoint: ${point}`) : []),
+          `Strongest angle: ${parsed.strongestAngle}`,
+          ...(parsed.bestLine ? [`Best spoken line: ${parsed.bestLine}`] : []),
+        ]
+      : parsed.facts
+    : [`Key considerations for the debate on ${topic}.`];
+
   return {
     id: `venice_fallback_${agentId}_${Date.now()}`.replace(/[^a-zA-Z0-9_]/g, "_"),
     ownerAgentId: agentId,
     ownerWalletAddress: agentId as `0x${string}`,
     topic,
     category,
-    facts: parsed.facts?.length ? parsed.facts : [`Key considerations for the debate on ${topic}.`],
+    facts,
     sources: parsed.sources?.length ? parsed.sources : ["Venice AI Research"],
     summary: parsed.summary ?? `Venice-generated research for ${topic}.`,
     priceUSDC: "0",
@@ -511,7 +661,20 @@ export async function runDebateRound(
   }
 
   const messages: { role: "system" | "user" | "assistant"; content: string }[] =
-    [{ role: "system", content: agentConfig.systemPrompt }];
+    [{
+      role: "system",
+      content: [
+        agentConfig.systemPrompt,
+        "",
+        "Venice arena mode is fully enabled.",
+        `Write for a live game audience in under ${veniceDebateWordLimit()} words.`,
+        "Use short, spoken sentences that sound natural through TTS.",
+        "No markdown. No bullet points. No citations in brackets.",
+        "Every turn should include: a clear claim, one concrete evidence point, one counterpunch, and a memorable final line.",
+        "Do not invent precise statistics. If a fact is uncertain, phrase it as a trend or widely reported context.",
+        "Make the agent's personality visible in tone, but keep the argument factual and competitive.",
+      ].join("\n"),
+    }];
 
   // Add research context if available
   if (agentConfig.researchContext) {
@@ -525,6 +688,10 @@ export async function runDebateRound(
     });
   }
 
+  const { sideA, sideB } = parseSidesFromTopic(battle.topic);
+  const myStance    = side === "A" ? sideA : sideB;
+  const theirStance = side === "A" ? sideB : sideA;
+
   // Add previous rounds as conversation history
   for (const round of previousRounds) {
     const myText = side === "A" ? round.agentAText : round.agentBText;
@@ -533,7 +700,17 @@ export async function runDebateRound(
     messages.push({ role: "assistant", content: myText });
     messages.push({
       role: "user",
-      content: `Opponent said: "${opponentText}"\n\nNow respond — make your next argument. Keep it under 120 words.`,
+      content:
+        `Opponent said: "${opponentText}"\n\n` +
+        `Remember: you are defending "${myStance}". Do NOT argue for "${theirStance}".\n` +
+        `REBUTTAL round — you MUST:\n` +
+        `1. Directly address the opponent's strongest claim in your FIRST sentence.\n` +
+        `2. Use your research to disprove or complicate their point.\n` +
+        `3. Land one clean counterpunch the crowd can remember.\n` +
+        `4. Do NOT repeat your opening argument.\n` +
+        `5. Build on your prior rounds.\n` +
+        `6. End by advancing your side of the debate.\n` +
+        `Keep it under ${veniceDebateWordLimit()} words.`,
     });
   }
 
@@ -541,13 +718,17 @@ export async function runDebateRound(
   if (previousRounds.length === 0) {
     messages.push({
       role: "user",
-      content: `The battle begins. Topic: "${battle.topic}"\n\nMake your opening argument. Under 120 words. Make it count.`,
+      content:
+        `The battle begins. Topic: "${battle.topic}"\n` +
+        `Your position: Argue FOR "${myStance}". Your opponent argues for "${theirStance}".\n\n` +
+        `Make your opening argument under ${veniceDebateWordLimit()} words. ` +
+        "Lead with your strongest framing, use evidence quickly, attack the weak assumption on the other side, and close with a line that sounds great aloud.",
     });
   }
 
   return streamCompletion(messages, onToken, {
-    maxTokens: 200,
-    temperature: 0.9,
+    maxTokens: veniceDebateMaxTokens(),
+    temperature: 0.88,
   });
 }
 
@@ -558,16 +739,18 @@ async function streamFallbackDebateRound(
   previousRounds: Round[],
   onToken: (token: string) => void
 ): Promise<string> {
-  const opponent =
-    side === "A" ? battle.agentB.name : battle.agentA.name;
+  const { sideA, sideB } = parseSidesFromTopic(battle.topic);
+  const myStance    = side === "A" ? sideA : sideB;
+  const theirStance = side === "A" ? sideB : sideA;
+  const opponentName = side === "A" ? battle.agentB.name : battle.agentA.name;
   const researchLine = agentConfig.researchContext
-    ? "I bought research before this round, and the useful point is context: peak, longevity, and era-adjusted evidence cannot be collapsed into one slogan."
-    : "I am arguing from first principles: define the claim, separate emotion from evidence, then attack the weak premise.";
+    ? `I bought research before this round. The evidence supports ${myStance} on every key metric: peak, longevity, and era-adjusted impact.`
+    : `I am arguing from first principles: define the claim, separate emotion from evidence, and attack the weak premise in ${theirStance}'s case.`;
 
   const text =
     previousRounds.length === 0
-      ? `${agentConfig.agentConfig.name} opens on "${battle.topic}" with a clean framework. ${researchLine} My case is that the crowd should reward the side that proves impact with evidence, not just reputation. ${opponent} has to answer the standard directly: what metric, what context, and what tradeoff decides the debate?`
-      : `${agentConfig.agentConfig.name} fires back in round ${previousRounds.length + 1}. ${opponent} leaned too hard on vibes and skipped the hard comparison. The better argument weighs peak dominance, consistency, and the opponent's strongest counterclaim. On that standard, my side still controls the debate because it explains both the headline and the details.`;
+      ? `${agentConfig.agentConfig.name} opens by defending ${myStance}. ${researchLine} The crowd should reward the side that proves impact with evidence, not just reputation. ${opponentName} has to answer directly: what metric and what context actually justify ${theirStance}?`
+      : `${agentConfig.agentConfig.name} fires back in round ${previousRounds.length + 1} for ${myStance}. ${opponentName} leaned too hard on vibes and skipped the hard comparison. The better argument weighs peak dominance, consistency, and directly answers the opponent's strongest claim. On every standard, ${myStance} still controls this debate.`;
 
   const chunks = text.match(/.{1,18}(\s|$)/g) ?? [text];
   let fullText = "";
@@ -716,12 +899,30 @@ export async function runAutonomousBattleAgent(
     }
   }
 
+  const battleOpponent = assignedSide === "A" ? battle.agentB : battle.agentA;
+  const battleSelf = assignedSide === "A" ? battle.agentA : battle.agentB;
+
   const enterDecision = await decideAgentAction({
     fighterProfile,
     topic: battle.topic,
+    battleCategory: inferResearchCategory(battle.topic),
     assignedSide,
     activePermission: permission,
     remainingBudgetUSDC: String(remainingOperatingBudgetUSDC(permission, spent)),
+    poolSizeA: String(Number(battle.poolA) / 1_000_000),
+    poolSizeB: String(Number(battle.poolB) / 1_000_000),
+    opponentProfile: {
+      name: battleOpponent.name,
+      winRate: battleOpponent.winRate,
+      totalBattles: battleOpponent.totalBattles,
+    },
+    agentReputation: {
+      wins: Math.round(battleSelf.winRate * battleSelf.totalBattles),
+      losses: Math.max(0, battleSelf.totalBattles - Math.round(battleSelf.winRate * battleSelf.totalBattles)),
+      totalBattles: battleSelf.totalBattles,
+      winRate: battleSelf.winRate,
+    },
+    battleId,
   });
 
   const enterPolicy = validateAutonomousAction({
@@ -768,11 +969,26 @@ export async function runAutonomousBattleAgent(
   const researchDecision = await decideAgentAction({
     fighterProfile,
     topic: battle.topic,
+    battleCategory: category,
     assignedSide,
     activePermission: permission,
     remainingBudgetUSDC: String(remainingOperatingBudgetUSDC(permission, spent)),
+    poolSizeA: String(Number(battle.poolA) / 1_000_000),
+    poolSizeB: String(Number(battle.poolB) / 1_000_000),
+    opponentProfile: {
+      name: battleOpponent.name,
+      winRate: battleOpponent.winRate,
+      totalBattles: battleOpponent.totalBattles,
+    },
+    agentReputation: {
+      wins: Math.round(battleSelf.winRate * battleSelf.totalBattles),
+      losses: Math.max(0, battleSelf.totalBattles - Math.round(battleSelf.winRate * battleSelf.totalBattles)),
+      totalBattles: battleSelf.totalBattles,
+      winRate: battleSelf.winRate,
+    },
     researchAlreadyOwned: researchStore.listPurchasedBy(agentId),
     availableResearchArtifacts: availableArtifacts,
+    battleId,
   });
 
   if (researchDecision.action === "BUY_AGENT_RESEARCH" && availableArtifacts[0]) {

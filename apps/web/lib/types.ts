@@ -2,16 +2,19 @@
 
 export type BattlePhase =
   | "BETTING"
+  | "PREPARING"
   | "ROUND_1"
   | "ROUND_2"
   | "ROUND_3"
   | "JUDGING_READY"
+  | "CANCELLED"
+  | "EXPIRED"
   | "RESEARCH"
   | "LIVE"
   | "VERDICT"
   | "SETTLED";
 
-export type BattleState = "OPEN" | "LIVE" | "SETTLED";
+export type BattleState = "OPEN" | "LIVE" | "SETTLED" | "CANCELLED";
 
 // ─── Agent ────────────────────────────────────────────────────────────────────
 
@@ -70,6 +73,10 @@ export interface Battle {
   bettingDeadline: bigint;
   roundDuration: number;   // seconds per round
   totalRounds?: number;    // ClashboardArena defaults to 2 for hackathon battles
+  currentRound?: number;
+  debateStartedAt?: bigint;
+  currentRoundDeadline?: bigint;
+  prepareDeadline?: bigint;
   rubricHash: string;
   winner: string | null;
   bettorCount?: number;
@@ -176,6 +183,7 @@ export interface AgentDecision {
   reason: string;
   category?: ResearchCategory;
   maxSpendUSDC?: string;
+  confidence?: number;
 }
 
 export interface AutonomousActionLog {

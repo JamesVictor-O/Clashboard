@@ -17,6 +17,13 @@ export interface PendingRound {
   agentBTxHash?: string;
 }
 
+export interface PrefetchedRound {
+  /** 0-based round index this pre-generation targets */
+  forRoundIndex: number;
+  agentAText: string;
+  agentBText: string;
+}
+
 export interface StoredBattle {
   battle: Battle;
   rubricPreimage: string;
@@ -28,6 +35,12 @@ export interface StoredBattle {
   researchContextB?: string;
   /** Partial-round progress for the step-based state machine runner */
   pendingRound?: PendingRound;
+  /**
+   * Arguments pre-generated while the current round's voices are still playing.
+   * When present, the next SUBMITTED_BOTH step uses these directly and skips
+   * the Venice AI generation call — eliminating the inter-round wait for users.
+   */
+  prefetchedNextRound?: PrefetchedRound;
 }
 
 // ─── In-Memory Store ──────────────────────────────────────────────────────────
@@ -84,8 +97,12 @@ class BattleStore {
   }
 }
 
-// Singleton — shared across all API route handlers in the same process
-export const battleStore = new BattleStore();
+// Singleton — pinned to globalThis so it survives Next.js dev hot-reloads
+// that re-evaluate the module but reuse the same Node.js process. Without
+// this, a route recompilation creates a fresh BattleStore and loses all
+// in-memory state (pendingRound, prefetchedNextRound, etc.).
+const g = globalThis as typeof globalThis & { __clashboardBattleStore?: BattleStore };
+export const battleStore = g.__clashboardBattleStore ?? (g.__clashboardBattleStore = new BattleStore());
 
 // Run cleanup every hour
 if (typeof setInterval !== "undefined") {

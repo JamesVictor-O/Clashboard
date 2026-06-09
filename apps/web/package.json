@@ -10,6 +10,7 @@
     "typecheck": "tsc --noEmit",
     "test:a2a": "node scripts/test-a2a-research.mjs",
     "test:autonomy": "node scripts/test-autonomy-preferences.mjs",
+    "test:venice": "node scripts/test-venice.mjs",
     "test:x402-rail": "node scripts/test-x402-oneshot-rail.mjs",
     "clean": "rm -rf .next"
   },

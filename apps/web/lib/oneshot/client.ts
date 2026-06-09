@@ -249,14 +249,97 @@ export async function pollStatus(chainId: number, taskId: `0x${string}`): Promis
 }
 
 /**
+ * Re-delegate a session-key-scoped permission context to the 1Shot relayer target.
+ *
+ * With the single-grant model the user's ERC-7715 grant is issued to the agent
+ * session key (ONE popup). Before sending arena actions to the relayer, the
+ * session key creates an ERC-7710 sub-delegation pointing to the relayer's own
+ * targetAddress — the relayer can then redeem it in the usual multi-hop chain:
+ *   smart-account → session-key (grant) → 1Shot relayer (re-delegation).
+ *
+ * This runs client-side only — session private keys never leave the browser.
+ */
+async function redelegateContextToRelayer(
+  req: OneShotExecuteRequest,
+  sessionPrivateKey: `0x${string}`,
+  sessionAddress: `0x${string}`,
+  relayerTarget: `0x${string}`,
+): Promise<OneShotExecuteRequest> {
+  const { erc7710WalletActions } = await import("@metamask/smart-accounts-kit/actions");
+  const { getSmartAccountsEnvironment } = await import("@metamask/smart-accounts-kit");
+  const { createWalletClient, http } = await import("viem");
+  const { privateKeyToAccount } = await import("viem/accounts");
+  const { baseSepolia, base } = await import("viem/chains");
+
+  const chain = req.chainId === 8453 ? base : baseSepolia;
+  const account = privateKeyToAccount(sessionPrivateKey);
+  const sessionClient = createWalletClient({ account, chain, transport: http() }).extend(
+    erc7710WalletActions(),
+  );
+
+  const redelegation = await (sessionClient as unknown as {
+    redelegatePermissionContext: (opts: {
+      environment: unknown;
+      permissionContext: `0x${string}`;
+      chainId: number;
+      to: `0x${string}`;
+    }) => Promise<{ permissionContext: `0x${string}` }>;
+  }).redelegatePermissionContext({
+    environment: getSmartAccountsEnvironment(req.chainId),
+    permissionContext: req.permissionContext.context as `0x${string}`,
+    chainId: req.chainId,
+    to: relayerTarget,
+  });
+
+  console.log("[1Shot] Re-delegated context from session key", sessionAddress, "→ relayer", relayerTarget);
+  return {
+    ...req,
+    permissionContext: {
+      ...req.permissionContext,
+      context: redelegation.permissionContext,
+      sessionAddress: relayerTarget,
+    },
+  };
+}
+
+/**
  * Execute an ERC-7710 delegated bundle through the 1Shot public relayer.
  */
 export async function execute1Shot(req: OneShotExecuteRequest): Promise<OneShotExecuteResult> {
   if (typeof window !== "undefined") {
+    // ── Session-key re-delegation (single-grant model) ──────────────────────
+    // If the stored permission context is scoped to the agent's session key
+    // rather than directly to the relayer, re-delegate it to the relayer target
+    // before forwarding to the API. Old-model grants (sessionAddress = relayer)
+    // skip this step and continue to work as-is.
+    let finalReq = req;
+    try {
+      const { getAgentSession } = await import("@/lib/metamask");
+      const session = getAgentSession(req.permissionContext.walletAddress);
+      if (
+        session?.sessionPrivateKey &&
+        session.sessionAddress &&
+        req.permissionContext.sessionAddress?.toLowerCase() ===
+          session.sessionAddress.toLowerCase()
+      ) {
+        const capability = await getCapabilities(req.chainId);
+        finalReq = await redelegateContextToRelayer(
+          req,
+          session.sessionPrivateKey,
+          session.sessionAddress,
+          capability.targetAddress,
+        );
+      }
+    } catch (err) {
+      console.warn("[1Shot] Re-delegation step failed — falling through with original context:", err);
+      // Non-fatal for backward-compatible old-model grants; new-model grants
+      // will fail downstream at the relayer, which is the correct signal.
+    }
+
     const res = await fetch("/api/autonomy/execute", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify(req),
+      body: JSON.stringify(finalReq),
     });
     if (!res.ok) throw new Error(`1Shot proxy failed: ${res.status} — ${await res.text()}`);
     return res.json() as Promise<OneShotExecuteResult>;

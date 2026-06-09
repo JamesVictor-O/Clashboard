@@ -46,12 +46,17 @@ export async function POST(req: NextRequest) {
 
     return NextResponse.json({ step });
   } catch (err) {
-    console.error("battle worker error:", err);
     const message = err instanceof Error ? err.message : "Worker failed";
     const status =
       message.includes("not found") ? 404 :
+      message.includes("Step already in progress") ? 409 :
       message.includes("still in betting") || message.includes("not ready") ? 409 :
       500;
+    if (status === 500) {
+      console.error("battle worker error:", err);
+    } else if (message.includes("Step already in progress")) {
+      console.log("battle worker busy:", message);
+    }
     return NextResponse.json({ error: message }, { status });
   }
 }

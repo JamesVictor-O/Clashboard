@@ -2,7 +2,7 @@
 
 import { encodeFunctionData, parseAbi, type Abi } from "viem";
 import { getPublicClient } from "@/lib/chain";
-import { getProvider } from "@/lib/metamask";
+import { getProvider, switchToBaseSepolia } from "@/lib/metamask";
 import { getPermissionContext } from "@/lib/permissions";
 
 // ─── Generic user-signed contract call ───────────────────────────────────────
@@ -23,25 +23,56 @@ export async function writeUserContract(params: {
   const provider = getProvider();
   if (!provider) throw new Error("Wallet not connected");
 
+  await switchToBaseSepolia();
+
   const data = encodeFunctionData({
     abi: params.abi,
     functionName: params.functionName,
     args: params.args ?? [],
   });
+  const chainId = parseInt(process.env.NEXT_PUBLIC_CHAIN_ID ?? "84532");
 
   const tx: Record<string, unknown> = {
     from: params.account,
     to: params.address,
     data,
+    chainId: `0x${chainId.toString(16)}`,
   };
   if (params.value) tx.value = `0x${params.value.toString(16)}`;
 
-  const hash = await provider.request({
-    method: "eth_sendTransaction",
-    params: [tx],
-  });
+  let hash: unknown;
+  try {
+    hash = await provider.request({
+      method: "eth_sendTransaction",
+      params: [tx],
+    });
+  } catch (err) {
+    throw normalizeWalletRpcError(err);
+  }
 
   return hash as `0x${string}`;
+}
+
+function normalizeWalletRpcError(err: unknown): Error {
+  const rpcError = err as {
+    code?: number;
+    message?: string;
+    data?: { message?: string; originalError?: { message?: string } };
+  };
+
+  const details =
+    rpcError.data?.originalError?.message ??
+    rpcError.data?.message ??
+    rpcError.message ??
+    "Wallet transaction failed";
+
+  if (rpcError.code === -32080) {
+    return new Error(
+      `Wallet RPC rejected the transaction simulation: ${details}. Check MetaMask is on Base Sepolia and try again.`
+    );
+  }
+
+  return new Error(details);
 }
 
 // ─── EIP-5792 / ERC-7715 autonomous calls ────────────────────────────────────
@@ -123,7 +154,7 @@ export async function sendAutonomousBatch(
     try {
       const callsId = (await provider.request({
         method: "wallet_sendCalls",
-        params: [{ version: "2.0.0", from: account, calls: encodedCalls, capabilities: { permissions: { context: perm.context } } }],
+        params: [{ from: account, calls: encodedCalls, capabilities: { permissions: { context: perm.context } } }],
       })) as string;
       return waitForCallsResult(callsId);
     } catch {
@@ -135,7 +166,7 @@ export async function sendAutonomousBatch(
   try {
     const callsId = (await provider.request({
       method: "wallet_sendCalls",
-      params: [{ version: "2.0.0", from: account, calls: encodedCalls }],
+      params: [{ from: account, calls: encodedCalls }],
     })) as string;
     return waitForCallsResult(callsId);
   } catch {
@@ -178,7 +209,7 @@ export async function sendUserBatch(
   try {
     const callsId = (await provider.request({
       method: "wallet_sendCalls",
-      params: [{ version: "2.0.0", from: account, calls: encodedCalls }],
+      params: [{ from: account, calls: encodedCalls }],
     })) as string;
     return waitForCallsResult(callsId);
   } catch {

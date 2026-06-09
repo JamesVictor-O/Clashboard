@@ -5,7 +5,8 @@ import { useState, useEffect, useRef, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import dynamic from "next/dynamic";
 import { ResearchFeed } from "@/components/battle/ResearchFeed";
-import { useTTS } from "@/lib/use-tts";
+import { ResearchHandshake } from "@/components/battle/ResearchHandshake";
+import { useTTS, prefetchTTS } from "@/lib/use-tts";
 import type { Battle, BattlePhase, ResearchPurchase } from "@/lib/types";
 
 // ─── 3D Arena (no SSR) ───────────────────────────────────────────────────────
@@ -826,8 +827,15 @@ export default function BattlePage() {
   const [settleTxHash, setSettleTxHash] = useState<string | null>(null);
   const [judgeScores, setJudgeScores] = useState<{ A: number; B: number } | null>(null);
 
-  // Speak each agent's argument aloud as it arrives
-  useTTS(phase === "live" ? currentText : "", { enabled: !isDemo, side: turn });
+  // Called by TTS when the current speech finishes — used to release the arena driver.
+  const ttsOnDoneRef = useRef<(() => void) | null>(null);
+
+  // Speak each agent's full argument aloud; notify driver when done.
+  const { speaking: ttsSpeaking } = useTTS(phase === "live" ? currentText : "", {
+    enabled: true,
+    side: turn,
+    onDone: () => ttsOnDoneRef.current?.(),
+  });
 
   // Real battle data
   const [battle, setBattle] = useState<Battle>(
@@ -840,6 +848,7 @@ export default function BattlePage() {
     isDemo ? "debate" : "idle"
   );
   const [streamError, setStreamError] = useState<string | null>(null);
+  const [researchProgress, setResearchProgress] = useState<string | null>(null);
   const [researchSessionsReady, setResearchSessionsReady] = useState(isDemo);
   const [receivedRounds, setReceivedRounds] = useState<DebateRound[]>(
     isDemo ? DEMO_ROUNDS : []
@@ -847,10 +856,38 @@ export default function BattlePage() {
   const [researchPurchases, setResearchPurchases] = useState<ResearchPurchase[]>(
     isDemo ? [] : []
   );
+  const [activeHandshake, setActiveHandshake] = useState<ResearchPurchase | null>(null);
+  const shownHandshakesRef = useRef(new Set<string>());
+
+  // Show handshake overlay for each new research purchase
+  useEffect(() => {
+    const latest = researchPurchases[researchPurchases.length - 1];
+    if (!latest || shownHandshakesRef.current.has(latest.id)) return;
+    shownHandshakesRef.current.add(latest.id);
+    setActiveHandshake(latest);
+  }, [researchPurchases]);
+
   const verdictCalledRef = useRef(false);
   const currentStreamingAgentRef = useRef<"A" | "B" | null>(null);
+  const pendingNextTurnRef = useRef<{ text: string; turn: "A" | "B" } | null>(null);
   const driverStoppedRef = useRef(false);
   const driverInFlightRef = useRef(false);
+  const lastSessionRegisterRef = useRef(0);
+  const serverPhaseRef = useRef<BattlePhase | null>(serverPhase);
+  const streamStatusRef = useRef<StreamStatus>(streamStatus);
+  const ttsSpeakingRef = useRef(ttsSpeaking);
+
+  useEffect(() => {
+    serverPhaseRef.current = serverPhase;
+  }, [serverPhase]);
+
+  useEffect(() => {
+    streamStatusRef.current = streamStatus;
+  }, [streamStatus]);
+
+  useEffect(() => {
+    ttsSpeakingRef.current = ttsSpeaking;
+  }, [ttsSpeaking]);
 
   useEffect(() => {
     if (isDemo) return;
@@ -910,6 +947,10 @@ export default function BattlePage() {
     let alive = true;
 
     const loadSnapshot = () => {
+      if (driverInFlightRef.current || ttsSpeakingRef.current || streamStatusRef.current === "research") {
+        return;
+      }
+
       fetch(`/api/battle/${battleId}`, { cache: "no-store" })
         .then(async (r) => {
           if (r.ok) return r.json();
@@ -1026,6 +1067,9 @@ export default function BattlePage() {
         }
         if (Array.isArray(data.researchPurchases)) {
           setResearchPurchases(data.researchPurchases as ResearchPurchase[]);
+          if ((data.researchPurchases as unknown[]).length > 0) {
+            setResearchProgress("Research purchase settled. Preparing the arena arguments.");
+          }
         }
       } catch {}
     };
@@ -1037,11 +1081,15 @@ export default function BattlePage() {
     ).slice(process.env.NEXT_PUBLIC_ENABLE_A2A_SEEDED_INVENTORY !== "false" ? 1 : 0);
 
     const reRegisterSessions = async () => {
+      const now = Date.now();
+      if (now - lastSessionRegisterRef.current < 60_000) return;
+
       try {
         const { registerResearchSessionForBackend } = await import("@/lib/research-session-client");
         for (const address of sessionAddresses) {
           try { await registerResearchSessionForBackend(address); } catch { /* non-fatal */ }
         }
+        lastSessionRegisterRef.current = Date.now();
       } catch { /* dynamic import failure — ignore */ }
     };
 
@@ -1053,6 +1101,11 @@ export default function BattlePage() {
       await reRegisterSessions();
 
       try {
+        if (serverPhaseRef.current === "PREPARING" || streamStatusRef.current === "research") {
+          setStreamStatus("research");
+          setResearchProgress("Agents are deciding what research is worth buying. x402 payments may settle in the background.");
+        }
+
         const r = await fetch("/api/battle/worker", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
@@ -1061,6 +1114,19 @@ export default function BattlePage() {
 
         if (!r.ok) {
           const body = await r.json().catch(() => ({})) as Record<string, unknown>;
+          const error = typeof body.error === "string" ? body.error : "";
+          if (r.status === 409 && error.includes("Step already in progress")) {
+            console.log("[Arena Driver] worker already running — waiting before next poll");
+            if (streamStatusRef.current === "research") {
+              setResearchProgress("Research purchase or settlement is still running. Keeping the arena synced.");
+            }
+            await refreshSnapshot();
+            if (!driverStoppedRef.current) {
+              timerId = setTimeout(tick, 18_000);
+            }
+            return;
+          }
+
           console.warn("[Arena Driver] worker error:", body.error);
           // Retry after backoff
           if (!driverStoppedRef.current) {
@@ -1075,17 +1141,22 @@ export default function BattlePage() {
         if (typeof step.roundIndex === "number") setRoundIndex(step.roundIndex);
         setServerPhase(step.phase as BattlePhase);
 
+        let waitForTTS = false;
+        let speechCharCount = 0;
+
         switch (step.action) {
           case "WAITING":
             break;
 
           case "CLOSE_BETTING":
             setStreamStatus("research");
+            setResearchProgress("Betting is closed. Agents are shopping for useful research artifacts.");
             setPhase((p) => (p === "countdown" ? "betting" : p));
             break;
 
           case "START_DEBATE":
             setStreamStatus("debate");
+            setResearchProgress(null);
             setPhase("live");
             break;
 
@@ -1093,10 +1164,13 @@ export default function BattlePage() {
             currentStreamingAgentRef.current = "A";
             setTurn("A");
             setStreamStatus("debate");
+            setResearchProgress(null);
             setPhase("live");
             if (step.agentAText) {
               setCurrentText(step.agentAText);
               setTypingDone(false);
+              waitForTTS = true;
+              speechCharCount = step.agentAText.length;
             }
             break;
 
@@ -1104,20 +1178,49 @@ export default function BattlePage() {
             currentStreamingAgentRef.current = "B";
             setTurn("B");
             setStreamStatus("debate");
+            setResearchProgress(null);
             setPhase("live");
             if (step.agentBText) {
               setCurrentText(step.agentBText);
               setTypingDone(false);
+              waitForTTS = true;
+              speechCharCount = step.agentBText.length;
+            }
+            break;
+
+          case "SUBMITTED_BOTH":
+            currentStreamingAgentRef.current = "A";
+            setTurn("A");
+            setStreamStatus("debate");
+            setResearchProgress(null);
+            setPhase("live");
+            if (step.agentAText && step.agentBText) {
+              // Pre-warm B's TTS audio while A is speaking so the A→B switch is instant
+              void prefetchTTS(step.agentBText, "B");
+              pendingNextTurnRef.current = { text: step.agentBText, turn: "B" };
+              setCurrentText(step.agentAText);
+              setTypingDone(false);
+              waitForTTS = true;
+              speechCharCount = step.agentAText.length;
+              // Start generating next-round arguments in the background while voices play.
+              // By the time both speeches end the next round is ready — no inter-round wait.
+              void fetch("/api/battle/prefetch-round", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({ battleId }),
+              }).catch((err) => console.warn("[prefetch-round] request failed:", err));
             }
             break;
 
           case "ADVANCED_ROUND":
             setStreamStatus("debate");
+            setResearchProgress(null);
             await refreshSnapshot();
             break;
 
           case "SETTLED":
             setStreamStatus("settled");
+            setResearchProgress(null);
             setPhase("verdict");
             verdictCalledRef.current = true;
             if (step.txHash) setSettleTxHash(step.txHash);
@@ -1145,9 +1248,54 @@ export default function BattlePage() {
           return;
         }
 
-        const delay = POLL_MIN + Math.random() * (POLL_MAX - POLL_MIN);
-        console.log(`[Arena Driver] next tick in ${Math.round(delay)}ms`);
-        timerId = setTimeout(tick, delay);
+        if (waitForTTS) {
+          // Hold the driver until TTS finishes so the agent's full speech plays
+          // before we poll for the next argument. Fallback protects against stuck audio.
+          const fallbackMs = Math.min(180_000, Math.max(45_000, speechCharCount * 85));
+          let resolved = false;
+          const proceed = () => {
+            if (resolved || driverStoppedRef.current) return;
+            resolved = true;
+            ttsOnDoneRef.current = null;
+            clearTimeout(timerId);
+
+            // SUBMITTED_BOTH: B's text was queued while A was speaking.
+            // B's audio should already be cached from the prefetch — switch immediately.
+            const pending = pendingNextTurnRef.current;
+            if (pending) {
+              pendingNextTurnRef.current = null;
+              console.log(`[Arena Driver] SUBMITTED_BOTH: switching to agent ${pending.turn}`);
+              currentStreamingAgentRef.current = pending.turn;
+              setTurn(pending.turn);
+              setCurrentText(pending.text);
+              setTypingDone(false);
+
+              let bResolved = false;
+              const bFallbackMs = Math.min(180_000, Math.max(45_000, pending.text.length * 85));
+              const proceedAfterB = () => {
+                if (bResolved || driverStoppedRef.current) return;
+                bResolved = true;
+                ttsOnDoneRef.current = null;
+                clearTimeout(timerId);
+                console.log("[Arena Driver] TTS done (B from SUBMITTED_BOTH) — scheduling next tick");
+                timerId = setTimeout(tick, 800);
+              };
+              ttsOnDoneRef.current = proceedAfterB;
+              timerId = setTimeout(proceedAfterB, bFallbackMs);
+              return;
+            }
+
+            console.log("[Arena Driver] TTS done — scheduling next tick");
+            timerId = setTimeout(tick, 800);
+          };
+          ttsOnDoneRef.current = proceed;
+          timerId = setTimeout(proceed, fallbackMs);
+          console.log("[Arena Driver] waiting for TTS to finish");
+        } else {
+          const delay = POLL_MIN + Math.random() * (POLL_MAX - POLL_MIN);
+          console.log(`[Arena Driver] next tick in ${Math.round(delay)}ms`);
+          timerId = setTimeout(tick, delay);
+        }
       } catch (err) {
         console.warn("[Arena Driver] tick error:", err);
         if (!driverStoppedRef.current) {
@@ -1356,7 +1504,7 @@ export default function BattlePage() {
         : isTerminalPhase
         ? "All on-chain rounds are complete. Venice judging is being requested; no funds are released until settleBattle succeeds."
         : streamStatus === "research"
-          ? "Agents are buying research artifacts before arguments begin."
+          ? researchProgress ?? "Agents are buying research artifacts before arguments begin."
           : "Loading the battle stream and contract state.";
 
   const arenaVisualPhase: BattlePhase =
@@ -1591,7 +1739,7 @@ export default function BattlePage() {
             transition={{ delay: 0.06 }}
             className="rounded-xl border border-clash-gold/15 bg-white/[0.025] p-4"
           >
-            <ResearchFeed purchases={researchPurchases} />
+            <ResearchFeed purchases={researchPurchases} status={researchProgress} />
           </motion.div>
 
           <div className="rounded-xl border border-white/5 bg-white/[0.02] p-4">
@@ -1637,6 +1785,12 @@ export default function BattlePage() {
       </AnimatePresence>
 
       <FloatingCrowd emojis={floatingEmojis} />
+
+      <ResearchHandshake
+        purchase={activeHandshake}
+        battle={battle}
+        onDone={() => setActiveHandshake(null)}
+      />
     </div>
   );
 }

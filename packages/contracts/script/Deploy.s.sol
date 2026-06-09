@@ -9,11 +9,11 @@ import "../src/HotTakeRooms.sol";
 
 contract Deploy is Script {
     function run() external {
-        uint256 deployerKey     = vm.envUint("DEPLOYER_PRIVATE_KEY");
-        address deployerWallet  = vm.addr(deployerKey);
+        uint256 deployerKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
+        address deployerWallet = vm.addr(deployerKey);
         // Base Sepolia USDC: 0x036CbD53842c5426634e7929541eC2318f3dCF7e
-        address usdcAddress     = vm.envAddress("USDC_ADDRESS");
-        address platformWallet  = vm.envAddress("PLATFORM_TREASURY_ADDRESS");
+        address usdcAddress = vm.envAddress("USDC_ADDRESS");
+        address platformWallet = vm.envAddress("PLATFORM_TREASURY_ADDRESS");
         address schedulerWallet = vm.envAddress("SCHEDULER_ADDRESS");
 
         vm.startBroadcast(deployerKey);
@@ -27,22 +27,12 @@ contract Deploy is Script {
         console.log("AgentTreasury:  ", address(treasury));
 
         // 3. Arena
-        ClashboardArena arena = new ClashboardArena(
-            usdcAddress,
-            address(registry),
-            address(treasury),
-            platformWallet,
-            schedulerWallet
-        );
+        ClashboardArena arena =
+            new ClashboardArena(usdcAddress, address(registry), address(treasury), platformWallet, schedulerWallet);
         console.log("ClashboardArena:", address(arena));
 
         // 4. HotTakeRooms
-        HotTakeRooms rooms = new HotTakeRooms(
-            usdcAddress,
-            address(registry),
-            address(treasury),
-            address(arena)
-        );
+        HotTakeRooms rooms = new HotTakeRooms(usdcAddress, address(registry), address(treasury), address(arena));
         console.log("HotTakeRooms:   ", address(rooms));
 
         // 5. Wire authorisations
@@ -50,7 +40,12 @@ contract Deploy is Script {
         treasury.setAuthorisedContract(address(arena), true);
         treasury.setAuthorisedContract(address(rooms), true);
 
-        // 6. Link HotTakeRooms into Arena so createBattleFromRoom is gated correctly
+        // 6. Authorize the scheduler/executor for delegated challenge calls.
+        // 1Shot prefunds USDC via ERC-7710, then the backend calls
+        // issueChallengeFor/acceptChallengeFor from schedulerWallet.
+        rooms.setDelegationManager(schedulerWallet);
+
+        // 7. Link HotTakeRooms into Arena so createBattleFromRoom is gated correctly
         arena.setHotTakeRooms(address(rooms));
 
         console.log("\n=== Deployment complete ===");

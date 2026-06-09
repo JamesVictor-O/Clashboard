@@ -72,6 +72,7 @@ export interface ExecutionLogEntry {
   mode: ExecutionMode;
   txHash?: `0x${string}`;
   prefundTxHash?: `0x${string}`;
+  oneShotTaskId?: `0x${string}`;
   status: "pending" | "success" | "failed";
   reason?: string; // policy failure reason
   timestamp: number;
@@ -80,12 +81,21 @@ export interface ExecutionLogEntry {
 const executionLog: ExecutionLogEntry[] = [];
 
 export function getExecutionLog(): ExecutionLogEntry[] {
-  return [...executionLog].reverse(); // newest first
+  return [...executionLog]; // newest first
 }
 
 function pushLog(entry: ExecutionLogEntry): void {
   executionLog.unshift(entry);
   if (executionLog.length > 50) executionLog.pop(); // cap at 50 entries
+}
+
+function updateLog(id: string, patch: Partial<ExecutionLogEntry>): void {
+  const index = executionLog.findIndex((entry) => entry.id === id);
+  if (index === -1) {
+    pushLog({ ...(patch as ExecutionLogEntry), id });
+    return;
+  }
+  executionLog[index] = { ...executionLog[index], ...patch };
 }
 
 // ─── High-level execute functions ─────────────────────────────────────────────
@@ -130,6 +140,8 @@ export async function executeIssueChallenge(
   };
 
   if (mode === "autonomous_oneshot") {
+    pushLog(logEntry);
+
     // Validate including wallet balance — USDC stays in wallet, no treasury needed
     const policy = await validatePolicyWithBalance({
       agentOwner: params.agentOwner,
@@ -139,7 +151,7 @@ export async function executeIssueChallenge(
     });
 
     if (!policy.ok) {
-      pushLog({ ...logEntry, status: "failed", reason: policy.reason });
+      updateLog(logEntry.id, { status: "failed", reason: policy.reason });
       return { mode, policyError: policy.reason };
     }
 
@@ -162,16 +174,16 @@ export async function executeIssueChallenge(
       });
 
       recordSpend(params.agentOwner, params.stakeUsdc);
-      pushLog({
-        ...logEntry,
+      updateLog(logEntry.id, {
         status: "success",
         txHash: result.txHash,
         prefundTxHash: result.prefundTxHash,
+        oneShotTaskId: result.taskId,
       });
       return { mode, result };
     } catch (err) {
       const reason = err instanceof Error ? err.message : "1Shot execution failed";
-      pushLog({ ...logEntry, status: "failed", reason });
+      updateLog(logEntry.id, { status: "failed", reason });
       throw err;
     }
   }
@@ -219,6 +231,8 @@ export async function executeAcceptChallenge(
   };
 
   if (mode === "autonomous_oneshot") {
+    pushLog(logEntry);
+
     // Validate including wallet balance — USDC stays in wallet, no treasury needed
     const policy = await validatePolicyWithBalance({
       agentOwner: params.agentOwner,
@@ -228,7 +242,7 @@ export async function executeAcceptChallenge(
     });
 
     if (!policy.ok) {
-      pushLog({ ...logEntry, status: "failed", reason: policy.reason });
+      updateLog(logEntry.id, { status: "failed", reason: policy.reason });
       return { mode, policyError: policy.reason };
     }
 
@@ -253,16 +267,16 @@ export async function executeAcceptChallenge(
       });
 
       recordSpend(params.agentOwner, params.stakeUsdc);
-      pushLog({
-        ...logEntry,
+      updateLog(logEntry.id, {
         status: "success",
         txHash: result.txHash,
         prefundTxHash: result.prefundTxHash,
+        oneShotTaskId: result.taskId,
       });
       return { mode, result };
     } catch (err) {
       const reason = err instanceof Error ? err.message : "1Shot execution failed";
-      pushLog({ ...logEntry, status: "failed", reason });
+      updateLog(logEntry.id, { status: "failed", reason });
       throw err;
     }
   }
@@ -307,6 +321,8 @@ export async function executePlaceBet(
   };
 
   if (mode === "autonomous_oneshot") {
+    pushLog(logEntry);
+
     const policy = await validatePolicyWithBalance({
       agentOwner: params.agentOwner,
       actionType: "PLACE_BET",
@@ -315,7 +331,7 @@ export async function executePlaceBet(
     });
 
     if (!policy.ok) {
-      pushLog({ ...logEntry, status: "failed", reason: policy.reason });
+      updateLog(logEntry.id, { status: "failed", reason: policy.reason });
       return { mode, policyError: policy.reason };
     }
 
@@ -336,16 +352,16 @@ export async function executePlaceBet(
       });
 
       recordSpend(params.agentOwner, params.amountUsdc);
-      pushLog({
-        ...logEntry,
+      updateLog(logEntry.id, {
         status: "success",
         txHash: result.txHash,
         prefundTxHash: result.prefundTxHash,
+        oneShotTaskId: result.taskId,
       });
       return { mode, result };
     } catch (err) {
       const reason = err instanceof Error ? err.message : "1Shot execution failed";
-      pushLog({ ...logEntry, status: "failed", reason });
+      updateLog(logEntry.id, { status: "failed", reason });
       throw err;
     }
   }

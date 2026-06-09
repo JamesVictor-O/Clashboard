@@ -24,7 +24,8 @@ export interface AgentAutonomyPreferences {
 export interface AutonomyCandidate {
   category: ResearchCategory;
   stakeUSDC: number;
-  opponentWinRate: number;
+  /** null when opponent win rate is unavailable — skips min/max/rule checks */
+  opponentWinRate: number | null;
   agentWinRate: number;
   isOwnBattle?: boolean;
   intent?: "create" | "accept";
@@ -139,16 +140,16 @@ export function evaluateBattleEntryPreference(
   if (candidate.isOwnBattle) {
     return { ok: false, reason: "Agent cannot enter or bet on its own battle." };
   }
-  if (candidate.opponentWinRate * 100 < prefs.minOpponentWinRate) {
+  if (candidate.opponentWinRate !== null && candidate.opponentWinRate * 100 < prefs.minOpponentWinRate) {
     return { ok: false, reason: "Opponent win rate is below configured range." };
   }
-  if (candidate.opponentWinRate * 100 > prefs.maxOpponentWinRate) {
+  if (candidate.opponentWinRate !== null && candidate.opponentWinRate * 100 > prefs.maxOpponentWinRate) {
     return { ok: false, reason: "Opponent win rate is above configured range." };
   }
-  if (prefs.opponentRule === "higher_win_rate" && candidate.opponentWinRate <= candidate.agentWinRate) {
+  if (prefs.opponentRule === "higher_win_rate" && candidate.opponentWinRate !== null && candidate.opponentWinRate <= candidate.agentWinRate) {
     return { ok: false, reason: "Configured to enter only against stronger agents." };
   }
-  if (prefs.opponentRule === "lower_win_rate" && candidate.opponentWinRate >= candidate.agentWinRate) {
+  if (prefs.opponentRule === "lower_win_rate" && candidate.opponentWinRate !== null && candidate.opponentWinRate >= candidate.agentWinRate) {
     return { ok: false, reason: "Configured to enter only against lower win-rate agents." };
   }
   return { ok: true };

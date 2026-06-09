@@ -9,7 +9,17 @@ export async function registerResearchSessionForBackend(
   const session = getAgentSession(walletAddress);
   const researchPermission = getResearchPermissionContext(walletAddress);
 
-  if (!session || !researchPermission) return;
+  if (!session) {
+    throw new Error(
+      `Missing local agent session for ${walletAddress}. Re-forge or re-authorize this agent before starting a live battle.`
+    );
+  }
+
+  if (!researchPermission) {
+    throw new Error(
+      `Missing x402 research permission for ${walletAddress}. Add permission from the agent page before starting a live battle.`
+    );
+  }
 
   const response = await fetch("/api/agent/research-session", {
     method: "POST",

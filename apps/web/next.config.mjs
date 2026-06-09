@@ -6,6 +6,14 @@ const nextConfig = {
     serverComponentsExternalPackages: ["three", "@react-three/fiber"],
   },
   webpack: (config, { isServer }) => {
+    config.ignoreWarnings = [
+      ...(config.ignoreWarnings ?? []),
+      {
+        module: /node_modules\/ox\/_esm\/tempo\/internal\/virtualMasterPool\.js/,
+        message: /Critical dependency: the request of a dependency is an expression/,
+      },
+    ];
+
     // Prevent Three.js from being bundled on the server
     if (isServer) {
       config.externals = [

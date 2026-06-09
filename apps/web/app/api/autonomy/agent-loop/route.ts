@@ -18,7 +18,7 @@ import { keccak256, encodeAbiParameters, parseAbiParameters } from "viem";
 import { getStoredAutonomyPreferences } from "@/lib/autonomy/preference-store";
 import { getArenaPermission } from "@/lib/autonomy/arena-permission-store";
 import { evaluateBattleEntryPreference } from "@/lib/autonomy/preferences";
-import { getExecutionLog, getLoopLog, pushLoopEntry, type LoopLogEntry } from "@/lib/autonomy/loop-store";
+import { getExecutionLog, getLoopLog, pushLoopEntry } from "@/lib/autonomy/loop-store";
 
 // GET — return loop log for an agent (no chain scan, no execution)
 export async function GET(req: NextRequest) {
@@ -31,8 +31,9 @@ export async function GET(req: NextRequest) {
     executionLog: getExecutionLog().filter((e) => e.agentOwner.toLowerCase() === agentOwner.toLowerCase()),
   });
 }
-import { fetchRooms, inferChallengeCategory, type Room } from "@/lib/challenges";
+import { fetchRooms, type Room } from "@/lib/challenges";
 import { acceptChallengeWith1Shot, issueChallengeWith1Shot } from "@/lib/oneshot/execute";
+import { acceptChallengeForOnChain, issueChallengeForOnChain } from "@/lib/chain";
 import { complete } from "@/lib/venice";
 import type { ResearchCategory } from "@/lib/types";
 
@@ -52,12 +53,11 @@ function normalizeCategory(raw: string): ResearchCategory {
   return "culture";
 }
 
-// Count battles entered today from the execution log
+// Count battles entered today from the loop log (loop writes here, not executor log)
 function battlesEnteredToday(agentOwner: string): number {
   const today = new Date().toISOString().slice(0, 10);
-  return getExecutionLog().filter(
+  return getLoopLog(agentOwner).filter(
     (e) =>
-      e.agentOwner.toLowerCase() === agentOwner.toLowerCase() &&
       e.actionType === "ACCEPT_CHALLENGE" &&
       e.status === "success" &&
       new Date(e.timestamp).toISOString().slice(0, 10) === today
@@ -117,7 +117,10 @@ export async function POST(req: NextRequest): Promise<NextResponse<LoopResult>> 
 
   // ── 1. Load preferences ───────────────────────────────────────────────────
   const prefs = getStoredAutonomyPreferences(agentOwner);
+  console.log(`[AgentLoop] owner=${agentOwner} mode=${prefs.mode} autoAccept=${prefs.autoAcceptChallenges} maxStake=${prefs.maxArenaStakeUSDC} categories=${prefs.battleCategories.join(",")} dailyLimit=${prefs.dailyBattleLimit}`);
+
   if (prefs.mode === "off") {
+    console.log(`[AgentLoop] SKIP — autonomy is off`);
     return NextResponse.json({ action: "SKIPPED", reason: "Autonomy is off.", scanned: 0, evaluated: 0, timestamp: Date.now() });
   }
 
@@ -125,8 +128,11 @@ export async function POST(req: NextRequest): Promise<NextResponse<LoopResult>> 
   let rooms: Room[] = [];
   try {
     rooms = await fetchRooms();
+    console.log(`[AgentLoop] fetchRooms returned ${rooms.length} rooms total`);
+    rooms.forEach((r, i) => console.log(`  [${i}] id=${r.id.slice(0,10)} state=${r.state} stake=${r.stake} category=${r.category} creator=${r.creatorAddress.slice(0,10)}`));
   } catch (err) {
     const msg = err instanceof Error ? err.message : "Chain scan failed";
+    console.error(`[AgentLoop] fetchRooms error: ${msg}`);
     return NextResponse.json({ action: "BLOCKED", reason: `Chain scan error: ${msg}`, scanned: 0, evaluated: 0, timestamp: Date.now() });
   }
 
@@ -136,11 +142,16 @@ export async function POST(req: NextRequest): Promise<NextResponse<LoopResult>> 
       r.creatorAddress.toLowerCase() !== agentOwner.toLowerCase() &&
       !actedRooms.has(r.id)
   );
+  console.log(`[AgentLoop] ${open.length} open (WAITING, not own, not acted) out of ${rooms.length}`);
+  rooms.filter(r => r.state !== "WAITING").forEach(r => console.log(`  filtered-state: ${r.id.slice(0,10)} state=${r.state}`));
+  rooms.filter(r => r.creatorAddress.toLowerCase() === agentOwner.toLowerCase()).forEach(r => console.log(`  filtered-own: ${r.id.slice(0,10)}`));
 
   // ── 3. Evaluate each open challenge against preferences ───────────────────
   const todayCount = battlesEnteredToday(agentOwner);
+  console.log(`[AgentLoop] battlesEnteredToday=${todayCount} limit=${prefs.dailyBattleLimit}`);
   let selectedRoom: Room | null = null;
   let evaluated = 0;
+  const rejections: string[] = [];
 
   for (const room of open) {
     const category = normalizeCategory(room.category);
@@ -150,13 +161,15 @@ export async function POST(req: NextRequest): Promise<NextResponse<LoopResult>> 
       {
         category,
         stakeUSDC: room.stake,
-        opponentWinRate: 0,     // opponent win rate not available from room data
+        opponentWinRate: null, // unknown from room data — skips min/max/rule checks
         agentWinRate,
         isOwnBattle: false,
         intent: "accept",
       },
       todayCount
     );
+    console.log(`[AgentLoop] eval room=${room.id.slice(0,10)} category=${category} stake=${room.stake} → ok=${decision.ok}${!decision.ok ? ` reason="${decision.reason}"` : ""}`);
+    if (!decision.ok) rejections.push(decision.reason);
 
     if (decision.ok) {
       selectedRoom = room;
@@ -200,8 +213,12 @@ export async function POST(req: NextRequest): Promise<NextResponse<LoopResult>> 
       ])
     ) as `0x${string}`;
 
+    // Optimistic lock — prevents retry loops even on failure; avoids double-prefund
+    actedRooms.add(room.id);
+
     try {
-      const result = await acceptChallengeWith1Shot({
+      // Step 1: prefund via 1Shot (ERC-7715 USDC transfer)
+      const prefundResult = await acceptChallengeWith1Shot({
         permissionContext: {
           context: perm.context,
           delegationManager: perm.delegationManager,
@@ -218,32 +235,42 @@ export async function POST(req: NextRequest): Promise<NextResponse<LoopResult>> 
         stakeWei: BigInt(Math.round(room.stake * 1_000_000)),
       });
 
-      actedRooms.add(room.id);
+      // Step 2: call acceptChallengeFor on-chain (platform key — changes room state)
+      const actionTxHash = await acceptChallengeForOnChain({
+        agentOwner,
+        roomId: room.id as `0x${string}`,
+        battleId,
+        bettingDuration: 300n,
+        roundDuration: 120n,
+        maxResearch: 1_000_000n,
+      });
 
-      const entry: LoopLogEntry = {
+      const txHash = (actionTxHash ?? prefundResult.txHash) as `0x${string}` | undefined;
+
+      pushLoopEntry({
         id: `loop-${Date.now()}`,
         agentOwner,
         actionType: "ACCEPT_CHALLENGE",
         status: "success",
-        txHash: result.txHash,
+        txHash,
         roomId: room.id,
         topic: room.topic,
         stakeUsdc: room.stake,
         timestamp: Date.now(),
-      };
-      pushLoopEntry(entry);
+      });
 
       return NextResponse.json({
         action: "ACCEPTED",
         room: { id: room.id, topic: room.topic, stake: room.stake, category: room.category, creatorAddress: room.creatorAddress },
         battleId,
-        txHash: result.txHash,
+        txHash,
         scanned: open.length,
         evaluated,
         timestamp: Date.now(),
       });
     } catch (err) {
       const reason = err instanceof Error ? err.message : "1Shot execution failed";
+      console.error(`[AgentLoop] ACCEPT_CHALLENGE failed room=${room.id.slice(0,10)}:`, reason);
       pushLoopEntry({ id: `loop-${Date.now()}`, agentOwner, actionType: "ACCEPT_CHALLENGE", status: "failed", reason, roomId: room.id, topic: room.topic, stakeUsdc: room.stake, timestamp: Date.now() });
       return NextResponse.json({
         action: "BLOCKED",
@@ -287,7 +314,8 @@ export async function POST(req: NextRequest): Promise<NextResponse<LoopResult>> 
     }
 
     try {
-      const result = await issueChallengeWith1Shot({
+      // Step 1: prefund via 1Shot (ERC-7715 USDC transfer)
+      const prefundResult = await issueChallengeWith1Shot({
         permissionContext: {
           context: perm.context,
           delegationManager: perm.delegationManager,
@@ -303,18 +331,30 @@ export async function POST(req: NextRequest): Promise<NextResponse<LoopResult>> 
         stakeWei: BigInt(Math.round(prefs.maxArenaStakeUSDC * 1_000_000)),
       });
 
-      pushLoopEntry({ id: `loop-${Date.now()}`, agentOwner, actionType: "ISSUE_CHALLENGE", status: "success", txHash: result.txHash, topic, stakeUsdc: prefs.maxArenaStakeUSDC, timestamp: Date.now() });
+      // Step 2: call issueChallengeFor on-chain (platform key — creates the room)
+      const actionTxHash = await issueChallengeForOnChain({
+        agentOwner,
+        roomId,
+        topicHash,
+        topicPreview: topic,
+        categoryHash,
+        stakeWei: BigInt(Math.round(prefs.maxArenaStakeUSDC * 1_000_000)),
+      });
+
+      const txHash = (actionTxHash ?? prefundResult.txHash) as `0x${string}` | undefined;
+      pushLoopEntry({ id: `loop-${Date.now()}`, agentOwner, actionType: "ISSUE_CHALLENGE", status: "success", txHash, topic, stakeUsdc: prefs.maxArenaStakeUSDC, timestamp: Date.now() });
 
       return NextResponse.json({
         action: "ISSUED",
         generatedTopic: topic,
-        txHash: result.txHash,
+        txHash,
         scanned: open.length,
         evaluated,
         timestamp: Date.now(),
       });
     } catch (err) {
       const reason = err instanceof Error ? err.message : "1Shot issue failed";
+      console.error(`[AgentLoop] ISSUE_CHALLENGE failed:`, reason);
       pushLoopEntry({ id: `loop-${Date.now()}`, agentOwner, actionType: "ISSUE_CHALLENGE", status: "failed", reason, topic, stakeUsdc: prefs.maxArenaStakeUSDC, timestamp: Date.now() });
       return NextResponse.json({ action: "BLOCKED", reason, generatedTopic: topic, scanned: open.length, evaluated, timestamp: Date.now() });
     }

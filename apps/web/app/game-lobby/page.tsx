@@ -1271,8 +1271,10 @@ async function fetchLiveBattlesUncached(): Promise<StagedAgent[]> {
       // not a named object — use index access even though ABI has names.
       // Layout: [state, agentA, agentB, winner, entryFee, fighterPoolA,
       //          fighterPoolB, spectatorPoolA, spectatorPoolB, bettingDeadline,
-      //          roundDuration, totalRounds, rubricHash, maxResearch,
-      //          topicHash, topic, categoryHash, rubricCommitted]
+      //          roundDuration, totalRounds, phase, currentRound,
+      //          debateStartedAt, currentRoundStartedAt, currentRoundDeadline,
+      //          prepareDeadline, rubricHash, maxResearch, topicHash, topic,
+      //          categoryHash, rubricCommitted]
       let battleData = [] as unknown as readonly [
         number,           // [0]  state
         `0x${string}`,    // [1]  agentA
@@ -1286,23 +1288,40 @@ async function fetchLiveBattlesUncached(): Promise<StagedAgent[]> {
         bigint,           // [9]  bettingDeadline
         bigint,           // [10] roundDuration
         number,           // [11] totalRounds
-        `0x${string}`,    // [12] rubricHash
-        bigint,           // [13] maxResearch
-        `0x${string}`,    // [14] topicHash
-        string,           // [15] topic
-        `0x${string}`,    // [16] categoryHash
-        boolean,          // [17] rubricCommitted
+        number,           // [12] phase
+        number,           // [13] currentRound
+        bigint,           // [14] debateStartedAt
+        bigint,           // [15] currentRoundStartedAt
+        bigint,           // [16] currentRoundDeadline
+        bigint,           // [17] prepareDeadline
+        `0x${string}`,    // [18] rubricHash
+        bigint,           // [19] maxResearch
+        `0x${string}`,    // [20] topicHash
+        string,           // [21] topic
+        `0x${string}`,    // [22] categoryHash
+        boolean,          // [23] rubricCommitted
       ];
       let onChainTopic: string | null = null;
+      let phaseNum = 0;
 
       try {
-        battleData = (await withRpcRetry(() => client.readContract({
-          address: arenaAddress,
-          abi: arenaAbi,
-          functionName: "battles",
-          args: [battleId],
-        })) as unknown) as typeof battleData;
-        onChainTopic = typeof battleData[15] === "string" ? battleData[15].trim() : null;
+        const [battleRead, phaseRead] = await Promise.all([
+          withRpcRetry(() => client.readContract({
+            address: arenaAddress,
+            abi: arenaAbi,
+            functionName: "battles",
+            args: [battleId],
+          })),
+          withRpcRetry(() => client.readContract({
+            address: arenaAddress,
+            abi: arenaAbi,
+            functionName: "getBattlePhase",
+            args: [battleId],
+          })),
+        ]);
+        battleData = battleRead as unknown as typeof battleData;
+        phaseNum = Number(phaseRead);
+        onChainTopic = typeof battleData[21] === "string" ? battleData[21].trim() : null;
       } catch {
         battleData = (await withRpcRetry(() => client.readContract({
           address: arenaAddress,
@@ -1310,6 +1329,7 @@ async function fetchLiveBattlesUncached(): Promise<StagedAgent[]> {
           functionName: "battles",
           args: [battleId],
         })) as unknown) as typeof battleData;
+        phaseNum = Number(battleData[12] ?? 0);
       }
 
       // BattleState: OPEN=0, SETTLED=1, CANCELLED=2 — only show OPEN
@@ -1323,9 +1343,8 @@ async function fetchLiveBattlesUncached(): Promise<StagedAgent[]> {
       const totalPool = fighterA + fighterB + spectA + spectB;
 
       const bettingDeadlineSec = Number(battleData[9] ?? 0n);
-      const roundDuration = Number(battleData[10] ?? 120n);
-      const totalRounds = Number(battleData[11] ?? 3);
-      const roundsEnd = bettingDeadlineSec + roundDuration * totalRounds;
+      const currentRoundDeadlineSec = Number(battleData[16] ?? 0n);
+      const prepareDeadlineSec = Number(battleData[17] ?? 0n);
 
       const PERSONAS = ["Roaster", "Contrarian", "Professor", "Historian", "Analyst"];
       const [agentAProfile, agentBProfile] = await Promise.all([
@@ -1335,13 +1354,15 @@ async function fetchLiveBattlesUncached(): Promise<StagedAgent[]> {
 
       const nowSec = Math.floor(Date.now() / 1000);
       const status: StagedAgent["status"] =
-        bettingDeadlineSec > nowSec ? "MATCHING" :
-        nowSec < roundsEnd ? "LOCKED" :
+        phaseNum === 0 && bettingDeadlineSec > nowSec ? "MATCHING" :
+        phaseNum === 0 && bettingDeadlineSec <= nowSec ? "LOCKED" :
+        phaseNum >= 1 && phaseNum <= 5 ? "LOCKED" :
         "QUEUED";
 
       const countdown =
         status === "MATCHING" ? Math.max(0, bettingDeadlineSec - nowSec) :
-        status === "LOCKED" ? Math.max(0, roundsEnd - nowSec) :
+        status === "LOCKED" && phaseNum === 1 ? Math.max(0, prepareDeadlineSec - nowSec) :
+        status === "LOCKED" && phaseNum >= 2 && phaseNum <= 4 ? Math.max(0, currentRoundDeadlineSec - nowSec) :
         0;
 
       const topic =

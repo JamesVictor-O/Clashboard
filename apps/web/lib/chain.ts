@@ -57,9 +57,13 @@ export const baseMainnet: Chain = {
 export const ARENA_ABI = parseAbi([
   // Battle lifecycle (scheduler only)
   "function createBattle(bytes32 battleId, address agentA, address agentB, uint256 entryFee, uint256 bettingDuration, uint256 roundDuration, uint256 maxResearch, bytes32 topicHash, string topic, bytes32 categoryHash) external",
-  "function createBattle(bytes32 battleId, address agentA, address agentB, uint256 entryFee, uint256 bettingDuration, uint256 roundDuration, uint256 maxResearch, bytes32 topicHash, string topic, bytes32 categoryHash, uint8 totalRounds) external",
+  "function createBattle(bytes32 battleId, address agentA, address agentB, uint256 entryFee, uint256 bettingDuration, uint256 roundDuration, uint8 totalRounds, uint256 maxResearch, bytes32 topicHash, string topic, bytes32 categoryHash) external",
   "function commitRubric(bytes32 battleId, bytes32 rubricHash) external",
+  "function closeBetting(bytes32 battleId) external",
+  "function startDebate(bytes32 battleId) external",
   "function submitArgument(bytes32 battleId, uint8 side, bytes32 contentHash) external",
+  "function advanceRound(bytes32 battleId) external",
+  "function expirePreparation(bytes32 battleId) external",
   "function settleBattle(bytes32 battleId, uint8 winnerSide, bytes32 rubricPreimage, uint256 judgeScore) external",
   "function cancelBattle(bytes32 battleId) external",
 
@@ -73,14 +77,22 @@ export const ARENA_ABI = parseAbi([
   "function getTotalPool(bytes32 battleId) external view returns (uint256)",
   "function getUserBet(bytes32 battleId, address bettor) external view returns (uint8 side, uint256 amount)",
   "function getBettorCount(bytes32 battleId) external view returns (uint256 sideA, uint256 sideB)",
+  "function getCurrentRound(bytes32 battleId) external view returns (uint8)",
   "function getArgument(bytes32 battleId, uint8 round, uint8 side) external view returns (bytes32 contentHash, bool submitted)",
-  "function battles(bytes32) external view returns (uint8 state, address agentA, address agentB, address winner, uint256 entryFee, uint256 fighterPoolA, uint256 fighterPoolB, uint256 spectatorPoolA, uint256 spectatorPoolB, uint256 bettingDeadline, uint256 roundDuration, uint8 totalRounds, bytes32 rubricHash, uint256 maxResearch, bytes32 topicHash, string topic, bytes32 categoryHash, bool rubricCommitted)",
+  "function getArgumentStatus(bytes32 battleId, uint8 round, uint8 side) external view returns (bytes32 contentHash, bool submitted, bool missed)",
+  "function battles(bytes32) external view returns (uint8 state, address agentA, address agentB, address winner, uint256 entryFee, uint256 fighterPoolA, uint256 fighterPoolB, uint256 spectatorPoolA, uint256 spectatorPoolB, uint256 bettingDeadline, uint256 roundDuration, uint8 totalRounds, uint8 phase, uint8 currentRound, uint256 debateStartedAt, uint256 currentRoundStartedAt, uint256 currentRoundDeadline, uint256 prepareDeadline, bytes32 rubricHash, uint256 maxResearch, bytes32 topicHash, string topic, bytes32 categoryHash, bool rubricCommitted)",
 
   // Events
   "event BattleCreated(bytes32 indexed battleId, address agentA, address agentB, uint256 entryFee, uint256 bettingDeadline, bytes32 topicHash, string topic)",
   "event BetPlaced(bytes32 indexed battleId, address indexed bettor, uint8 side, uint256 amount)",
   "event RubricCommitted(bytes32 indexed battleId, bytes32 rubricHash)",
+  "event BettingClosed(bytes32 indexed battleId, uint256 prepareDeadline)",
+  "event DebateStarted(bytes32 indexed battleId, uint8 round, uint256 roundDeadline)",
   "event ArgumentSubmitted(bytes32 indexed battleId, uint8 round, uint8 side, bytes32 contentHash)",
+  "event ArgumentMissed(bytes32 indexed battleId, uint8 round, uint8 side)",
+  "event RoundAdvanced(bytes32 indexed battleId, uint8 round, uint256 roundDeadline)",
+  "event JudgingReady(bytes32 indexed battleId)",
+  "event BattleExpired(bytes32 indexed battleId)",
   "event BattleSettled(bytes32 indexed battleId, address indexed winner, uint256 totalPool)",
   "event BattleCancelled(bytes32 indexed battleId)",
 ]);
@@ -105,10 +117,46 @@ export const HOTTAKEROOMS_ABI = parseAbi([
   "function acceptChallengeFor(address agentOwner, bytes32 roomId, bytes32 battleId, uint256 bettingDuration, uint256 roundDuration, uint256 maxResearch) external",
   "function cancelChallenge(bytes32 roomId) external",
   "function authorizeExecutor(address executor, bool allowed) external",
+  "function authorizedExecutors(address agentOwner, address executor) external view returns (bool)",
   "function getRoom(bytes32 roomId) external view returns ((uint8 state, address creator, address challenger, uint256 stake, bytes32 topicHash, string topicPreview, bytes32 battleId, uint256 createdAt, uint256 expiresAt, bytes32 categoryHash))",
   "event RoomCreated(bytes32 indexed roomId, address indexed creator, uint256 stake, string topicPreview, uint256 expiresAt)",
   "event RoomAccepted(bytes32 indexed roomId, address indexed challenger, bytes32 battleId)",
 ]);
+
+type BattleTuple = readonly [
+  number,
+  `0x${string}`,
+  `0x${string}`,
+  `0x${string}`,
+  bigint,
+  bigint,
+  bigint,
+  bigint,
+  bigint,
+  bigint,
+  bigint,
+  number,
+  number,
+  number,
+  bigint,
+  bigint,
+  bigint,
+  bigint,
+  `0x${string}`,
+  bigint,
+  `0x${string}`,
+  string,
+  `0x${string}`,
+  boolean
+];
+
+export interface ArenaBattleSnapshot {
+  state: number;
+  phase: number;
+  currentRound: number;
+  rubricHash: `0x${string}`;
+  rubricCommitted: boolean;
+}
 
 // ─── Clients ──────────────────────────────────────────────────────────────────
 
@@ -240,11 +288,11 @@ export async function createBattleOnChain(params: {
         params.entryFee,
         params.bettingDuration,
         params.roundDuration,
+        params.totalRounds,
         params.maxResearch,
         params.topicHash,
         params.topic,
         params.categoryHash,
-        params.totalRounds,
       ],
       chain,
       account: getPlatformAccount(),
@@ -296,6 +344,40 @@ export async function commitRubricOnChain(params: {
   return hash;
 }
 
+export async function closeBettingOnChain(params: {
+  battleId: `0x${string}`;
+}): Promise<string> {
+  const wallet = getWalletClient();
+  const contract = getContractAddress();
+  const chain = getActiveChain();
+
+  return wallet.writeContract({
+    address: contract,
+    abi: ARENA_ABI,
+    functionName: "closeBetting",
+    args: [params.battleId],
+    chain,
+    account: getPlatformAccount(),
+  });
+}
+
+export async function startDebateOnChain(params: {
+  battleId: `0x${string}`;
+}): Promise<string> {
+  const wallet = getWalletClient();
+  const contract = getContractAddress();
+  const chain = getActiveChain();
+
+  return wallet.writeContract({
+    address: contract,
+    abi: ARENA_ABI,
+    functionName: "startDebate",
+    args: [params.battleId],
+    chain,
+    account: getPlatformAccount(),
+  });
+}
+
 export async function submitArgumentOnChain(params: {
   battleId: `0x${string}`;
   side: 1 | 2;
@@ -317,6 +399,23 @@ export async function submitArgumentOnChain(params: {
   return hash;
 }
 
+export async function advanceRoundOnChain(params: {
+  battleId: `0x${string}`;
+}): Promise<string> {
+  const wallet = getWalletClient();
+  const contract = getContractAddress();
+  const chain = getActiveChain();
+
+  return wallet.writeContract({
+    address: contract,
+    abi: ARENA_ABI,
+    functionName: "advanceRound",
+    args: [params.battleId],
+    chain,
+    account: getPlatformAccount(),
+  });
+}
+
 export async function settleBattleOnChain(params: {
   battleId: `0x${string}`;
   winnerSide: 1 | 2;
@@ -324,6 +423,7 @@ export async function settleBattleOnChain(params: {
   judgeScore: bigint;
 }): Promise<string> {
   const wallet = getWalletClient();
+  const client = getPublicClient();
   const contract = getContractAddress();
   const chain = getActiveChain();
 
@@ -340,6 +440,14 @@ export async function settleBattleOnChain(params: {
     chain,
     account: getPlatformAccount(),
   });
+
+  // Wait for the settlement tx to be mined. The contract distributes USDC to
+  // winners atomically inside settleBattle — if this tx reverts, no payout
+  // happens and we must NOT mark the battle as settled off-chain.
+  const receipt = await client.waitForTransactionReceipt({ hash, confirmations: 1 });
+  if (receipt.status === "reverted") {
+    throw new Error(`settleBattle tx reverted on-chain: ${hash}`);
+  }
 
   return hash;
 }
@@ -452,6 +560,44 @@ export async function getBattlePhase(battleId: `0x${string}`): Promise<number> {
     functionName: "getBattlePhase",
     args: [battleId],
   }) as number;
+}
+
+export async function getArenaBattleSnapshot(battleId: `0x${string}`): Promise<ArenaBattleSnapshot> {
+  const client = getPublicClient();
+  const contract = getContractAddress();
+
+  const tuple = await client.readContract({
+    address: contract,
+    abi: ARENA_ABI,
+    functionName: "battles",
+    args: [battleId],
+  }) as unknown as BattleTuple;
+
+  return {
+    state: Number(tuple[0]),
+    phase: Number(tuple[12]),
+    currentRound: Number(tuple[13]),
+    rubricHash: tuple[18],
+    rubricCommitted: tuple[23],
+  };
+}
+
+export async function isArgumentSubmittedOnChain(params: {
+  battleId: `0x${string}`;
+  round: number;
+  side: 1 | 2;
+}): Promise<boolean> {
+  const client = getPublicClient();
+  const contract = getContractAddress();
+
+  const [, submitted] = await client.readContract({
+    address: contract,
+    abi: ARENA_ABI,
+    functionName: "getArgument",
+    args: [params.battleId, params.round, params.side],
+  }) as readonly [`0x${string}`, boolean];
+
+  return submitted;
 }
 
 // ─── Explorer URL ─────────────────────────────────────────────────────────────

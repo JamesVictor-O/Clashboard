@@ -1,7 +1,12 @@
 "use client";
 
-import { createWalletClient, custom, parseUnits } from "viem";
+import { createPublicClient, createWalletClient, custom, http, parseUnits } from "viem";
 import { baseSepolia, base } from "viem/chains";
+import {
+  Implementation,
+  getSmartAccountsEnvironment,
+  toMetaMaskSmartAccount,
+} from "@metamask/smart-accounts-kit";
 import { erc7715ProviderActions } from "@metamask/smart-accounts-kit/actions";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
 
@@ -140,6 +145,9 @@ export interface GrantedPermission {
   delegationManager: `0x${string}`;
   sessionAddress: `0x${string}`;
   walletAddress: `0x${string}`;
+  smartAccountAddress?: `0x${string}`;
+  smartAccountImplementation?: "Stateless7702";
+  smartAccountReady?: boolean;
   expiry: number; // unix seconds
   budgetUSDC: number;
   budgetPeriod: string;
@@ -160,6 +168,16 @@ export interface GrantPermissionsParams {
   account: string;
   expiry: number;
   budgetUSDC: number;
+}
+
+export interface SmartAccountUpgradeStatus {
+  walletAddress: `0x${string}`;
+  smartAccountAddress: `0x${string}`;
+  implementation: "Stateless7702";
+  delegationManager: `0x${string}`;
+  entryPoint: `0x${string}`;
+  isValid7702Implementation: boolean;
+  checkedAt: number;
 }
 
 // ─── Agent Session Storage ────────────────────────────────────────────────────
@@ -228,42 +246,83 @@ function getActiveChain() {
   return chainId === 8453 ? base : baseSepolia;
 }
 
-async function getOneShotRelayerTargetAddress(chainId: number): Promise<`0x${string}`> {
-  const relayerUrl =
-    process.env.NEXT_PUBLIC_ONESHOT_RELAYER_URL ??
-    (chainId === 84532 || chainId === 11155111
-      ? "https://relayer.1shotapi.dev/relayers"
-      : "https://relayer.1shotapi.com/relayers");
+const SA_STATUS_CACHE_TTL = 300; // 5 minutes
+const saStatusKey = (addr: string) =>
+  `clashboard_sa_status_${addr.toLowerCase()}`;
 
-  const res = await fetch(relayerUrl, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      jsonrpc: "2.0",
-      id: Date.now(),
-      method: "relayer_getCapabilities",
-      params: [String(chainId)],
-    }),
+function loadCachedSmartAccountStatus(
+  addr: string
+): SmartAccountUpgradeStatus | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = localStorage.getItem(saStatusKey(addr));
+    if (!raw) return null;
+    const status = JSON.parse(raw) as SmartAccountUpgradeStatus;
+    if (Math.floor(Date.now() / 1000) - status.checkedAt > SA_STATUS_CACHE_TTL) return null;
+    return status;
+  } catch {
+    return null;
+  }
+}
+
+function cacheSmartAccountStatus(status: SmartAccountUpgradeStatus): void {
+  if (typeof window === "undefined") return;
+  try {
+    localStorage.setItem(saStatusKey(status.walletAddress), JSON.stringify(status));
+  } catch {}
+}
+
+async function getSmartAccountUpgradeStatus(
+  account: string
+): Promise<SmartAccountUpgradeStatus> {
+  const chain = getActiveChain();
+  const environment = getSmartAccountsEnvironment(chain.id);
+  const publicClient = createPublicClient({
+    chain,
+    transport: http(chain.rpcUrls.default.http[0]),
   });
 
-  if (!res.ok) {
-    throw new Error(`Unable to load 1Shot relayer capabilities: ${res.status}`);
-  }
+  const smartAccount = await toMetaMaskSmartAccount({
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    client: publicClient as any,
+    implementation: Implementation.Stateless7702,
+    address: account as `0x${string}`,
+    environment,
+  });
 
-  const data = (await res.json()) as {
-    result?: Record<string, { targetAddress?: `0x${string}` }>;
-    error?: { message?: string };
+  const smartAccountAddress = await smartAccount.getAddress();
+  const isValid7702Implementation = await smartAccount.isDeployed();
+
+  return {
+    walletAddress: account as `0x${string}`,
+    smartAccountAddress,
+    implementation: "Stateless7702",
+    delegationManager: environment.DelegationManager,
+    entryPoint: environment.EntryPoint,
+    isValid7702Implementation,
+    checkedAt: Math.floor(Date.now() / 1000),
   };
-  if (data.error) {
-    throw new Error(data.error.message ?? "1Shot relayer capability lookup failed");
-  }
-
-  const targetAddress = data.result?.[String(chainId)]?.targetAddress;
-  if (!targetAddress) {
-    throw new Error(`1Shot relayer does not advertise a target address for chain ${chainId}`);
-  }
-  return targetAddress;
 }
+
+/**
+ * Check whether a connected EOA has been upgraded to a MetaMask 7702 smart
+ * account. Results are cached in localStorage for 5 minutes to avoid an RPC
+ * call on every page navigation. Pass `forceRefresh` to bypass the cache
+ * (e.g. immediately after a permissions grant).
+ */
+export async function checkSmartAccountStatus(
+  account: string,
+  forceRefresh = false
+): Promise<SmartAccountUpgradeStatus> {
+  if (!forceRefresh) {
+    const cached = loadCachedSmartAccountStatus(account);
+    if (cached) return cached;
+  }
+  const status = await getSmartAccountUpgradeStatus(account);
+  cacheSmartAccountStatus(status);
+  return status;
+}
+
 
 // ─── ERC-7715 Permissions ─────────────────────────────────────────────────────
 
@@ -276,12 +335,15 @@ const REQUIRED_PERMISSION_TYPE = "erc20-token-periodic" as const;
  *   1. Build a viem WalletClient extended with erc7715ProviderActions.
  *      Must use window.ethereum directly — MetaMask SDK blocks
  *      wallet_grantPermissions with -32601 when called through its wrapper.
- *   2. Call getSupportedExecutionPermissions (best-effort) to verify that
+ *   2. Resolve the connected EOA as a MetaMask Stateless7702 smart account
+ *      using Smart Accounts Kit. This verifies the DelegationManager/7702
+ *      environment the permission will use.
+ *   3. Call getSupportedExecutionPermissions (best-effort) to verify that
  *      erc20-token-periodic is available before showing the Flask UI.
- *   3. Call requestExecutionPermissions once for two grants:
+ *   4. Call requestExecutionPermissions once for two grants:
  *      - arena grant scoped to the 1Shot relayer targetAddress
  *      - research grant scoped to the agent session address for x402
- *   4. Return only permission metadata (GrantedPermissionBundle).
+ *   5. Return only permission metadata (GrantedPermissionBundle).
  *      The session private key stays in AgentSession — it never appears here.
  */
 export async function grantPermissions(
@@ -302,6 +364,13 @@ export async function grantPermissions(
     chain,
     transport: custom(ethereum),
   }).extend(erc7715ProviderActions());
+
+  // ── Step 0: Smart Accounts Kit 7702 preflight ─────────────────────────────
+  // ERC-7715 grants are intended to execute through MetaMask's smart-account
+  // delegation environment. If this returns false, MetaMask can still complete
+  // the setup during the permission request, but we record the preflight state
+  // so the UI/backend can prove this wallet is on the 7702 smart-account path.
+  const smartAccountStatus = await getSmartAccountUpgradeStatus(params.account);
 
   // ── Step 1: check supported permission types (best-effort) ────────────────
   // getSupportedExecutionPermissions is not available on all Flask builds;
@@ -333,102 +402,86 @@ export async function grantPermissions(
     // Otherwise getSupportedExecutionPermissions is absent on this build — proceed.
   }
 
-  // ── Step 2: resolve agent session and 1Shot public relayer target ────────
+  // ── Step 2: resolve agent session ────────────────────────────────────────
   const session = getOrCreateAgentSession(params.account);
-  const relayerTargetAddress = await getOneShotRelayerTargetAddress(chain.id);
 
   const usdcAddress = process.env.NEXT_PUBLIC_USDC_ADDRESS as `0x${string}`;
   if (!usdcAddress) throw new Error("NEXT_PUBLIC_USDC_ADDRESS is not configured");
 
   const totalPeriodAmount = parseUnits(params.budgetUSDC.toString(), 6);
-  const arenaAmount = (totalPeriodAmount * 70n) / 100n;
-  const researchAmount = totalPeriodAmount - arenaAmount;
-  const arenaBudgetUSDC = Number(arenaAmount) / 1_000_000;
+  // Budget split is informational — the session key holds the full grant and
+  // sub-delegates to arena/research executors separately at use time.
+  const arenaAmount      = (totalPeriodAmount * 70n) / 100n;
+  const researchAmount   = totalPeriodAmount - arenaAmount;
+  const arenaBudgetUSDC  = Number(arenaAmount)   / 1_000_000;
   const researchBudgetUSDC = Number(researchAmount) / 1_000_000;
 
   // ── Step 3: request the delegation grant from Flask ────────────────────────
-  // One wallet popup, two correctly scoped grants:
-  //   arena    -> 1Shot relayer target address
-  //   research -> local agent session address for x402 redelegation
+  // ONE popup, ONE grant — scoped to the agent's session key.
+  //
+  // EIP-7715 issues one MetaMask confirmation dialog per wallet_grantPermissions
+  // call. Two different `to` addresses require two calls → two popups. Instead we
+  // grant the full budget to the session key once. The session key sub-delegates to
+  // each executor at use time via ERC-7710 redelegatePermissionContext:
+  //   arena    → execute1Shot re-delegates to 1Shot relayer target
+  //   research → createResearchBuyerFromSession re-delegates to x402 facilitator
   const grantedPermissions = await walletClient.requestExecutionPermissions([
     {
       chainId: chain.id,
       expiry: params.expiry,
-      // The public relayer redeems grants scoped to its advertised targetAddress.
-      // The local session key remains stored for demo agent identity only.
-      to: relayerTargetAddress,
-      permission: {
-        type: REQUIRED_PERMISSION_TYPE,
-        data: {
-          tokenAddress: usdcAddress,
-          periodAmount: arenaAmount,
-          periodDuration: 86400, // 24-hour rolling window
-          justification:
-            "Clashboard arena — limited testnet USDC/day for demo arena actions and arena stakes.",
-        },
-        isAdjustmentAllowed: true,
-      },
-    },
-    {
-      chainId: chain.id,
-      expiry: params.expiry,
-      // x402 research payments are redelegated by the local agent session.
-      // The session private key remains in AgentSession demo storage only.
       to: session.sessionAddress,
       permission: {
         type: REQUIRED_PERMISSION_TYPE,
         data: {
           tokenAddress: usdcAddress,
-          periodAmount: researchAmount,
-          periodDuration: 86400, // 24-hour rolling window
+          periodAmount: totalPeriodAmount, // full budget — session key manages the split
+          periodDuration: 86400,           // 24-hour rolling window
           justification:
-            "Clashboard research — limited testnet USDC/day for agent data purchases via x402.",
+            "Clashboard — limited testnet USDC/day for arena battles and agent research purchases.",
         },
         isAdjustmentAllowed: true,
       },
     },
   ]);
 
-  if (!grantedPermissions || grantedPermissions.length < 2) {
+  if (!grantedPermissions || grantedPermissions.length < 1) {
     throw new Error("No permissions were granted by the wallet.");
   }
 
-  const arenaGrant = grantedPermissions[0];
-  const researchGrant = grantedPermissions[1];
+  const singleGrant = grantedPermissions[0];
   const createdAt = Math.floor(Date.now() / 1000);
 
   // ── Step 4: return metadata only — private key stays in AgentSession ───────
-  const arenaPermission: GrantedPermission = {
-    context: arenaGrant.context,
-    delegationManager: arenaGrant.delegationManager as `0x${string}`,
-    sessionAddress: relayerTargetAddress,
+  // Both rails share the same context; rail-specific budgetUSDC is informational.
+  const basePermission: GrantedPermission = {
+    context: singleGrant.context,
+    delegationManager: singleGrant.delegationManager as `0x${string}`,
+    sessionAddress: session.sessionAddress,
     walletAddress: params.account as `0x${string}`,
+    smartAccountAddress: smartAccountStatus.smartAccountAddress,
+    smartAccountImplementation: smartAccountStatus.implementation,
+    smartAccountReady: smartAccountStatus.isValid7702Implementation,
     expiry: params.expiry,
-    budgetUSDC: arenaBudgetUSDC,
+    budgetUSDC: params.budgetUSDC,
     budgetPeriod: "1 day",
     chainId: chain.id,
     permissionType: REQUIRED_PERMISSION_TYPE,
     createdAt,
     active: true,
-    rail: "arena",
     totalBudgetUSDC: params.budgetUSDC,
   };
 
-  const researchPermission: GrantedPermission = {
-    context: researchGrant.context,
-    delegationManager: researchGrant.delegationManager as `0x${string}`,
-    sessionAddress: session.sessionAddress,
-    walletAddress: params.account as `0x${string}`,
-    expiry: params.expiry,
-    budgetUSDC: researchBudgetUSDC,
-    budgetPeriod: "1 day",
-    chainId: chain.id,
-    permissionType: REQUIRED_PERMISSION_TYPE,
-    createdAt,
-    active: true,
-    rail: "research",
-    totalBudgetUSDC: params.budgetUSDC,
-  };
+  const arenaPermission: GrantedPermission    = { ...basePermission, rail: "arena",    budgetUSDC: arenaBudgetUSDC };
+  const researchPermission: GrantedPermission = { ...basePermission, rail: "research", budgetUSDC: researchBudgetUSDC };
+
+  // After a successful grant, MetaMask Flask sets the EIP-7702 authorization so
+  // the EOA is now a smart account. Force-refresh the cached status so the
+  // ConnectWallet badge flips to green on next render.
+  try {
+    await checkSmartAccountStatus(params.account, true);
+  } catch {
+    // Non-fatal — cache will be updated on the next natural check.
+  }
 
   return {
     ...arenaPermission,

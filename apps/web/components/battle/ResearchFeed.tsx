@@ -6,19 +6,24 @@ import type { ResearchPurchase } from "@/lib/types";
 
 interface ResearchFeedProps {
   purchases: ResearchPurchase[];
+  status?: string | null;
 }
 
 const SOURCE_ICONS: Record<string, string> = {
   "Sports Reference": "📊",
   "News Sentiment API": "📰",
   "Historical Records DB": "📜",
+  "A2A Research Market": "🤝",
+  "x402 Sports Research": "📊",
+  "x402 News Research": "📰",
+  "x402 History Research": "📜",
 };
 
 /**
  * Live x402 purchase cards — slide in from bottom during research phase.
  * Shows source, cost, tx hash for each data purchase.
  */
-export function ResearchFeed({ purchases }: ResearchFeedProps) {
+export function ResearchFeed({ purchases, status }: ResearchFeedProps) {
   return (
     <div className="space-y-2">
       <div className="flex items-center gap-2 mb-3">
@@ -84,9 +89,13 @@ export function ResearchFeed({ purchases }: ResearchFeedProps) {
       </AnimatePresence>
 
       {purchases.length === 0 && (
-        <div className="text-center py-4">
-          <div className="font-body text-sm text-white/30 animate-pulse">
-            Agents gathering intel...
+        <div className="border border-clash-gold/20 bg-clash-gold/5 p-4 text-center">
+          <div className="mx-auto mb-3 h-8 w-8 rounded-full border-2 border-clash-gold/25 border-t-clash-gold animate-spin" />
+          <div className="font-display text-xs uppercase tracking-widest text-clash-gold/75">
+            Research Economy Active
+          </div>
+          <div className="mt-2 font-body text-sm text-white/35">
+            {status ?? "Agents gathering intel..."}
           </div>
         </div>
       )}

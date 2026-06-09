@@ -8,7 +8,9 @@ import {
   buildRubricCommitment,
   closeBettingOnChain,
   commitRubricOnChain,
+  getArenaBattleSnapshot,
   getBattlePhase,
+  isArgumentSubmittedOnChain,
   getPublicClient,
   startDebateOnChain,
   submitArgumentOnChain,
@@ -65,7 +67,7 @@ async function safeWrite(label: string, action: () => Promise<string>) {
         message.includes("Rubric already committed") ||
         message.includes("Argument already submitted")
       ) {
-        console.warn(`${label} skipped:`, message);
+        console.warn(`${label} skipped: ${summarizeContractSkip(message)}`);
         return undefined;
       }
 
@@ -79,6 +81,12 @@ async function safeWrite(label: string, action: () => Promise<string>) {
       throw err;
     }
   }
+}
+
+function summarizeContractSkip(message: string): string {
+  const reasonMatch = message.match(/reason:\n([^\n]+)/);
+  const detailsMatch = message.match(/Details:\s*execution reverted:\s*([^\n]+)/);
+  return reasonMatch?.[1]?.trim() ?? detailsMatch?.[1]?.trim() ?? message.split("\n")[0] ?? "already handled";
 }
 
 function isTransientArenaWriteError(message: string): boolean {
@@ -229,14 +237,15 @@ async function runBattleLifecycleOnce(
 // ─── State-Machine Step Runner ────────────────────────────────────────────────
 
 export type BattleStepAction =
-  | "WAITING"        // betting deadline not yet reached
-  | "CLOSE_BETTING"  // closed betting → PREPARING
-  | "START_DEBATE"   // research done, debate started → ROUND_1
-  | "SUBMITTED_A"    // generated + on-chain submitted Agent A argument
-  | "SUBMITTED_B"    // generated + on-chain submitted Agent B argument
-  | "ADVANCED_ROUND" // both args submitted, round advanced to next phase
-  | "SETTLED"        // judging complete, battle settled
-  | "NO_OP";         // terminal state, nothing to do
+  | "WAITING"         // betting deadline not yet reached
+  | "CLOSE_BETTING"   // closed betting → PREPARING
+  | "START_DEBATE"    // research done, debate started → ROUND_1
+  | "SUBMITTED_A"     // generated + on-chain submitted Agent A argument only
+  | "SUBMITTED_B"     // generated + on-chain submitted Agent B argument only
+  | "SUBMITTED_BOTH"  // generated + submitted both agents in one step (normal path)
+  | "ADVANCED_ROUND"  // both args submitted, round advanced to next phase
+  | "SETTLED"         // judging complete, battle settled
+  | "NO_OP";          // terminal state, nothing to do
 
 export interface BattleStepResult {
   battleId: `0x${string}`;
@@ -271,6 +280,81 @@ function phaseFromContractNum(n: number): BattlePhase {
 
 /** Concurrent step guard — prevents two ticks from racing on the same battle. */
 const stepInFlight = new Set<string>();
+
+/** Prefetch guard — at most one lookahead generation per battle at a time. */
+const prefetchInFlight = new Set<string>();
+
+/**
+ * Pre-generate the next debate round's arguments while the current round's
+ * voices are still playing on the client.
+ *
+ * Called fire-and-forget from the arena page immediately after a SUBMITTED_BOTH
+ * step lands. Results are cached in stored.prefetchedNextRound. When the actual
+ * next-round SUBMITTED_BOTH tick runs, it finds the cache and skips Venice AI
+ * generation entirely — going straight to on-chain submission.
+ *
+ * Both agents are generated in parallel. A and B can do this safely because
+ * the current step runner already generates them with the same rounds history
+ * (neither sees the other's current-round text — only previous rounds).
+ */
+export async function prefetchNextRound(battleId: `0x${string}`): Promise<void> {
+  if (prefetchInFlight.has(battleId)) return;
+  prefetchInFlight.add(battleId);
+  try {
+    const stored = battleStore.get(battleId);
+    if (!stored) return;
+
+    const pending = stored.pendingRound;
+    if (!pending?.agentAText || !pending?.agentBText) return;
+
+    const nextRoundIndex = pending.roundIndex + 1;
+    const totalRounds = stored.battle.totalRounds ?? 2;
+    if (nextRoundIndex >= totalRounds) return; // no more debate rounds
+
+    // Already cached
+    if (stored.prefetchedNextRound?.forRoundIndex === nextRoundIndex) return;
+
+    const { agentAConfig, agentBConfig } = await setupBattle(stored.battle);
+    if (stored.researchContextA) agentAConfig.researchContext = stored.researchContextA;
+    if (stored.researchContextB) agentBConfig.researchContext = stored.researchContextB;
+
+    // Simulate the rounds history the worker will have after ADVANCED_ROUND runs.
+    // We include the current round's texts so agents can form proper rebuttals.
+    const simulatedRounds: import("@/lib/types").Round[] = [
+      ...stored.rounds,
+      {
+        index: pending.roundIndex,
+        agentAText: pending.agentAText,
+        agentBText: pending.agentBText,
+        timestamp: Date.now(),
+      },
+    ];
+
+    console.log(`[Prefetch] generating round ${nextRoundIndex + 1} for battle ${battleId}`);
+
+    const [agentAText, agentBText] = await Promise.all([
+      (async () => {
+        let text = "";
+        await runDebateRound(stored.battle, agentAConfig, "A", simulatedRounds, (token) => { text += token; });
+        return text;
+      })(),
+      (async () => {
+        let text = "";
+        await runDebateRound(stored.battle, agentBConfig, "B", simulatedRounds, (token) => { text += token; });
+        return text;
+      })(),
+    ]);
+
+    stored.prefetchedNextRound = { forRoundIndex: nextRoundIndex, agentAText, agentBText };
+    battleStore.set(battleId, stored);
+    console.log(`[Prefetch] round ${nextRoundIndex + 1} ready for battle ${battleId}`);
+  } catch (err) {
+    console.warn(`[Prefetch] background generation failed for battle ${battleId}:`, err);
+    // Non-fatal — the main step runner will generate normally on the next tick.
+  } finally {
+    prefetchInFlight.delete(battleId);
+  }
+}
 
 /**
  * Advance a battle by exactly one logical step based on the current contract phase.
@@ -327,7 +411,12 @@ async function _runStep(
       };
     }
     const rubric = buildRubricCommitment(deterministicRubricJson(battleId, stored.battle.topic));
-    await safeWrite("commitRubric", () => commitRubricOnChain({ battleId, rubricHash: rubric.hash }));
+    const snapshot = await getArenaBattleSnapshot(battleId);
+    if (snapshot.rubricCommitted) {
+      log("commitRubric skipped — already committed on-chain");
+    } else {
+      await safeWrite("commitRubric", () => commitRubricOnChain({ battleId, rubricHash: rubric.hash }));
+    }
     const hash = await safeWrite("closeBetting", () => closeBettingOnChain({ battleId }));
     stored.rubricPreimage = rubric.preimage;
     stored.phase = "PREPARING";
@@ -367,7 +456,12 @@ async function _runStep(
 
     // commitRubric may already be done (idempotent via safeWrite)
     const rubric = buildRubricCommitment(deterministicRubricJson(battleId, stored.battle.topic));
-    await safeWrite("commitRubric", () => commitRubricOnChain({ battleId, rubricHash: rubric.hash }));
+    const snapshot = await getArenaBattleSnapshot(battleId);
+    if (snapshot.rubricCommitted) {
+      log("commitRubric skipped — already committed on-chain");
+    } else {
+      await safeWrite("commitRubric", () => commitRubricOnChain({ battleId, rubricHash: rubric.hash }));
+    }
 
     const hash = await safeWrite("startDebate", () => startDebateOnChain({ battleId }));
     log("debate started → ROUND_1");
@@ -402,35 +496,102 @@ async function _runStep(
     const pending = stored.pendingRound;
 
     // ── Sub-step A: generate + submit Agent A ─────────────────────────────
+    // Handles the rare restart/resume case where A was already on-chain.
     if (!pending.agentAText) {
-      log("generating Agent A argument");
-      emit({ type: "turn", data: { agent: "A", round: roundIndex + 1 } });
+      const aAlreadySubmitted = await isArgumentSubmittedOnChain({
+        battleId, round: roundIndex + 1, side: 1,
+      }).catch(() => false);
 
+      if (aAlreadySubmitted) {
+        pending.agentAText = `Agent A's round ${roundIndex + 1} argument was already submitted on-chain before this worker resumed.`;
+        stored.pendingRound = pending;
+        battleStore.set(battleId, stored);
+        log("Agent A argument already submitted on-chain");
+        // Fall through — will try to generate B below in the same return or
+        // handle it in the next tick.
+        return {
+          battleId, action: "SUBMITTED_A", phase: contractPhase,
+          roundIndex, logs,
+          details: "Agent A argument already existed on-chain.",
+        };
+      }
+
+      // ── Normal path: generate A and B together so the client gets both
+      //    texts in one response, eliminating the inter-agent dead-time gap.
+      //
+      //    Fast path: if the client fired a prefetch while the previous round's
+      //    voices were playing, the arguments are already cached — skip Venice AI
+      //    and go straight to on-chain submission.
       let agentAText = "";
-      await runDebateRound(stored.battle, agentAConfig, "A", stored.rounds, (token) => {
-        agentAText += token;
-        emit({ type: "token", data: { agent: "A", text: token } });
-      });
+      let agentBText = "";
 
+      const prefetch = stored.prefetchedNextRound;
+      if (prefetch?.forRoundIndex === roundIndex && prefetch.agentAText && prefetch.agentBText) {
+        log("using prefetched arguments — skipping generation");
+        agentAText = prefetch.agentAText;
+        agentBText = prefetch.agentBText;
+        stored.prefetchedNextRound = undefined;
+      } else {
+        log("generating Agent A argument");
+        emit({ type: "turn", data: { agent: "A", round: roundIndex + 1 } });
+
+        await runDebateRound(stored.battle, agentAConfig, "A", stored.rounds, (token) => {
+          agentAText += token;
+          emit({ type: "token", data: { agent: "A", text: token } });
+        });
+
+        log("generating Agent B argument");
+        emit({ type: "turn", data: { agent: "B", round: roundIndex + 1 } });
+
+        await runDebateRound(stored.battle, agentBConfig, "B", stored.rounds, (token) => {
+          agentBText += token;
+          emit({ type: "token", data: { agent: "B", text: token } });
+        });
+      }
+
+      // Submit both on-chain sequentially (same relayer key, avoid nonce race).
       const txA = await safeWrite(`submitArgument A round ${roundIndex + 1}`, () =>
         submitArgumentOnChain({ battleId, side: 1, contentHash: argContentHash(agentAText) })
+      );
+      const txB = await safeWrite(`submitArgument B round ${roundIndex + 1}`, () =>
+        submitArgumentOnChain({ battleId, side: 2, contentHash: argContentHash(agentBText) })
       );
 
       pending.agentAText = agentAText;
       pending.agentATxHash = txA ?? undefined;
+      pending.agentBText = agentBText;
+      pending.agentBTxHash = txB ?? undefined;
       stored.pendingRound = pending;
       battleStore.set(battleId, stored);
-      log("submitted Agent A argument");
+      log("submitted Agent A + Agent B arguments");
 
       return {
-        battleId, action: "SUBMITTED_A", phase: contractPhase,
-        roundIndex, txHash: txA ?? undefined, logs,
+        battleId, action: "SUBMITTED_BOTH", phase: contractPhase,
+        roundIndex, logs,
         agentAText,
+        agentBText,
       };
     }
 
-    // ── Sub-step B: generate + submit Agent B ─────────────────────────────
+    // ── Sub-step B: generate + submit Agent B (restart/resume only) ───────
     if (!pending.agentBText) {
+      const bAlreadySubmitted = await isArgumentSubmittedOnChain({
+        battleId, round: roundIndex + 1, side: 2,
+      }).catch(() => false);
+
+      if (bAlreadySubmitted) {
+        pending.agentBText = `Agent B's round ${roundIndex + 1} argument was already submitted on-chain before this worker resumed.`;
+        stored.pendingRound = pending;
+        battleStore.set(battleId, stored);
+        log("Agent B argument already submitted on-chain");
+
+        return {
+          battleId, action: "SUBMITTED_B", phase: contractPhase,
+          roundIndex, logs,
+          details: "Agent B argument already existed on-chain.",
+        };
+      }
+
       log("generating Agent B argument");
       emit({ type: "turn", data: { agent: "B", round: roundIndex + 1 } });
 
@@ -474,8 +635,20 @@ async function _runStep(
 
     emit({ type: "round", data: { ...completedRound, txA: pending.agentATxHash, txB: pending.agentBTxHash } });
 
-    // Read authoritative next phase from chain
-    const nextPhaseNum = await getBattlePhase(battleId);
+    // Read authoritative next phase from chain.
+    // If we actually submitted the advance tx, poll until the phase changes —
+    // Base Sepolia RPC nodes can lag 1-2 blocks after confirmation, causing a
+    // stale read that returns the pre-advance phase and wastes a full tick.
+    let nextPhaseNum: number;
+    if (txAdvance !== undefined) {
+      nextPhaseNum = contractPhaseNum;
+      for (let attempt = 0; attempt < 6 && nextPhaseNum === contractPhaseNum; attempt++) {
+        if (attempt > 0) await new Promise((r) => setTimeout(r, 800));
+        nextPhaseNum = await getBattlePhase(battleId);
+      }
+    } else {
+      nextPhaseNum = await getBattlePhase(battleId);
+    }
     const nextPhase = phaseFromContractNum(nextPhaseNum);
     stored.phase = nextPhase;
     battleStore.set(battleId, stored);

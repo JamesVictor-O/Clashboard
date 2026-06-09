@@ -7,25 +7,20 @@ import { useRouter } from "next/navigation";
 import { keccak256, encodeAbiParameters, parseAbiParameters, parseAbiItem } from "viem";
 import { ConnectWallet } from "@/components/shared/ConnectWallet";
 import { AutonomyLog } from "@/components/autonomy/AutonomyLog";
+import { BudgetScreen } from "@/components/battle/BudgetScreen";
 import { HOTTAKEROOMS_ABI } from "@/lib/chain";
 import { inferChallengeCategory, type Room } from "@/lib/challenges";
 import { blockRanges, getEventScanStartBlock, mapWithConcurrency, withRpcRetry } from "@/lib/event-scan";
-import {
-  sendUserBatch,
-  buildUSDCApprovalCall,
-  waitForTx,
-} from "@/lib/wallet-contract";
 
 
 
-const HOT_TAKES = [
-  { label: "Kobe vs LeBron — GOAT debate", category: "Sports" },
-  { label: "Wizkid vs Burna Boy — Afrobeats King", category: "Music" },
-  { label: "iPhone vs Android — Ecosystem war", category: "Tech" },
-  { label: "Messi vs Ronaldo — Greatest of All Time", category: "Sports" },
-  { label: "Marvel vs DC — Better cinematic universe", category: "Culture" },
-  { label: "Remote work vs Office — Future of work", category: "Tech" },
-  { label: "Custom hot take...", category: "Custom" },
+const STATIC_HOT_TAKES = [
+  { label: "LeBron James vs Kobe Bryant — who defined NBA greatness?", category: "Sports" },
+  { label: "Wizkid vs Burna Boy — who owns Afrobeats right now?", category: "Music" },
+  { label: "iPhone vs Android — which ecosystem wins long-term?", category: "Tech" },
+  { label: "Messi vs Ronaldo — whose football legacy is greater?", category: "Sports" },
+  { label: "Marvel vs DC — which universe dominates cinema?", category: "Culture" },
+  { label: "Bitcoin vs Ethereum — which blockchain matters more?", category: "Crypto" },
 ];
 
 const CATEGORY_COLORS: Record<
@@ -37,6 +32,7 @@ const CATEGORY_COLORS: Record<
   Crypto: { fg: "#10B981", bg: "rgba(16,185,129,0.1)", glow: "16,185,129" },
   Tech: { fg: "#1A3FBE", bg: "rgba(26,63,190,0.1)", glow: "26,63,190" },
   Culture: { fg: "#7C3AED", bg: "rgba(124,58,237,0.1)", glow: "124,58,237" },
+  Art: { fg: "#F472B6", bg: "rgba(244,114,182,0.1)", glow: "244,114,182" },
   Custom: { fg: "#F5F5F0", bg: "rgba(245,245,240,0.08)", glow: "245,245,240" },
 };
 
@@ -482,6 +478,29 @@ const ChallengeCard = forwardRef<HTMLDivElement, ChallengeCardProps>(function Ch
 });
 
 // ─── Create room drawer ───────────────────────────────────────────────────────
+type HotTake = { label: string; category: string };
+
+const HOT_TAKES_CACHE_KEY = "clashboard_hot_takes";
+const HOT_TAKES_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
+
+function loadCachedHotTakes(): HotTake[] | null {
+  if (typeof window === "undefined") return null;
+  try {
+    const raw = sessionStorage.getItem(HOT_TAKES_CACHE_KEY);
+    if (!raw) return null;
+    const { takes, cachedAt } = JSON.parse(raw) as { takes: HotTake[]; cachedAt: number };
+    if (Date.now() - cachedAt > HOT_TAKES_CACHE_TTL) return null;
+    return takes;
+  } catch { return null; }
+}
+
+function saveCachedHotTakes(takes: HotTake[]) {
+  if (typeof window === "undefined") return;
+  try {
+    sessionStorage.setItem(HOT_TAKES_CACHE_KEY, JSON.stringify({ takes, cachedAt: Date.now() }));
+  } catch {}
+}
+
 function CreateDrawer({
   onClose,
   onSubmit,
@@ -494,6 +513,31 @@ function CreateDrawer({
   const [stake, setStake] = useState(1);
   const [submitting, setSubmitting] = useState(false);
   const [txError, setTxError] = useState<string | null>(null);
+  const [hotTakes, setHotTakes] = useState<HotTake[]>(loadCachedHotTakes() ?? STATIC_HOT_TAKES);
+  const [loadingTakes, setLoadingTakes] = useState(!loadCachedHotTakes());
+
+  useEffect(() => {
+    const cached = loadCachedHotTakes();
+    if (cached) {
+      setHotTakes(cached);
+      setLoadingTakes(false);
+      return;
+    }
+    setLoadingTakes(true);
+    fetch("/api/hot-takes")
+      .then((r) => r.json())
+      .then((data: { takes: HotTake[] }) => {
+        if (Array.isArray(data.takes) && data.takes.length > 0) {
+          setHotTakes(data.takes);
+          saveCachedHotTakes(data.takes);
+        }
+      })
+      .catch(() => {})
+      .finally(() => setLoadingTakes(false));
+  }, []);
+
+  // All displayed takes including the always-last Custom option
+  const allTakes: HotTake[] = [...hotTakes, { label: "Custom hot take...", category: "Custom" }];
 
   const finalTopic =
     selectedTopic === "Custom hot take..." ? customTopic.trim() : selectedTopic;
@@ -522,7 +566,7 @@ function CreateDrawer({
     CATEGORY_COLORS[
       selectedTopic === "Custom hot take..."
         ? "Custom"
-        : (HOT_TAKES.find((h) => h.label === selectedTopic)?.category ?? "Custom")
+        : (allTakes.find((h) => h.label === selectedTopic)?.category ?? "Custom")
     ] ?? CATEGORY_COLORS.Custom;
 
   return (
@@ -591,93 +635,117 @@ function CreateDrawer({
 
             {/* Topic selection */}
             <div>
-              <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/25 mb-4">
-                Pick your hot take
-              </p>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {HOT_TAKES.map((take) => {
-                  const isSelected = selectedTopic === take.label;
-                  const c =
-                    CATEGORY_COLORS[take.category] ?? CATEGORY_COLORS.Custom;
-                  return (
-                    <button
-                      key={take.label}
-                      onClick={() => setSelectedTopic(take.label)}
-                      className="relative text-left p-4 border transition-all duration-250 overflow-hidden group"
-                      style={{
-                        borderColor: isSelected
-                          ? `${c.fg}50`
-                          : "rgba(255,255,255,0.07)",
-                        background: isSelected
-                          ? `linear-gradient(140deg, rgba(${c.glow},0.13) 0%, rgba(${c.glow},0.04) 100%)`
-                          : "rgba(255,255,255,0.02)",
-                      }}
+              <div className="flex items-center justify-between mb-4">
+                <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/25">
+                  Pick your hot take
+                </p>
+                <AnimatePresence>
+                  {loadingTakes && (
+                    <motion.span
+                      initial={{ opacity: 0 }}
+                      animate={{ opacity: 1 }}
+                      exit={{ opacity: 0 }}
+                      className="flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-widest text-clash-gold/50"
                     >
-                      {/* Hover glow overlay */}
-                      {!isSelected && (
-                        <div
-                          className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
-                          style={{
-                            background: `radial-gradient(ellipse 90% 70% at 0% 50%, rgba(${c.glow},0.07) 0%, transparent 70%)`,
-                          }}
-                        />
-                      )}
-
-                      {/* Selected left accent */}
-                      {isSelected && (
+                      <span className="w-2 h-2 border border-clash-gold/40 border-t-clash-gold/80 rounded-full animate-spin" />
+                      Venice AI generating…
+                    </motion.span>
+                  )}
+                </AnimatePresence>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                {loadingTakes
+                  ? Array.from({ length: 6 }).map((_, i) => (
+                      <div
+                        key={i}
+                        className="relative p-4 border border-white/7 bg-white/[0.02] overflow-hidden"
+                      >
                         <motion.div
-                          layoutId="topicAccent"
-                          className="absolute left-0 top-0 bottom-0 w-[3px]"
-                          style={{ background: c.fg }}
+                          className="absolute inset-0 pointer-events-none"
+                          style={{ background: "linear-gradient(105deg, transparent 30%, rgba(255,184,0,0.04) 50%, transparent 70%)" }}
+                          animate={{ x: ["-100%", "100%"] }}
+                          transition={{ duration: 1.8, delay: i * 0.18, repeat: Infinity, ease: "linear" }}
                         />
-                      )}
-
-                      {/* Category + check row */}
-                      <div className="flex items-center justify-between mb-2.5">
-                        <span
-                          className="font-mono text-[8px] uppercase tracking-widest px-1.5 py-0.5 border transition-all duration-200"
+                        <div className="w-10 h-3 rounded-sm bg-white/8 mb-3" />
+                        <div className="h-4 rounded-sm bg-white/10" style={{ width: `${60 + (i % 3) * 15}%` }} />
+                      </div>
+                    ))
+                  : allTakes.map((take) => {
+                      const isSelected = selectedTopic === take.label;
+                      const c = CATEGORY_COLORS[take.category] ?? CATEGORY_COLORS.Custom;
+                      return (
+                        <button
+                          key={take.label}
+                          onClick={() => setSelectedTopic(take.label)}
+                          className="relative text-left p-4 border transition-all duration-250 overflow-hidden group"
                           style={{
-                            color: isSelected
-                              ? c.fg
-                              : "rgba(255,255,255,0.22)",
                             borderColor: isSelected
-                              ? `${c.fg}45`
-                              : "rgba(255,255,255,0.08)",
-                            background: isSelected ? c.bg : "transparent",
+                              ? `${c.fg}50`
+                              : "rgba(255,255,255,0.07)",
+                            background: isSelected
+                              ? `linear-gradient(140deg, rgba(${c.glow},0.13) 0%, rgba(${c.glow},0.04) 100%)`
+                              : "rgba(255,255,255,0.02)",
                           }}
                         >
-                          {take.category}
-                        </span>
-
-                        <AnimatePresence>
-                          {isSelected && (
-                            <motion.span
-                              initial={{ scale: 0, opacity: 0 }}
-                              animate={{ scale: 1, opacity: 1 }}
-                              exit={{ scale: 0, opacity: 0 }}
-                              className="font-mono text-[8px] font-bold uppercase tracking-widest"
-                              style={{ color: c.fg }}
-                            >
-                              ✓ Selected
-                            </motion.span>
+                          {/* Hover glow overlay */}
+                          {!isSelected && (
+                            <div
+                              className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-300 pointer-events-none"
+                              style={{
+                                background: `radial-gradient(ellipse 90% 70% at 0% 50%, rgba(${c.glow},0.07) 0%, transparent 70%)`,
+                              }}
+                            />
                           )}
-                        </AnimatePresence>
-                      </div>
 
-                      {/* Topic text */}
-                      <span
-                        className="font-display text-sm font-extrabold uppercase leading-tight block transition-colors duration-200"
-                        style={{
-                          color: isSelected
-                            ? "#F5F5F0"
-                            : "rgba(245,245,240,0.45)",
-                        }}
-                      >
-                        {take.label}
-                      </span>
-                    </button>
-                  );
-                })}
+                          {/* Selected left accent */}
+                          {isSelected && (
+                            <motion.div
+                              layoutId="topicAccent"
+                              className="absolute left-0 top-0 bottom-0 w-[3px]"
+                              style={{ background: c.fg }}
+                            />
+                          )}
+
+                          {/* Category + check row */}
+                          <div className="flex items-center justify-between mb-2.5">
+                            <span
+                              className="font-mono text-[8px] uppercase tracking-widest px-1.5 py-0.5 border transition-all duration-200"
+                              style={{
+                                color: isSelected ? c.fg : "rgba(255,255,255,0.22)",
+                                borderColor: isSelected ? `${c.fg}45` : "rgba(255,255,255,0.08)",
+                                background: isSelected ? c.bg : "transparent",
+                              }}
+                            >
+                              {take.category}
+                            </span>
+
+                            <AnimatePresence>
+                              {isSelected && (
+                                <motion.span
+                                  initial={{ scale: 0, opacity: 0 }}
+                                  animate={{ scale: 1, opacity: 1 }}
+                                  exit={{ scale: 0, opacity: 0 }}
+                                  className="font-mono text-[8px] font-bold uppercase tracking-widest"
+                                  style={{ color: c.fg }}
+                                >
+                                  ✓ Selected
+                                </motion.span>
+                              )}
+                            </AnimatePresence>
+                          </div>
+
+                          {/* Topic text */}
+                          <span
+                            className="font-display text-sm font-extrabold uppercase leading-tight block transition-colors duration-200"
+                            style={{
+                              color: isSelected ? "#F5F5F0" : "rgba(245,245,240,0.45)",
+                            }}
+                          >
+                            {take.label}
+                          </span>
+                        </button>
+                      );
+                    })}
               </div>
             </div>
 
@@ -1063,17 +1131,23 @@ async function fetchRoomsUncached(): Promise<Room[]> {
               phase: number;
             };
             if (battle.agentA === ZERO_ADDRESS) return null;
-            // BattleState: SETTLED=1; phase>=5 means JUDGING_READY/SETTLED/CANCELLED/EXPIRED
-            const isFinished = battle.state === 1 || Number(battle.phase) >= 5;
+            // BattleState.SETTLED=1; phase>=5 = JUDGING_READY/SETTLED/CANCELLED/EXPIRED
+            // Also catch battles that are done but settleBattle was never called
+            const hasWinner = battle.winner && battle.winner !== ZERO_ADDRESS;
+            const isFinished = battle.state === 1 || Number(battle.phase) >= 5 || hasWinner;
             if (isFinished) {
               state = "SETTLED";
-              if (battle.winner && battle.winner !== ZERO_ADDRESS) {
+              if (hasWinner) {
                 winnerAddress = battle.winner;
                 const fighterPool = battle.fighterPoolA + battle.fighterPoolB;
                 winnerEarnedUSDC = Number((fighterPool * 7000n) / 10000n) / 1e6;
               }
             }
-          } catch {}
+          } catch {
+            // Battle state unreadable for a LOCKED room — hide it rather than
+            // showing a stale LOCKED card the user can't interact with.
+            return null;
+          }
         }
 
         const topic = topicPreview;
@@ -1408,26 +1482,30 @@ export default function LobbyPage() {
   const [noAgentToast, setNoAgentToast] = useState(false);
   const [acceptTxState, setAcceptTxState] = useState<"idle" | "approving" | "accepting" | "error">("idle");
   const [acceptTxError, setAcceptTxError] = useState<string | null>(null);
+  const [showBudgetModal, setShowBudgetModal] = useState(false);
+  const [pendingCreate, setPendingCreate] = useState<{ topic: string; stake: number } | null>(null);
+  const [pendingAccept, setPendingAccept] = useState<Room | null>(null);
 
   useEffect(() => {
-    // Show cached rooms immediately for instant UX, then refresh in background
+    // Show cached rooms immediately for instant UX, then always refresh in the
+    // background so settled/finished challenges disappear without a page reload.
     const cached = loadRoomsCache();
-    if (cached && cached.length > 0) {
-      setRooms(cached);
+    const hasCached = cached !== null && cached.length > 0;
+    if (hasCached) {
+      setRooms(cached as Room[]);
       setLoadingRooms(false);
-    } else {
-      fetchRooms()
-        .then((fresh) => {
-          // Only update state if we actually received rooms — prevents an RPC failure
-          // returning [] from wiping rooms that were already shown from cache.
-          if (fresh.length > 0) {
-            setRooms(fresh);
-            saveRoomsCache(fresh);
-          }
-        })
-        .catch(() => {})
-        .finally(() => setLoadingRooms(false));
     }
+    fetchRooms()
+      .then((fresh) => {
+        // Only update state if we actually received rooms — prevents an RPC failure
+        // returning [] from wiping rooms that were already shown from cache.
+        if (fresh.length > 0) {
+          setRooms(fresh);
+          saveRoomsCache(fresh);
+        }
+      })
+      .catch(() => {})
+      .finally(() => { if (!hasCached) setLoadingRooms(false); });
 
     const checkAgent = async (addr: string) => {
       try {
@@ -1478,9 +1556,16 @@ export default function LobbyPage() {
   const waitingRooms = rooms.filter((r) => r.state === "WAITING").length;
   const totalPool = rooms.reduce((acc, r) => acc + r.stake * 2, 0);
 
-  const filtered = rooms.filter((r) =>
-    filter === "ALL" ? r.state !== "SETTLED" : r.state === filter,
-  );
+  const MAX_BATTLE_AGE_MS = 90 * 60 * 1000; // 90 min — battles can't run longer
+
+  const filtered = rooms.filter((r) => {
+    if (filter !== "ALL") return r.state === filter;
+    if (r.state === "SETTLED") return false;
+    // LOCKED rooms with a battleId that are older than 90 min have definitely
+    // finished — hide them even if on-chain state detection failed.
+    if (r.state === "LOCKED" && r.battleId && Date.now() - r.createdAt > MAX_BATTLE_AGE_MS) return false;
+    return true;
+  });
 
   function handleAccept(room: Room) {
     if (hasAgent === false) {
@@ -1540,26 +1625,11 @@ export default function LobbyPage() {
         return;
       }
 
-      // No active permission: EIP-5792 batch fallback requires a wallet popup.
-      setAcceptTxState("accepting");
-      const approvalCall = await buildUSDCApprovalCall(account, roomsAddress, stakeWei);
-      const acceptCall = {
-        address: roomsAddress,
-        abi: HOTTAKEROOMS_ABI,
-        functionName: "acceptChallenge",
-        args: [room.id as `0x${string}`, battleId, 300n, 120n, 1000000n] as readonly unknown[],
-      };
-      const calls = approvalCall ? [approvalCall, acceptCall] : [acceptCall];
-      const txHash = await sendUserBatch(account, calls);
-      await waitForTx(txHash);
-      setRooms((prev) =>
-        prev.map((r) =>
-          r.id === room.id
-            ? { ...r, state: "LOCKED" as const, challengerAddress: account, battleId }
-            : r
-        )
-      );
-      router.push("/game-lobby");
+      // No active permission — prompt the user to set a budget first.
+      setPendingAccept(room);
+      setAcceptTxState("idle");
+      setShowBudgetModal(true);
+      return;
     } catch (err) {
       let msg = "Accept failed";
       if (err instanceof Error) {
@@ -1570,6 +1640,31 @@ export default function LobbyPage() {
       }
       setAcceptTxError(msg);
       setAcceptTxState("error");
+    }
+  }
+
+  function handleBudgetCancel() {
+    setShowBudgetModal(false);
+    setPendingCreate(null);
+    setPendingAccept(null);
+  }
+
+  async function handleBudgetConfirm(_budget: number) {
+    setShowBudgetModal(false);
+    if (pendingCreate) {
+      const { topic, stake } = pendingCreate;
+      setPendingCreate(null);
+      try {
+        await handleCreateSubmit(topic, stake);
+      } catch (err) {
+        const msg = err instanceof Error ? err.message : "Transaction failed";
+        setAcceptTxError(msg);
+        setAcceptTxState("error");
+      }
+    } else if (pendingAccept) {
+      const room = pendingAccept;
+      setPendingAccept(null);
+      handleAccept(room);
     }
   }
 
@@ -1614,18 +1709,11 @@ export default function LobbyPage() {
     if (execution.policyError) throw new Error(execution.policyError);
 
     if (execution.mode !== "autonomous_oneshot") {
-      const challengeCall = {
-        address: roomsAddress,
-        abi: HOTTAKEROOMS_ABI,
-        functionName: "issueChallenge",
-        args: [roomId, topicHash, onChainTopic, categoryHash, stakeWei] as readonly unknown[],
-      };
-
-      // No active permission: EIP-5792 fallback asks the user to sign once.
-      const approvalCall = await buildUSDCApprovalCall(account, roomsAddress, stakeWei);
-      const calls = approvalCall ? [approvalCall, challengeCall] : [challengeCall];
-      const txHash = await sendUserBatch(account, calls);
-      await waitForTx(txHash);
+      // No active permission — prompt the user to set a budget first.
+      setPendingCreate({ topic, stake: stakeUsdc });
+      setShowCreate(false);
+      setShowBudgetModal(true);
+      return;
     }
 
     // Only reach here on success — optimistically add the new room immediately so
@@ -2080,6 +2168,20 @@ export default function LobbyPage() {
                 </>
               )}
             </div>
+          </motion.div>
+        )}
+      </AnimatePresence>
+
+      {/* ── Budget / permission modal ───────────────────────────────────────── */}
+      <AnimatePresence>
+        {showBudgetModal && (
+          <motion.div
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            className="fixed inset-0 bg-black/90 backdrop-blur-sm z-[70] flex items-center justify-center p-6"
+          >
+            <BudgetScreen onConfirm={handleBudgetConfirm} onCancel={handleBudgetCancel} />
           </motion.div>
         )}
       </AnimatePresence>

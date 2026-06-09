@@ -1,27 +1,17 @@
 import { NextRequest } from "next/server";
 import { z } from "zod";
-import { ensureBattleRuntime } from "@/lib/battle-runtime";
-import { setupBattle, runResearchPhase, runDebateRound } from "@/lib/agents/orchestrator";
-import { submitArgumentOnChain, argContentHash } from "@/lib/chain";
+import { runBattleLifecycle } from "@/lib/battle-lifecycle";
 
 const StreamSchema = z.object({
   battleId: z.string().min(1),
   rounds: z.number().int().min(1).max(3).default(2),
 });
 
-function isRoundPhase(phase: string) {
-  return phase === "ROUND_1" || phase === "ROUND_2" || phase === "ROUND_3";
-}
-
-function sleep(ms: number) {
-  return new Promise<void>((r) => setTimeout(r, ms));
-}
-
 /**
  * SSE endpoint — streams the full battle:
  *   1. Research phase (both agents gather data via x402)
- *   2. N debate rounds, each timed to its on-chain window
- *   3. Submits both arguments on-chain after each round
+ *   2. startDebate() once research and generation are ready
+ *   3. N debate rounds, each advanced only after hashes are submitted
  *
  * Event types emitted:
  *   { type: "phase",    data: "RESEARCH" | "DEBATE" | "DONE" }
@@ -44,146 +34,36 @@ export async function GET(req: NextRequest) {
   }
 
   const { battleId } = parsed.data;
-  const stored = await ensureBattleRuntime(battleId as `0x${string}`);
-
-  if (!stored) {
-    return new Response("Battle not found", { status: 404 });
-  }
-  if (stored.phase === "BETTING") {
-    return new Response("Battle is still in betting phase", { status: 409 });
-  }
-  if (stored.phase === "JUDGING_READY" || stored.phase === "SETTLED") {
-    return new Response("Battle debate phase is complete", { status: 409 });
-  }
-  if (!isRoundPhase(stored.phase) && stored.phase !== "RESEARCH" && stored.phase !== "LIVE") {
-    return new Response("Battle is not in an active round", { status: 409 });
-  }
-
   const encoder = new TextEncoder();
 
   const stream = new ReadableStream({
     async start(controller) {
+      let closed = false;
       const send = (type: string, data: unknown) => {
+        if (closed) return;
         const payload = `data: ${JSON.stringify({ type, data })}\n\n`;
-        controller.enqueue(encoder.encode(payload));
+        try {
+          controller.enqueue(encoder.encode(payload));
+        } catch {
+          closed = true;
+        }
       };
 
       try {
-        // Phase: RESEARCH
-        send("phase", "RESEARCH");
-        stored.phase = "RESEARCH";
-
-        const { agentAConfig, agentBConfig } = await setupBattle(stored.battle);
-
-        await runResearchPhase(
-          stored.battle,
-          agentAConfig,
-          agentBConfig,
-          (purchase) => {
-            stored.battle.researchPurchases = [
-              ...(stored.battle.researchPurchases ?? []),
-              purchase,
-            ];
-            send("research", purchase);
-          }
-        );
-
-        // Phase: DEBATE
-        send("phase", "DEBATE");
-        stored.phase = "LIVE";
-
-        const bettingDeadline = Number(stored.battle.bettingDeadline); // unix seconds
-        const roundDuration = stored.battle.roundDuration;             // seconds
-        const rounds = Math.min(parsed.data.rounds, stored.battle.totalRounds ?? 2);
-
-        // Wait for the betting window to close before starting round 1
-        const nowSec = () => Date.now() / 1000;
-        const waitUntil = async (targetSec: number) => {
-          const ms = (targetSec - nowSec()) * 1000;
-          if (ms > 500) await sleep(ms);
-        };
-
-        for (let i = 0; i < rounds; i++) {
-          const roundStart = bettingDeadline + i * roundDuration;
-          const roundEnd   = roundStart + roundDuration;
-
-          // Wait until this round's window opens (adds 200ms buffer for block lag)
-          await waitUntil(roundStart + 0.2);
-          send("round_start", { round: i + 1, totalRounds: rounds });
-
-          // Agent A argues
-          let agentAText = "";
-          send("turn", { agent: "A", round: i + 1 });
-          await runDebateRound(
-            stored.battle,
-            agentAConfig,
-            "A",
-            stored.rounds,
-            (token) => {
-              agentAText += token;
-              send("token", { agent: "A", text: token });
-            }
-          );
-
-          // Agent B rebuts
-          let agentBText = "";
-          send("turn", { agent: "B", round: i + 1 });
-          await runDebateRound(
-            stored.battle,
-            agentBConfig,
-            "B",
-            stored.rounds,
-            (token) => {
-              agentBText += token;
-              send("token", { agent: "B", text: token });
-            }
-          );
-
-          // Submit both arguments on-chain while the round window is still active.
-          // If we're past the window (generation ran long), the contract will revert —
-          // we log and continue so the frontend still gets the debate text.
-          let txA: string | undefined;
-          let txB: string | undefined;
-
-          if (nowSec() < roundEnd) {
-            try {
-              txA = await submitArgumentOnChain({
-                battleId: battleId as `0x${string}`,
-                side: 1,
-                contentHash: argContentHash(agentAText),
-              });
-              txB = await submitArgumentOnChain({
-                battleId: battleId as `0x${string}`,
-                side: 2,
-                contentHash: argContentHash(agentBText),
-              });
-            } catch (chainErr) {
-              console.error(`submitArgument round ${i + 1} failed:`, chainErr);
-            }
-          } else {
-            console.warn(`Round ${i + 1} window expired before on-chain submission`);
-          }
-
-          const round = {
-            index: i,
-            agentAText,
-            agentBText,
-            timestamp: Date.now(),
-            txA,
-            txB,
-          };
-          stored.rounds.push(round);
-          send("round", round);
-        }
-
-        await waitUntil(bettingDeadline + rounds * roundDuration + 0.2);
-        send("phase", "DONE");
-        stored.phase = "JUDGING_READY";
+        await runBattleLifecycle(battleId as `0x${string}`, {
+          rounds: parsed.data.rounds,
+          onEvent: (event) => send(event.type, event.data),
+        });
       } catch (err) {
         console.error("Stream error:", err);
         send("error", err instanceof Error ? err.message : "Stream failed");
       } finally {
-        controller.close();
+        if (!closed) {
+          closed = true;
+          try {
+            controller.close();
+          } catch {}
+        }
       }
     },
   });

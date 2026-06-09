@@ -1,9 +1,10 @@
-import type { ResearchArtifact, ResearchCategory } from "@/lib/types";
+import type { ResearchArtifact, ResearchCategory, ResearchPurchase } from "@/lib/types";
 
 class ResearchStore {
   private artifacts = new Map<string, ResearchArtifact>();
   private buyerIndex = new Map<string, Set<string>>();
   private saleIndex = new Map<string, number>();
+  private battlePurchases = new Map<string, ResearchPurchase[]>();
 
   add(artifact: ResearchArtifact): ResearchArtifact {
     this.artifacts.set(artifact.id, artifact);
@@ -62,6 +63,27 @@ class ResearchStore {
       (total, artifact) => total + (this.saleIndex.get(artifact.id) ?? 0),
       0
     );
+  }
+
+  recordBattlePurchase(battleId: string, purchase: ResearchPurchase): void {
+    const key = battleId.toLowerCase();
+    const current = this.battlePurchases.get(key) ?? [];
+    const artifactId = purchase.data.artifactId;
+    if (
+      current.some((item) =>
+        item.id === purchase.id ||
+        (
+          typeof artifactId === "string" &&
+          item.agent === purchase.agent &&
+          item.data.artifactId === artifactId
+        )
+      )
+    ) return;
+    this.battlePurchases.set(key, [...current, purchase]);
+  }
+
+  listBattlePurchases(battleId: string): ResearchPurchase[] {
+    return [...(this.battlePurchases.get(battleId.toLowerCase()) ?? [])];
   }
 }
 

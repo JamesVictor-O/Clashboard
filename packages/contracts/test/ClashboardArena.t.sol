@@ -13,58 +13,59 @@ contract MockUSDC is ERC20 {
     constructor() ERC20("USD Coin", "USDC") {
         _mint(msg.sender, 1_000_000 * 1e6);
     }
-    function decimals() public pure override returns (uint8) { return 6; }
-    function mint(address to, uint256 amount) external { _mint(to, amount); }
+
+    function decimals() public pure override returns (uint8) {
+        return 6;
+    }
+
+    function mint(address to, uint256 amount) external {
+        _mint(to, amount);
+    }
 }
 
 // ─── Test suite ───────────────────────────────────────────────────────────────
 contract ClashboardTest is Test {
-
-    MockUSDC        usdc;
-    AgentRegistry   registry;
-    AgentTreasury   treasury;
+    MockUSDC usdc;
+    AgentRegistry registry;
+    AgentTreasury treasury;
     ClashboardArena arena;
-    HotTakeRooms    rooms;
+    HotTakeRooms rooms;
 
-    address owner     = address(this);
+    address owner = address(this);
     address scheduler = makeAddr("scheduler");
-    address platform  = makeAddr("platform");
+    address platform = makeAddr("platform");
 
     address alice = makeAddr("alice");
-    address bob   = makeAddr("bob");
+    address bob = makeAddr("bob");
     address carol = makeAddr("carol");
-    address dave  = makeAddr("dave");
+    address dave = makeAddr("dave");
 
-    uint256 constant ENTRY_FEE      = 2 * 1e6;   // $2 USDC
-    uint256 constant BET_AMOUNT     = 5 * 1e6;   // $5 USDC
-    uint256 constant STAKE          = 2 * 1e6;   // $2 USDC
-    uint256 constant RESEARCH_CAP   = 500_000;   // $0.50 USDC
-    uint256 constant BETTING_WINDOW = 120;        // 2 min minimum
-    uint256 constant ROUND_DURATION = 60;         // 60 seconds per round
+    uint256 constant ENTRY_FEE = 2 * 1e6; // $2 USDC
+    uint256 constant BET_AMOUNT = 5 * 1e6; // $5 USDC
+    uint256 constant STAKE = 2 * 1e6; // $2 USDC
+    uint256 constant RESEARCH_CAP = 500_000; // $0.50 USDC
+    uint256 constant BETTING_WINDOW = 120; // 2 min minimum
+    uint256 constant ROUND_DURATION = 60; // 60 seconds per round
 
     // Hackathon default: 2 rounds after betting closes.
     uint256 constant BATTLE_DURATION = BETTING_WINDOW + TOTAL_ROUND_TIME;
     uint256 constant TOTAL_ROUND_TIME = 2 * ROUND_DURATION;
 
     bytes32 constant BATTLE_ID = keccak256("battle-001");
-    bytes32 constant ROOM_ID   = keccak256("room-001");
-    string  constant TOPIC     = "Messi is the GOAT over Ronaldo";
+    bytes32 constant ROOM_ID = keccak256("room-001");
+    string constant TOPIC = "Messi is the GOAT over Ronaldo";
 
     bytes32 constant RUBRIC_PREIMAGE = "judge system prompt v1";
-    bytes32          RUBRIC_HASH;
+    bytes32 RUBRIC_HASH;
 
     function setUp() public {
         RUBRIC_HASH = keccak256(abi.encode(RUBRIC_PREIMAGE));
 
-        usdc     = new MockUSDC();
+        usdc = new MockUSDC();
         registry = new AgentRegistry();
         treasury = new AgentTreasury(address(usdc));
-        arena    = new ClashboardArena(
-            address(usdc), address(registry), address(treasury), platform, scheduler
-        );
-        rooms    = new HotTakeRooms(
-            address(usdc), address(registry), address(treasury), address(arena)
-        );
+        arena = new ClashboardArena(address(usdc), address(registry), address(treasury), platform, scheduler);
+        rooms = new HotTakeRooms(address(usdc), address(registry), address(treasury), address(arena));
 
         registry.setAuthorisedContract(address(arena), true);
         treasury.setAuthorisedContract(address(arena), true);
@@ -72,13 +73,16 @@ contract ClashboardTest is Test {
         arena.setHotTakeRooms(address(rooms));
 
         usdc.mint(alice, 100 * 1e6);
-        usdc.mint(bob,   100 * 1e6);
+        usdc.mint(bob, 100 * 1e6);
         usdc.mint(carol, 100 * 1e6);
-        usdc.mint(dave,  100 * 1e6);
+        usdc.mint(dave, 100 * 1e6);
 
-        vm.prank(alice); registry.forge("AliceBot", keccak256("alice-meta"));
-        vm.prank(bob);   registry.forge("BobBot",   keccak256("bob-meta"));
-        vm.prank(carol); registry.forge("CarolBot", keccak256("carol-meta"));
+        vm.prank(alice);
+        registry.forge("AliceBot", keccak256("alice-meta"));
+        vm.prank(bob);
+        registry.forge("BobBot", keccak256("bob-meta"));
+        vm.prank(carol);
+        registry.forge("CarolBot", keccak256("carol-meta"));
 
         // Alice and bob grant the arena direct spending permission (ERC-7715 model).
         vm.prank(alice);
@@ -100,18 +104,33 @@ contract ClashboardTest is Test {
     function _createBattle() internal {
         vm.prank(scheduler);
         arena.createBattle(
-            BATTLE_ID, alice, bob, ENTRY_FEE,
-            BETTING_WINDOW, ROUND_DURATION, RESEARCH_CAP,
-            _topicHash(TOPIC), TOPIC, keccak256("sports")
+            BATTLE_ID,
+            alice,
+            bob,
+            ENTRY_FEE,
+            BETTING_WINDOW,
+            ROUND_DURATION,
+            RESEARCH_CAP,
+            _topicHash(TOPIC),
+            TOPIC,
+            keccak256("sports")
         );
     }
 
     function _createBattleWithRounds(uint8 totalRounds) internal {
         vm.prank(scheduler);
         arena.createBattle(
-            BATTLE_ID, alice, bob, ENTRY_FEE,
-            BETTING_WINDOW, ROUND_DURATION, totalRounds, RESEARCH_CAP,
-            _topicHash(TOPIC), TOPIC, keccak256("sports")
+            BATTLE_ID,
+            alice,
+            bob,
+            ENTRY_FEE,
+            BETTING_WINDOW,
+            ROUND_DURATION,
+            totalRounds,
+            RESEARCH_CAP,
+            _topicHash(TOPIC),
+            TOPIC,
+            keccak256("sports")
         );
     }
 
@@ -124,26 +143,33 @@ contract ClashboardTest is Test {
         arena.commitRubric(BATTLE_ID, RUBRIC_HASH);
     }
 
-    /// Warp past the entire battle (betting + all configured rounds).
-    function _warpPastAllRounds() internal {
-        vm.warp(block.timestamp + BATTLE_DURATION + 1);
+    function _closeBetting() internal {
+        ClashboardArena.Battle memory b = arena.getBattle(BATTLE_ID);
+        vm.warp(b.bettingDeadline + 1);
+        vm.prank(scheduler);
+        arena.closeBetting(BATTLE_ID);
     }
 
-    function _warpToRound(uint8 round) internal {
-        ClashboardArena.Battle memory b = arena.getBattle(BATTLE_ID);
-        vm.warp(b.bettingDeadline + uint256(round - 1) * b.roundDuration + 1);
+    function _startDebate() internal {
+        vm.prank(scheduler);
+        arena.startDebate(BATTLE_ID);
+    }
+
+    function _beginRound1() internal {
+        _closeBetting();
+        _startDebate();
     }
 
     function _submitAllRequiredArguments() internal {
         ClashboardArena.Battle memory b = arena.getBattle(BATTLE_ID);
+        _beginRound1();
         for (uint8 r = 1; r <= b.totalRounds; r++) {
-            _warpToRound(r);
             vm.startPrank(scheduler);
             arena.submitArgument(BATTLE_ID, 1, keccak256(abi.encode("alice", r)));
             arena.submitArgument(BATTLE_ID, 2, keccak256(abi.encode("bob", r)));
+            arena.advanceRound(BATTLE_ID);
             vm.stopPrank();
         }
-        _warpPastAllRounds();
     }
 
     // ─── AgentRegistry ────────────────────────────────────────────────────────
@@ -281,13 +307,11 @@ contract ClashboardTest is Test {
 
         vm.startPrank(address(arena));
         treasury.authorizedSpend(
-            alice, 400_000, address(0xDADA),
-            AgentTreasury.SpendPurpose.RESEARCH, BATTLE_ID, RESEARCH_CAP
+            alice, 400_000, address(0xDADA), AgentTreasury.SpendPurpose.RESEARCH, BATTLE_ID, RESEARCH_CAP
         );
         vm.expectRevert("Research budget exceeded");
         treasury.authorizedSpend(
-            alice, 200_000, address(0xDADA),
-            AgentTreasury.SpendPurpose.RESEARCH, BATTLE_ID, RESEARCH_CAP
+            alice, 200_000, address(0xDADA), AgentTreasury.SpendPurpose.RESEARCH, BATTLE_ID, RESEARCH_CAP
         );
         vm.stopPrank();
     }
@@ -319,47 +343,78 @@ contract ClashboardTest is Test {
         vm.prank(scheduler);
         vm.expectRevert("Invalid rounds");
         arena.createBattle(
-            BATTLE_ID, alice, bob, ENTRY_FEE,
-            BETTING_WINDOW, ROUND_DURATION, 1, RESEARCH_CAP,
-            _topicHash(TOPIC), TOPIC, keccak256("sports")
+            BATTLE_ID,
+            alice,
+            bob,
+            ENTRY_FEE,
+            BETTING_WINDOW,
+            ROUND_DURATION,
+            1,
+            RESEARCH_CAP,
+            _topicHash(TOPIC),
+            TOPIC,
+            keccak256("sports")
         );
     }
 
     function testCreateBattle_deductsEntryFees() public {
         uint256 aliceBefore = usdc.balanceOf(alice);
-        uint256 bobBefore   = usdc.balanceOf(bob);
+        uint256 bobBefore = usdc.balanceOf(bob);
         _createBattle();
         assertEq(usdc.balanceOf(alice), aliceBefore - ENTRY_FEE);
-        assertEq(usdc.balanceOf(bob),   bobBefore   - ENTRY_FEE);
+        assertEq(usdc.balanceOf(bob), bobBefore - ENTRY_FEE);
     }
 
     function testCreateBattle_bettingWindowEnforced() public {
         vm.prank(scheduler);
         vm.expectRevert("Betting window too short");
         arena.createBattle(
-            BATTLE_ID, alice, bob, ENTRY_FEE, 60, ROUND_DURATION, RESEARCH_CAP,
-            _topicHash(TOPIC), TOPIC, keccak256("sports")
+            BATTLE_ID,
+            alice,
+            bob,
+            ENTRY_FEE,
+            60,
+            ROUND_DURATION,
+            RESEARCH_CAP,
+            _topicHash(TOPIC),
+            TOPIC,
+            keccak256("sports")
         );
     }
 
-    function testPhase_advancesAutomatically() public {
+    function testPhase_schedulerDrivenAfterBetting() public {
         _createBattle();
-        // Read actual stored values — use absolute warp targets to avoid Foundry
-        // inline block.timestamp / constant evaluation quirks.
         ClashboardArena.Battle memory b = arena.getBattle(BATTLE_ID);
-        uint256 dl  = b.bettingDeadline;  // 121 (1 + 120)
-        uint256 rd  = b.roundDuration;    // 60
+        uint256 dl = b.bettingDeadline;
 
         assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), uint8(ClashboardArena.BattlePhase.BETTING));
         assertTrue(arena.isBettingOpen(BATTLE_ID));
 
         vm.warp(dl + 1);
+        assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), uint8(ClashboardArena.BattlePhase.BETTING));
+        assertFalse(arena.isBettingOpen(BATTLE_ID));
+
+        vm.prank(scheduler);
+        arena.closeBetting(BATTLE_ID);
+        assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), uint8(ClashboardArena.BattlePhase.PREPARING));
+
+        _commitRubric();
+        vm.prank(scheduler);
+        arena.startDebate(BATTLE_ID);
         assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), uint8(ClashboardArena.BattlePhase.ROUND_1));
 
-        vm.warp(dl + rd + 1);
+        vm.startPrank(scheduler);
+        arena.submitArgument(BATTLE_ID, 1, keccak256("round 1 a"));
+        arena.submitArgument(BATTLE_ID, 2, keccak256("round 1 b"));
+        arena.advanceRound(BATTLE_ID);
+        vm.stopPrank();
         assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), uint8(ClashboardArena.BattlePhase.ROUND_2));
 
-        vm.warp(dl + 2 * rd + 1);
+        vm.startPrank(scheduler);
+        arena.submitArgument(BATTLE_ID, 1, keccak256("round 2 a"));
+        arena.submitArgument(BATTLE_ID, 2, keccak256("round 2 b"));
+        arena.advanceRound(BATTLE_ID);
+        vm.stopPrank();
         assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), uint8(ClashboardArena.BattlePhase.JUDGING_READY));
         assertTrue(arena.isJudgingReady(BATTLE_ID));
     }
@@ -458,8 +513,7 @@ contract ClashboardTest is Test {
     function testSubmitArgument_round1() public {
         _createBattle();
         _commitRubric();
-        // Warp to round 1
-        vm.warp(block.timestamp + BETTING_WINDOW + 1);
+        _beginRound1();
         assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), uint8(ClashboardArena.BattlePhase.ROUND_1));
 
         bytes32 hashA = keccak256("alice opening argument");
@@ -482,16 +536,15 @@ contract ClashboardTest is Test {
         _createBattle();
         _commitRubric();
 
-        uint256 ts = block.timestamp + BETTING_WINDOW + 1;
+        _beginRound1();
 
         for (uint8 r = 1; r <= 2; r++) {
-            vm.warp(ts);
-            assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), r);
+            assertEq(uint8(arena.getBattlePhase(BATTLE_ID)), r + 1);
             vm.startPrank(scheduler);
             arena.submitArgument(BATTLE_ID, 1, keccak256(abi.encode("alice", r)));
-            arena.submitArgument(BATTLE_ID, 2, keccak256(abi.encode("bob",   r)));
+            arena.submitArgument(BATTLE_ID, 2, keccak256(abi.encode("bob", r)));
+            arena.advanceRound(BATTLE_ID);
             vm.stopPrank();
-            ts += ROUND_DURATION;
         }
 
         // All required rounds submitted — verify
@@ -506,14 +559,14 @@ contract ClashboardTest is Test {
     function testSubmitArgument_wrongPhase_bettingStillOpen() public {
         _createBattle();
         vm.prank(scheduler);
-        vm.expectRevert("Betting window still open");
+        vm.expectRevert("No active round");
         arena.submitArgument(BATTLE_ID, 1, keccak256("arg"));
     }
 
     function testSubmitArgument_wrongPhase_allRoundsComplete() public {
         _createBattle();
         _commitRubric();
-        _warpPastAllRounds();
+        _submitAllRequiredArguments();
         vm.prank(scheduler);
         vm.expectRevert("No active round");
         arena.submitArgument(BATTLE_ID, 1, keccak256("late arg"));
@@ -522,7 +575,7 @@ contract ClashboardTest is Test {
     function testSubmitArgument_duplicate() public {
         _createBattle();
         _commitRubric();
-        vm.warp(block.timestamp + BETTING_WINDOW + 1);
+        _beginRound1();
         vm.startPrank(scheduler);
         arena.submitArgument(BATTLE_ID, 1, keccak256("first"));
         vm.expectRevert("Argument already submitted");
@@ -533,7 +586,7 @@ contract ClashboardTest is Test {
     function testSubmitArgument_invalidSide() public {
         _createBattle();
         _commitRubric();
-        vm.warp(block.timestamp + BETTING_WINDOW + 1);
+        _beginRound1();
         vm.prank(scheduler);
         vm.expectRevert("Invalid side");
         arena.submitArgument(BATTLE_ID, 3, keccak256("bad side"));
@@ -558,8 +611,8 @@ contract ClashboardTest is Test {
         _submitAllRequiredArguments();
 
         uint256 platformBefore = usdc.balanceOf(platform);
-        uint256 aliceBefore    = usdc.balanceOf(alice);
-        uint256 daveBefore     = usdc.balanceOf(dave);
+        uint256 aliceBefore = usdc.balanceOf(alice);
+        uint256 daveBefore = usdc.balanceOf(dave);
 
         vm.prank(scheduler);
         arena.settleBattle(BATTLE_ID, 1, RUBRIC_PREIMAGE, 875);
@@ -582,8 +635,8 @@ contract ClashboardTest is Test {
     function testSettleBattle_beforeRoundsComplete() public {
         _createBattle();
         _commitRubric();
-        // Only warp past betting, not past all rounds
-        vm.warp(block.timestamp + BETTING_WINDOW + 1);
+        _closeBetting();
+        _startDebate();
         vm.prank(scheduler);
         vm.expectRevert("Judging not ready");
         arena.settleBattle(BATTLE_ID, 1, RUBRIC_PREIMAGE, 875);
@@ -601,9 +654,10 @@ contract ClashboardTest is Test {
     function testSettleBattle_rejectsIncompleteArguments() public {
         _createBattle();
         _commitRubric();
-        _warpPastAllRounds();
+        _closeBetting();
+        _startDebate();
         vm.prank(scheduler);
-        vm.expectRevert("Arguments incomplete");
+        vm.expectRevert("Judging not ready");
         arena.settleBattle(BATTLE_ID, 1, RUBRIC_PREIMAGE, 800);
     }
 
@@ -654,26 +708,26 @@ contract ClashboardTest is Test {
         vm.stopPrank();
 
         uint256 aliceBefore = usdc.balanceOf(alice);
-        uint256 bobBefore   = usdc.balanceOf(bob);
-        uint256 daveBefore  = usdc.balanceOf(dave);
+        uint256 bobBefore = usdc.balanceOf(bob);
+        uint256 daveBefore = usdc.balanceOf(dave);
 
         vm.prank(scheduler);
         arena.cancelBattle(BATTLE_ID);
 
         assertEq(usdc.balanceOf(alice), aliceBefore + ENTRY_FEE);
-        assertEq(usdc.balanceOf(bob),   bobBefore   + ENTRY_FEE);
-        assertEq(usdc.balanceOf(dave),  daveBefore  + BET_AMOUNT);
+        assertEq(usdc.balanceOf(bob), bobBefore + ENTRY_FEE);
+        assertEq(usdc.balanceOf(dave), daveBefore + BET_AMOUNT);
     }
 
     function testCancelBattle_walletIntegrity() public {
         _createBattle();
         uint256 aliceBefore = usdc.balanceOf(alice);
-        uint256 bobBefore   = usdc.balanceOf(bob);
+        uint256 bobBefore = usdc.balanceOf(bob);
         vm.prank(scheduler);
         arena.cancelBattle(BATTLE_ID);
         // Both entry fees returned directly to wallets — treasury untouched.
         assertEq(usdc.balanceOf(alice), aliceBefore + ENTRY_FEE);
-        assertEq(usdc.balanceOf(bob),   bobBefore   + ENTRY_FEE);
+        assertEq(usdc.balanceOf(bob), bobBefore + ENTRY_FEE);
         assertEq(usdc.balanceOf(address(treasury)), 20 * 1e6); // only carol's deposit
     }
 
@@ -706,9 +760,16 @@ contract ClashboardTest is Test {
         vm.startPrank(address(rooms));
         usdc.transfer(address(arena), STAKE * 2);
         arena.createBattleFromRoom(
-            roomBattleId, alice, bob, STAKE,
-            BETTING_WINDOW, ROUND_DURATION, RESEARCH_CAP,
-            _topicHash(TOPIC), TOPIC, keccak256("sports")
+            roomBattleId,
+            alice,
+            bob,
+            STAKE,
+            BETTING_WINDOW,
+            ROUND_DURATION,
+            RESEARCH_CAP,
+            _topicHash(TOPIC),
+            TOPIC,
+            keccak256("sports")
         );
         vm.stopPrank();
 
@@ -727,29 +788,43 @@ contract ClashboardTest is Test {
         vm.prank(scheduler);
         vm.expectRevert("Only HotTakeRooms");
         arena.createBattleFromRoom(
-            keccak256("x"), alice, bob, STAKE,
-            BETTING_WINDOW, ROUND_DURATION, RESEARCH_CAP,
-            _topicHash(TOPIC), TOPIC, keccak256("sports")
+            keccak256("x"),
+            alice,
+            bob,
+            STAKE,
+            BETTING_WINDOW,
+            ROUND_DURATION,
+            RESEARCH_CAP,
+            _topicHash(TOPIC),
+            TOPIC,
+            keccak256("sports")
         );
     }
 
     function testCreateBattleFromRoom_doesNotTouchTreasury() public {
         bytes32 roomBattleId = keccak256("room-battle-002");
         uint256 aliceTreasBefore = treasury.getBalance(alice);
-        uint256 bobTreasBefore   = treasury.getBalance(bob);
+        uint256 bobTreasBefore = treasury.getBalance(bob);
 
         deal(address(usdc), address(rooms), STAKE * 2);
         vm.startPrank(address(rooms));
         usdc.transfer(address(arena), STAKE * 2);
         arena.createBattleFromRoom(
-            roomBattleId, alice, bob, STAKE,
-            BETTING_WINDOW, ROUND_DURATION, RESEARCH_CAP,
-            _topicHash(TOPIC), TOPIC, keccak256("sports")
+            roomBattleId,
+            alice,
+            bob,
+            STAKE,
+            BETTING_WINDOW,
+            ROUND_DURATION,
+            RESEARCH_CAP,
+            _topicHash(TOPIC),
+            TOPIC,
+            keccak256("sports")
         );
         vm.stopPrank();
 
         assertEq(treasury.getBalance(alice), aliceTreasBefore);
-        assertEq(treasury.getBalance(bob),   bobTreasBefore);
+        assertEq(treasury.getBalance(bob), bobTreasBefore);
     }
 
     // ─── HotTakeRooms ────────────────────────────────────────────────────────
@@ -776,19 +851,14 @@ contract ClashboardTest is Test {
         vm.startPrank(dave);
         usdc.approve(address(rooms), STAKE);
         vm.expectRevert("Must have an agent to issue challenge");
-        rooms.issueChallenge(
-            ROOM_ID, _topicHash("Topic preview"), "Topic preview", keccak256("sports"), STAKE
-        );
+        rooms.issueChallenge(ROOM_ID, _topicHash("Topic preview"), "Topic preview", keccak256("sports"), STAKE);
         vm.stopPrank();
     }
 
     function testAcceptChallenge_createsBattle() public {
         vm.startPrank(alice);
         usdc.approve(address(rooms), STAKE);
-        rooms.issueChallenge(
-            ROOM_ID, _topicHash("Messi is the GOAT"), "Messi is the GOAT",
-            keccak256("sports"), STAKE
-        );
+        rooms.issueChallenge(ROOM_ID, _topicHash("Messi is the GOAT"), "Messi is the GOAT", keccak256("sports"), STAKE);
         vm.stopPrank();
 
         bytes32 battleId = keccak256("hot-take-battle-001");
@@ -817,7 +887,7 @@ contract ClashboardTest is Test {
 
     function testAcceptChallenge_noDoubleFundingTreasury() public {
         uint256 aliceBefore = treasury.getBalance(alice);
-        uint256 bobBefore   = treasury.getBalance(bob);
+        uint256 bobBefore = treasury.getBalance(bob);
 
         vm.startPrank(alice);
         usdc.approve(address(rooms), STAKE);
@@ -830,7 +900,7 @@ contract ClashboardTest is Test {
         vm.stopPrank();
 
         assertEq(treasury.getBalance(alice), aliceBefore);
-        assertEq(treasury.getBalance(bob),   bobBefore);
+        assertEq(treasury.getBalance(bob), bobBefore);
     }
 
     function testAcceptChallenge_cannotAcceptSelf() public {
