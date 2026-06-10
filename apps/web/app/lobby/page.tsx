@@ -44,57 +44,6 @@ function shortAddress(address: string): string {
   return `${address.slice(0, 6)}…${address.slice(-4)}`;
 }
 
-// ─── Live ticker ──────────────────────────────────────────────────────────────
-const TICKER_ITEMS = [
-  "⚔️ TacticsTitan issued a challenge — $2 on Messi",
-  "🔥 room-003 LOCKED — 52 watching",
-  "💰 AfriMaven staked $5 on Wizkid",
-  "⚡ New challenge: iPhone vs Android",
-  "🏆 CourtVision vs BasketballGod — LeBron vs Kobe — LIVE",
-  "🎤 Wizkid vs Burna Boy — 31 bettors in",
-  "⚔️ CryptoSage challenged the arena — $10 USDC",
-];
-
-function LiveTicker() {
-  const [offset, setOffset] = useState(0);
-  const tickerRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      setOffset((o) => o - 1);
-    }, 30);
-    return () => clearInterval(id);
-  }, []);
-
-  const items = [...TICKER_ITEMS, ...TICKER_ITEMS];
-
-  return (
-    <div className="relative overflow-hidden border-y border-white/6 bg-black/40 py-2">
-      <div
-        className="flex gap-0 whitespace-nowrap"
-        style={{
-          transform: `translateX(${(offset % (tickerRef.current?.scrollWidth ?? 0)) / 2}px)`,
-          transition: "none",
-        }}
-      >
-        {items.map((item, i) => (
-          <span
-            key={i}
-            ref={i === 0 ? tickerRef : undefined}
-            className="inline-flex items-center font-mono text-[10px] uppercase tracking-widest text-white/35 px-8"
-          >
-            {item}
-            <span className="ml-8 text-white/10">|</span>
-          </span>
-        ))}
-      </div>
-      {/* Edge fade */}
-      <div className="absolute inset-y-0 left-0 w-16 bg-gradient-to-r from-clash-black to-transparent pointer-events-none" />
-      <div className="absolute inset-y-0 right-0 w-16 bg-gradient-to-l from-clash-black to-transparent pointer-events-none" />
-    </div>
-  );
-}
-
 // ─── Challenge card ───────────────────────────────────────────────────────────
 type ChallengeCardProps = {
   room: Room;
@@ -479,15 +428,27 @@ const ChallengeCard = forwardRef<HTMLDivElement, ChallengeCardProps>(function Ch
 });
 
 // ─── Create room drawer ───────────────────────────────────────────────────────
-type HotTake = { label: string; category: string };
+type HotTake = {
+  label: string;
+  category: string;
+  source?: "venice" | "polymarket" | "fallback" | "static";
+  subtitle?: string;
+  url?: string;
+};
 
-const HOT_TAKES_CACHE_KEY = "clashboard_hot_takes";
+type HotTakeSource = "venice" | "polymarket";
+
+const HOT_TAKES_CACHE_PREFIX = "clashboard_hot_takes";
 const HOT_TAKES_CACHE_TTL = 5 * 60 * 1000; // 5 minutes
 
-function loadCachedHotTakes(): HotTake[] | null {
+function getHotTakesCacheKey(source: HotTakeSource): string {
+  return `${HOT_TAKES_CACHE_PREFIX}_${source}`;
+}
+
+function loadCachedHotTakes(source: HotTakeSource): HotTake[] | null {
   if (typeof window === "undefined") return null;
   try {
-    const raw = sessionStorage.getItem(HOT_TAKES_CACHE_KEY);
+    const raw = sessionStorage.getItem(getHotTakesCacheKey(source));
     if (!raw) return null;
     const { takes, cachedAt } = JSON.parse(raw) as { takes: HotTake[]; cachedAt: number };
     if (Date.now() - cachedAt > HOT_TAKES_CACHE_TTL) return null;
@@ -495,11 +456,17 @@ function loadCachedHotTakes(): HotTake[] | null {
   } catch { return null; }
 }
 
-function saveCachedHotTakes(takes: HotTake[]) {
+function saveCachedHotTakes(source: HotTakeSource, takes: HotTake[]) {
   if (typeof window === "undefined") return;
   try {
-    sessionStorage.setItem(HOT_TAKES_CACHE_KEY, JSON.stringify({ takes, cachedAt: Date.now() }));
+    sessionStorage.setItem(getHotTakesCacheKey(source), JSON.stringify({ takes, cachedAt: Date.now() }));
   } catch {}
+}
+
+function compactHotTakeMeta(take: HotTake): string | null {
+  if (take.subtitle) return take.subtitle;
+  if (take.source === "polymarket") return "Live market hot take";
+  return null;
 }
 
 function CreateDrawer({
@@ -514,28 +481,30 @@ function CreateDrawer({
   const [stake, setStake] = useState(1);
   const [submitting, setSubmitting] = useState(false);
   const [txError, setTxError] = useState<string | null>(null);
-  const [hotTakes, setHotTakes] = useState<HotTake[]>(loadCachedHotTakes() ?? STATIC_HOT_TAKES);
-  const [loadingTakes, setLoadingTakes] = useState(!loadCachedHotTakes());
+  const [hotTakeSource, setHotTakeSource] = useState<HotTakeSource>("venice");
+  const [hotTakes, setHotTakes] = useState<HotTake[]>(loadCachedHotTakes("venice") ?? STATIC_HOT_TAKES);
+  const [loadingTakes, setLoadingTakes] = useState(!loadCachedHotTakes("venice"));
 
   useEffect(() => {
-    const cached = loadCachedHotTakes();
+    const cached = loadCachedHotTakes(hotTakeSource);
     if (cached) {
       setHotTakes(cached);
       setLoadingTakes(false);
       return;
     }
     setLoadingTakes(true);
-    fetch("/api/hot-takes")
+    setHotTakes(hotTakeSource === "venice" ? STATIC_HOT_TAKES : []);
+    fetch(hotTakeSource === "venice" ? "/api/hot-takes" : "/api/market-hot-takes")
       .then((r) => r.json())
       .then((data: { takes: HotTake[] }) => {
         if (Array.isArray(data.takes) && data.takes.length > 0) {
           setHotTakes(data.takes);
-          saveCachedHotTakes(data.takes);
+          saveCachedHotTakes(hotTakeSource, data.takes);
         }
       })
       .catch(() => {})
       .finally(() => setLoadingTakes(false));
-  }, []);
+  }, [hotTakeSource]);
 
   // All displayed takes including the always-last Custom option
   const allTakes: HotTake[] = [...hotTakes, { label: "Custom hot take...", category: "Custom" }];
@@ -569,6 +538,15 @@ function CreateDrawer({
         ? "Custom"
         : (allTakes.find((h) => h.label === selectedTopic)?.category ?? "Custom")
     ] ?? CATEGORY_COLORS.Custom;
+
+  const selectedTake = allTakes.find((h) => h.label === selectedTopic);
+
+  function switchHotTakeSource(source: HotTakeSource) {
+    setHotTakeSource(source);
+    setSelectedTopic("");
+    setCustomTopic("");
+    setTxError(null);
+  }
 
   return (
     <motion.div
@@ -649,10 +627,45 @@ function CreateDrawer({
                       className="flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-widest text-clash-gold/50"
                     >
                       <span className="w-2 h-2 border border-clash-gold/40 border-t-clash-gold/80 rounded-full animate-spin" />
-                      Venice AI generating…
+                      {hotTakeSource === "venice" ? "Venice AI generating…" : "Scanning markets…"}
                     </motion.span>
                   )}
                 </AnimatePresence>
+              </div>
+              <div className="grid grid-cols-2 gap-2 mb-4">
+                {[
+                  { id: "venice" as const, label: "Venice Hot Takes", meta: "Fresh culture prompts" },
+                  { id: "polymarket" as const, label: "Market Hot Takes", meta: "Live Polymarket odds" },
+                ].map((source) => {
+                  const isSelected = hotTakeSource === source.id;
+                  return (
+                    <button
+                      key={source.id}
+                      onClick={() => switchHotTakeSource(source.id)}
+                      className="relative overflow-hidden border px-4 py-3 text-left transition-all duration-200"
+                      style={{
+                        borderColor: isSelected ? "rgba(255,184,0,0.42)" : "rgba(255,255,255,0.08)",
+                        background: isSelected ? "rgba(255,184,0,0.075)" : "rgba(255,255,255,0.018)",
+                      }}
+                    >
+                      {isSelected && (
+                        <motion.div
+                          layoutId="hotTakeSourceActive"
+                          className="absolute inset-x-0 top-0 h-[2px] bg-clash-gold"
+                        />
+                      )}
+                      <span
+                        className="font-mono text-[9px] uppercase tracking-widest block"
+                        style={{ color: isSelected ? "#FFB800" : "rgba(255,255,255,0.34)" }}
+                      >
+                        {source.label}
+                      </span>
+                      <span className="font-mono text-[8px] uppercase tracking-widest text-white/18 mt-1 block">
+                        {source.meta}
+                      </span>
+                    </button>
+                  );
+                })}
               </div>
               <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
                 {loadingTakes
@@ -744,6 +757,16 @@ function CreateDrawer({
                           >
                             {take.label}
                           </span>
+                          {compactHotTakeMeta(take) && (
+                            <span
+                              className="font-mono text-[8px] uppercase tracking-widest leading-relaxed mt-2 block transition-colors duration-200"
+                              style={{
+                                color: isSelected ? "rgba(245,245,240,0.34)" : "rgba(245,245,240,0.18)",
+                              }}
+                            >
+                              {compactHotTakeMeta(take)}
+                            </span>
+                          )}
                         </button>
                       );
                     })}
@@ -908,6 +931,24 @@ function CreateDrawer({
                     Locked until challenger accepts
                   </span>
                 </div>
+                {selectedTake?.source === "polymarket" && (
+                  <div className="mt-3 pt-3 border-t border-white/6 flex flex-wrap items-center gap-2">
+                    <span className="font-mono text-[8px] uppercase tracking-widest text-clash-gold/50">
+                      Polymarket context
+                    </span>
+                    {selectedTake.url && (
+                      <a
+                        href={selectedTake.url}
+                        target="_blank"
+                        rel="noreferrer"
+                        onClick={(event) => event.stopPropagation()}
+                        className="font-mono text-[8px] uppercase tracking-widest text-white/24 hover:text-clash-gold/70 transition-colors"
+                      >
+                        View source market
+                      </a>
+                    )}
+                  </div>
+                )}
               </div>
 
               {/* CTA */}
@@ -1794,11 +1835,6 @@ export default function LobbyPage() {
         </div>
       </header>
 
-      {/* ── Ticker ──────────────────────────────────────────────────────────── */}
-      <div className="pt-[57px]">
-        <LiveTicker />
-      </div>
-
       <div className="relative max-w-5xl mx-auto px-4 sm:px-6 py-8 sm:py-12">
         {/* ── Hero area ────────────────────────────────────────────────────── */}
         <motion.div
@@ -1808,7 +1844,7 @@ export default function LobbyPage() {
           className="relative mb-10 sm:mb-14 text-center"
         >
           {/* Pulse rings behind heading */}
-          <div className="relative inline-block">
+          <div className="relative inline-block mt-20">
             <PulseRing color="#FFB800" />
 
             <p className="relative font-mono text-[10px] uppercase tracking-[0.4em] text-clash-gold/60 mb-3">
@@ -1830,8 +1866,8 @@ export default function LobbyPage() {
             </h1>
           </div>
 
-          <p className="font-body text-sm sm:text-base text-white/40 max-w-md mx-auto mb-8 leading-relaxed">
-            Issue a hot take. Lock your stake. Wait for someone brave enough to
+          <p className="font-body text-sm sm:text-base text-white/70 max-w-md mx-auto mb-8 leading-relaxed">
+            Create a hot take. Lock your stake. Wait for someone brave enough to
             step in. Your AI agent will fight for your belief.
           </p>
 
@@ -2015,11 +2051,11 @@ export default function LobbyPage() {
 
         {/* ── Section label ──────────────────────────────────────────────── */}
         <div className="flex items-center gap-4 mb-4">
-          <span className="font-mono text-[9px] uppercase tracking-widest text-white/25">
+          <span className="font-mono text-[9px] uppercase tracking-widest text-white/70">
             Active challenges
           </span>
           <div className="flex-1 h-px bg-white/5" />
-          <span className="font-mono text-[9px] text-white/20">
+          <span className="font-mono text-[9px] text-white/70">
             {filtered.length} rooms
           </span>
         </div>

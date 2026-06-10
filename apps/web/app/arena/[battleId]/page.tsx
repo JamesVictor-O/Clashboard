@@ -322,6 +322,71 @@ function RoundBreakOverlay({
   );
 }
 
+function deriveRecapSides(topic: string): { A: string; B: string; claim: string } {
+  const cleaned = topic.replace(/\s+/g, " ").trim();
+  const yesNoMatch = cleaned.match(/^Yes\s+vs\s+No\s+[—-]\s+(.+)$/i);
+  if (yesNoMatch?.[1]) {
+    const claim = yesNoMatch[1].replace(/\s*\(Polymarket Yes:\s*\d+%\)\s*$/i, "").trim();
+    return { A: "YES", B: "NO", claim };
+  }
+
+  const vsIndex = cleaned.toLowerCase().indexOf(" vs ");
+  if (vsIndex > 0) {
+    const sideA = cleaned.slice(0, vsIndex).trim();
+    const rest = cleaned.slice(vsIndex + 4);
+    const dashIndex = rest.search(/\s+[—-]\s+/);
+    if (dashIndex > 0) {
+      return {
+        A: sideA,
+        B: rest.slice(0, dashIndex).trim(),
+        claim: rest.slice(dashIndex).replace(/^[\s—-]+/, "").trim(),
+      };
+    }
+    return { A: sideA, B: rest.trim(), claim: cleaned };
+  }
+
+  return { A: "Side A", B: "Side B", claim: cleaned };
+}
+
+function buildShareRecap({
+  battle,
+  winner,
+  judgeScores,
+  txHash,
+}: {
+  battle: Battle;
+  winner: "A" | "B";
+  judgeScores: { A: number; B: number } | null;
+  txHash: string | null;
+}) {
+  const winningAgent = winner === "A" ? battle.agentA : battle.agentB;
+  const losingAgent = winner === "A" ? battle.agentB : battle.agentA;
+  const winnerScore = judgeScores?.[winner];
+  const loserScore = judgeScores?.[winner === "A" ? "B" : "A"];
+  const sides = deriveRecapSides(battle.topic);
+  const winningSide = winner === "A" ? sides.A : sides.B;
+  const losingSide = winner === "A" ? sides.B : sides.A;
+  const pool = Number(battle.poolA + battle.poolB) / 1_000_000;
+  const scoreLine =
+    typeof winnerScore === "number" && typeof loserScore === "number"
+      ? `Judge score: ${winningSide} ${winnerScore}-${losingSide} ${loserScore}.`
+      : `Judge picked ${winningSide}.`;
+  const txLine = txHash ? `Settlement: ${txHash.slice(0, 6)}...${txHash.slice(-4)}` : "Settlement: onchain";
+
+  return [
+    `Clashboard recap: ${battle.topic}`,
+    "",
+    `Winning side: ${winningSide}`,
+    `Claim tested: ${sides.claim}`,
+    `${scoreLine}`,
+    `Agents: ${winningAgent.name} defeated ${losingAgent.name}`,
+    `Prediction pool: $${pool.toFixed(2)} USDC`,
+    `${txLine}`,
+    "",
+    "AI agents argued it. Venice judged it. Spectators picked sides.",
+  ].join("\n");
+}
+
 // ─── Winner Overlay ───────────────────────────────────────────────────────────
 
 function WinnerOverlay({
@@ -335,6 +400,7 @@ function WinnerOverlay({
   judgeScores: { A: number; B: number } | null;
   txHash: string | null;
 }) {
+  const [copied, setCopied] = useState(false);
   const agent = winner === "A" ? battle.agentA : battle.agentB;
   const loser = winner === "A" ? battle.agentB : battle.agentA;
 
@@ -346,6 +412,18 @@ function WinnerOverlay({
   // Determine block explorer URL
   const chainId   = String(CHAIN_ID);
   const explorerBase = chainId === "8453" ? "https://basescan.org" : "https://sepolia.basescan.org";
+  const recap = buildShareRecap({ battle, winner, judgeScores, txHash });
+  const tweetUrl = `https://twitter.com/intent/tweet?text=${encodeURIComponent(recap)}`;
+
+  const copyRecap = async () => {
+    try {
+      await navigator.clipboard.writeText(recap);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1600);
+    } catch {
+      setCopied(false);
+    }
+  };
 
   return (
     <motion.div
@@ -475,6 +553,42 @@ function WinnerOverlay({
               Payouts settling on-chain…
             </p>
           )}
+        </motion.div>
+
+        <motion.div
+          initial={{ opacity: 0, y: 8 }}
+          animate={{ opacity: 1, y: 0 }}
+          transition={{ delay: 1.45 }}
+          className="mt-5 border border-white/8 bg-white/[0.025] p-4 text-left"
+        >
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <p className="font-mono text-[9px] uppercase tracking-[0.32em] text-white/30">
+              Shareable Recap
+            </p>
+            <span className="font-mono text-[8px] uppercase tracking-widest text-clash-gold/55">
+              X ready
+            </span>
+          </div>
+          <p className="whitespace-pre-line font-mono text-[10px] leading-relaxed text-white/45">
+            {recap}
+          </p>
+          <div className="mt-4 grid grid-cols-2 gap-2">
+            <button
+              type="button"
+              onClick={copyRecap}
+              className="border border-white/10 px-3 py-2.5 font-mono text-[9px] uppercase tracking-widest text-white/45 transition-colors hover:border-clash-gold/30 hover:text-clash-gold"
+            >
+              {copied ? "Copied" : "Copy Recap"}
+            </button>
+            <a
+              href={tweetUrl}
+              target="_blank"
+              rel="noopener noreferrer"
+              className="border border-clash-gold/25 bg-clash-gold/08 px-3 py-2.5 text-center font-mono text-[9px] uppercase tracking-widest text-clash-gold transition-colors hover:bg-clash-gold/15"
+            >
+              Post To X
+            </a>
+          </div>
         </motion.div>
       </motion.div>
     </motion.div>
@@ -1484,13 +1598,6 @@ export default function BattlePage() {
     phase === "live" ? "Live Round" :
     streamStatus === "research" ? "Researching" :
     "Syncing";
-  const tickerLabel =
-    streamStatus === "error" ? "ISSUE" :
-    streamStatus === "settled" || serverPhase === "SETTLED" ? "SETTLED" :
-    streamStatus === "judging_ready" || serverPhase === "JUDGING_READY" ? "JUDGING" :
-    phase === "live" ? "LIVE" :
-    streamStatus === "research" ? "RESEARCH" :
-    "SYNC";
   const waitingTitle =
     streamStatus === "error" ? "BATTLE NEEDS REVIEW" :
     !battleLoaded ? "LOADING BATTLE" :
@@ -1520,42 +1627,6 @@ export default function BattlePage() {
 
   return (
     <div className="min-h-screen bg-clash-black flex flex-col">
-
-      {/* ── Live ticker bar ───────────────────────────────────────────────── */}
-      <div className="border-b border-white/8 bg-clash-black/80 sticky top-0 z-20 backdrop-blur-sm">
-        <div className="max-w-[1440px] mx-auto px-6 sm:px-10 lg:px-16 py-3 flex items-center justify-between gap-4">
-          <div className="flex items-center gap-3 min-w-0">
-            {phase === "live" || phase === "verdict" || streamStatus === "error" ? (
-              <span className="flex-shrink-0 flex items-center gap-1.5 bg-red-500/15 rounded-full px-2.5 py-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-red-400 animate-pulse" />
-                <span className="font-display text-[10px] text-red-400 font-bold uppercase tracking-widest">{tickerLabel}</span>
-              </span>
-            ) : (
-              <span className="flex-shrink-0 flex items-center gap-1.5 bg-clash-gold/15 rounded-full px-2.5 py-1">
-                <span className="w-1.5 h-1.5 rounded-full bg-clash-gold animate-pulse" />
-                <span className="font-display text-[10px] text-clash-gold font-bold uppercase tracking-widest">
-                  {tickerLabel}
-                </span>
-              </span>
-            )}
-            <div className="min-w-0">
-              <span className="font-body text-[10px] text-white/25 uppercase tracking-widest block">Hot Take</span>
-              <h1 className="font-display text-sm sm:text-base font-bold text-clash-white truncate">
-                {battle.topic}
-              </h1>
-            </div>
-          </div>
-
-          {(phase === "live" || phase === "verdict") && (
-            <div className="flex-shrink-0 text-right">
-              <div className="font-body text-[10px] text-white/25 uppercase tracking-widest">Round</div>
-              <div className="font-display text-sm font-bold text-white">
-                {displayedRound} / {displayedTotalRounds}
-              </div>
-            </div>
-          )}
-        </div>
-      </div>
 
       {/* ── Main grid ─────────────────────────────────────────────────────── */}
       <div className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 py-4 sm:py-5

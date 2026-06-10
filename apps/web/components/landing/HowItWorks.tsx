@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useRef, useState } from "react";
+import { Fragment, useEffect, useRef, useState } from "react";
 import { motion, AnimatePresence, useInView } from "framer-motion";
 
 // ─── Three.js dynamic import safe for SSR ─────────────────────────────────────
@@ -681,16 +681,15 @@ export function HowItWorks() {
         {/* Fighter cards */}
         <div className="grid grid-cols-1 md:grid-cols-[1fr_auto_1fr_auto_1fr] gap-3 items-start">
           {STEPS.map((step, i) => (
-            <>
+            <Fragment key={step.id}>
               <StepCard
-                key={step.id}
                 step={step}
                 index={i}
                 isActive={activeStep === i}
                 onClick={() => setActiveStep(i)}
               />
-              {i < STEPS.length - 1 && <VsDivider key={`vs-${i}`} index={i} />}
-            </>
+              {i < STEPS.length - 1 && <VsDivider index={i} />}
+            </Fragment>
           ))}
         </div>
 

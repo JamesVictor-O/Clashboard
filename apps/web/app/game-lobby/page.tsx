@@ -98,58 +98,6 @@ async function fetchStoredBattleTopic(battleId: string) {
   }
 }
 
-// ─── Live ticker ───────────────────────────────────────────────────────────────
-
-const TICKER_ITEMS = [
-  "🔥 IRON ORACLE placed $120 on Kobe being GOAT",
-  "⚡ PARADIGM just entered Burna vs Wizkid",
-  "💰 New pool record: $3,120 on Messi debate",
-  "🎯 FLAME MOUTH wins Round 1 — crowd going wild",
-  "📊 DATA GHOST is 71% win rate — top-ranked today",
-  "🔥 47 bettors live on KOBE vs LEBRON right now",
-  "⚡ STEEL ARCHIVE just accepted a $50 challenge",
-  "💸 Payout: 0x2e5d…f6ea just earned +$84 USDC",
-];
-
-function LiveTicker() {
-  const [pos, setPos] = useState(0);
-  const ref = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    const id = setInterval(() => {
-      setPos(p => {
-        const el = ref.current;
-        if (!el) return p;
-        const newPos = p - 1;
-        if (Math.abs(newPos) > el.scrollWidth / 2) return 0;
-        return newPos;
-      });
-    }, 24);
-    return () => clearInterval(id);
-  }, []);
-
-  const doubled = [...TICKER_ITEMS, ...TICKER_ITEMS];
-
-  return (
-    <div className="border-b border-white/6 bg-black/40 overflow-hidden py-2.5 flex items-center gap-4">
-      <div className="flex-shrink-0 px-4 flex items-center gap-2">
-        <span className="w-1.5 h-1.5 rounded-full bg-red-500 animate-pulse" />
-        <span className="font-mono text-[9px] uppercase tracking-[0.3em] text-red-400">Live</span>
-      </div>
-      <div className="flex-1 overflow-hidden">
-        <div
-          ref={ref}
-          className="flex items-center gap-12 whitespace-nowrap"
-          style={{ transform: `translateX(${pos}px)`, willChange: "transform" }}
-        >
-          {doubled.map((item, i) => (
-            <span key={i} className="font-mono text-[10px] text-white/30">{item}</span>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
 
 // ─── Stake modal ───────────────────────────────────────────────────────────────
 
@@ -262,14 +210,14 @@ function StakeModal({
             >
               <span className="text-3xl">⚡</span>
             </motion.div>
-            <p className="font-display text-3xl font-extrabold uppercase mb-2" style={{ color: accent }}>YOU'RE IN</p>
+            <p className="font-display text-3xl font-extrabold uppercase mb-2" style={{ color: accent }}>Prediction Locked</p>
             <p className="font-mono text-sm text-white/50 mb-1">
-              ${amount} riding on <span style={{ color: accent }}>{chosenName}</span>
+              ${amount} predicting <span style={{ color: accent }}>{chosenName}</span> wins the debate
             </p>
             <p className="font-mono text-xs text-white/30 mb-8">
-              Potential return: <span className="text-green-400">+${potentialReturn} USDC</span> · Base Sepolia
+              If your fighter wins: <span className="text-green-400">+${potentialReturn} USDC</span> · settled on Base Sepolia
             </p>
-            <button onClick={onClose} className="btn-primary w-full py-3.5">Let's Go →</button>
+            <button onClick={onClose} className="btn-primary w-full py-3.5">Watch The Fight</button>
           </div>
         ) : phase === "pick" ? (
           /* ── Fighter picker ───────────────────────────────────────────── */
@@ -304,11 +252,11 @@ function StakeModal({
               <div className="min-w-0">
                 <div className="flex flex-wrap items-center gap-2 mb-3">
                   <span className="h-2 w-2 bg-red-500 rounded-full animate-pulse" />
-                  <p className="font-mono text-[9px] uppercase tracking-[0.36em] text-clash-gold/70">Stake Arena</p>
+                  <p className="font-mono text-[9px] uppercase tracking-[0.36em] text-clash-gold/70">Spectator Predictions</p>
                   <span className="font-mono text-[9px] uppercase tracking-widest text-white/25">Base Sepolia</span>
                 </div>
                 <p className="font-display text-3xl sm:text-5xl font-extrabold uppercase leading-[0.9] text-clash-white">
-                  Pick Your Side
+                  Predict The Winner
                 </p>
                 <p className="mt-3 max-w-2xl font-display text-base sm:text-xl font-extrabold uppercase leading-tight text-white/55">
                   {agent.topic}
@@ -453,7 +401,7 @@ function StakeModal({
                       </div>
                       <div className="border border-white/8 p-3 bg-black/20">
                         <p className="font-mono text-[8px] uppercase tracking-widest text-white/30 mb-1">Tap To</p>
-                        <p className="font-display text-xl font-extrabold uppercase text-white/80">Stake</p>
+                        <p className="font-display text-xl font-extrabold uppercase text-white/80">Predict</p>
                       </div>
                     </div>
                   </div>
@@ -572,7 +520,7 @@ function StakeModal({
               />
               <div className="relative pl-2 min-w-0">
                 <p className="font-mono text-[8px] uppercase tracking-[0.28em] mb-1" style={{ color: `rgba(${glow},0.78)` }}>
-                  You're backing · Side {side} · Bet lock
+                  Your prediction · Side {side} · USDC lock
                 </p>
                 <p className="font-display text-3xl sm:text-4xl font-extrabold uppercase leading-none" style={{ color: accent }}>{chosenName}</p>
               </div>
@@ -585,7 +533,7 @@ function StakeModal({
             {/* Amount */}
             <div className="relative mb-5 grid grid-cols-1 lg:grid-cols-[1fr_220px] gap-4">
               <div>
-                <p className="font-mono text-[9px] uppercase tracking-widest text-white/40 mb-2">Your Stake (USDC)</p>
+                <p className="font-mono text-[9px] uppercase tracking-widest text-white/40 mb-2">Prediction Stake (USDC)</p>
                 <div className="relative">
                   <span className="absolute left-4 top-1/2 -translate-y-1/2 font-display text-3xl font-extrabold" style={{ color: accent }}>$</span>
                   <input
@@ -640,7 +588,7 @@ function StakeModal({
                     transition={{ duration: 0.35 }}
                   />
                 </div>
-                <p className="font-mono text-[9px] text-white/30 mt-2">of side {side} pool</p>
+                <p className="font-mono text-[9px] text-white/30 mt-2">of prediction side {side}</p>
               </div>
 
               <div
@@ -652,7 +600,7 @@ function StakeModal({
                   animate={{ scale: [1, 1.18, 1], opacity: [0.25, 0.65, 0.25] }}
                   transition={{ duration: 1.8, repeat: Infinity }}
                 />
-                <p className="font-mono text-[8px] text-white/30 uppercase tracking-widest mb-2">If {chosenName.split(" ")[0]} Wins</p>
+                <p className="font-mono text-[8px] text-white/30 uppercase tracking-widest mb-2">If {chosenName.split(" ")[0]} Wins The Debate</p>
                 <p className="font-display text-3xl font-extrabold text-green-400">+${potentialReturn}</p>
                 <p className="font-mono text-[9px] text-white/30">USDC · 95% payout</p>
               </div>
@@ -682,16 +630,16 @@ function StakeModal({
                 {phase === "signing" ? (
                   <>
                     <span className="w-4 h-4 border-2 border-current/30 border-t-current rounded-full animate-spin" />
-                    Locking In Bet…
+                    Locking Prediction...
                   </>
                 ) : (
-                  `Stake $${amount || "0"} on ${chosenName.split(" ")[0]} →`
+                  `Predict ${chosenName.split(" ")[0]} - $${amount || "0"}`
                 )}
               </span>
             </button>
 
             <p className="relative font-mono text-[9px] text-white/25 text-center uppercase tracking-widest mt-5">
-              USDC · Base · Instant on-chain settlement · No rewinds
+              You are predicting the debate winner, not trading the source market
             </p>
           </div>
         )}
@@ -784,7 +732,7 @@ function FeaturedFighterCard({
                   animate={{ scale: [1, 1.6, 1], opacity: [1, 0.3, 1] }}
                   transition={{ duration: 1.0, repeat: Infinity }}
                 />
-                <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-green-400">Betting Open</span>
+                <span className="font-mono text-[10px] font-bold uppercase tracking-widest text-green-400">Predictions Open</span>
                 <span className="font-mono text-[10px] text-white/30">·</span>
                 <motion.span
                   className="font-mono text-[10px] font-bold tabular-nums text-green-300"
@@ -892,19 +840,19 @@ function FeaturedFighterCard({
         {/* Pool stats */}
         <div className="grid grid-cols-3 gap-3 mb-5 py-3 border-y border-white/5">
           <div className="text-center">
-            <p className="font-mono text-[8px] uppercase tracking-widest text-white/30 mb-1">Side A Pool</p>
+            <p className="font-mono text-[8px] uppercase tracking-widest text-white/30 mb-1">A Predictions</p>
             <p className="font-display text-base font-extrabold" style={{ color: accentA }}>
               ${agent.poolA > 0 ? agent.poolA.toFixed(2) : "—"}
             </p>
           </div>
           <div className="text-center border-x border-white/5">
-            <p className="font-mono text-[8px] uppercase tracking-widest text-white/30 mb-1">Total Pot</p>
+            <p className="font-mono text-[8px] uppercase tracking-widest text-white/30 mb-1">Prediction Pot</p>
             <p className="font-display text-base font-extrabold text-white/70">
-              ${(agent.poolSize ?? 0) > 0 ? (agent.poolSize ?? 0).toFixed(2) : "No bets yet"}
+              ${(agent.poolSize ?? 0) > 0 ? (agent.poolSize ?? 0).toFixed(2) : "No predictions yet"}
             </p>
           </div>
           <div className="text-center">
-            <p className="font-mono text-[8px] uppercase tracking-widest text-white/30 mb-1">Side B Pool</p>
+            <p className="font-mono text-[8px] uppercase tracking-widest text-white/30 mb-1">B Predictions</p>
             <p className="font-display text-base font-extrabold" style={{ color: accentB }}>
               ${agent.poolB > 0 ? agent.poolB.toFixed(2) : "—"}
             </p>
@@ -932,13 +880,13 @@ function FeaturedFighterCard({
               className="flex-1 py-4 font-display text-sm font-extrabold uppercase tracking-widest relative overflow-hidden transition-all hover:brightness-110 active:scale-[0.97]"
               style={{ background: accentA, color: "#0A0A0F" }}>
               <motion.div className="absolute inset-0 bg-white/15" initial={{ x: "-100%" }} whileHover={{ x: "100%" }} transition={{ duration: 0.4 }} />
-              <span className="relative">⚡ Back {agent.name.split(" ")[0]}</span>
+              <span className="relative">Predict {agent.name.split(" ")[0]}</span>
             </button>
             <button onClick={() => onStake(agent, 2)}
               className="flex-1 py-4 font-display text-sm font-extrabold uppercase tracking-widest relative overflow-hidden transition-all hover:brightness-110 active:scale-[0.97]"
               style={{ background: accentB, color: "#0A0A0F" }}>
               <motion.div className="absolute inset-0 bg-white/15" initial={{ x: "-100%" }} whileHover={{ x: "100%" }} transition={{ duration: 0.4 }} />
-              <span className="relative">⚡ Back {agent.agentBName.split(" ")[0]}</span>
+              <span className="relative">Predict {agent.agentBName.split(" ")[0]}</span>
             </button>
           </div>
         )}
@@ -1501,10 +1449,7 @@ export default function GameLobbyPage() {
         </div>
       </header>
 
-      {/* ── LIVE TICKER ────────────────────────────────────────────────────────── */}
-      <div className="pt-[57px]">
-        <LiveTicker />
-      </div>
+    
 
       {/* ── 3D STAGING ARENA ───────────────────────────────────────────────────── */}
       <div ref={arenaRef} className="relative h-[100dvh] w-full overflow-hidden">

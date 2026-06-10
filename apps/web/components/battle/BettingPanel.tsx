@@ -16,7 +16,7 @@ interface BettingPanelProps {
 const STAKE_OPTIONS = [0.25, 0.5, 1, 2];
 
 /**
- * Betting panel — pick side, stake selector, odds display, potential win, lock in bet.
+ * Spectator prediction panel — pick side, stake selector, odds display, potential win.
  */
 export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) {
   const [selectedSide, setSelectedSide] = useState<1 | 2 | null>(null);
@@ -85,7 +85,7 @@ export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) 
   return (
     <div className="card space-y-4 sticky top-4">
       <h3 className="font-display text-lg font-bold text-clash-white">
-        Stake Arena
+        Spectator Predictions
       </h3>
 
       {/* Phase gate */}
@@ -93,7 +93,7 @@ export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) 
         <div className="bg-clash-black/50 rounded-xl p-4 text-center">
           <p className="font-body text-sm text-white/40">
             {phase === "RESEARCH" && "Agents are researching..."}
-            {phase === "LIVE" && "Battle in progress — betting closed"}
+            {phase === "LIVE" && "Battle in progress — predictions closed"}
             {phase === "VERDICT" && "Awaiting verdict..."}
             {phase === "SETTLED" && "Battle settled"}
           </p>
@@ -105,7 +105,7 @@ export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) 
           {/* Pick Side */}
           <div>
             <label className="font-body text-xs text-white/40 uppercase tracking-wider mb-2 block">
-              Pick your fighter
+              Predict the winner
             </label>
             <div className="grid grid-cols-2 gap-2">
               {/* Agent A */}
@@ -125,7 +125,7 @@ export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) 
                   {battle.agentA.name}
                 </div>
                 <div className="font-body text-xs text-white/40 mt-0.5">
-                  {(oddsA * 100).toFixed(0)}% backing
+                  {(oddsA * 100).toFixed(0)}% predicting
                 </div>
               </button>
 
@@ -146,7 +146,7 @@ export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) 
                   {battle.agentB.name}
                 </div>
                 <div className="font-body text-xs text-white/40 mt-0.5">
-                  {(oddsB * 100).toFixed(0)}% backing
+                  {(oddsB * 100).toFixed(0)}% predicting
                 </div>
               </button>
             </div>
@@ -220,10 +220,10 @@ export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) 
             {isSubmitting ? (
               <span className="flex items-center justify-center gap-2">
                 <span className="w-4 h-4 border-2 border-clash-black/30 border-t-clash-black rounded-full animate-spin" />
-                Locking in...
+                Locking prediction...
               </span>
             ) : (
-              `Lock In Stake${selectedSide ? ` — $${selectedStake}` : ""}`
+              `Lock Prediction${selectedSide ? ` - $${selectedStake}` : ""}`
             )}
           </button>
         </>
@@ -238,7 +238,7 @@ export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) 
         >
           <div className="text-4xl mb-2">🎯</div>
           <div className="font-display text-lg font-bold text-clash-gold">
-            Stake Locked In
+            Prediction Locked
           </div>
           <div className="font-body text-sm text-white/50 mt-1">
             ${selectedStake} on{" "}
@@ -259,7 +259,7 @@ export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) 
           </span>
         </div>
         <div className="flex justify-between">
-          <span className="font-body text-xs text-white/40">Bettors</span>
+          <span className="font-body text-xs text-white/40">Predictors</span>
           <span className="font-body text-xs text-white/60">
             {battle.bettorCount ?? 0}
           </span>

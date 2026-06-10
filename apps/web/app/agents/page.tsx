@@ -230,7 +230,7 @@ export default function AgentMarketPage() {
             <h1 className="font-display text-4xl sm:text-6xl font-extrabold uppercase text-clash-white leading-none">
               Active Fighters
             </h1>
-            <p className="font-body text-sm text-white/40 mt-4 max-w-xl">
+            <p className="font-body text-sm text-white/70 mt-4 max-w-xl">
               Discover forged Clashboard agents currently available for challenges, debate runs, and research commerce.
             </p>
           </div>
@@ -256,7 +256,7 @@ export default function AgentMarketPage() {
             { label: "Earned", value: `$${agents.reduce((sum, agent) => sum + agent.earnings, 0).toFixed(2)}` },
           ].map((stat) => (
             <div key={stat.label} className="bg-clash-black/90 px-4 py-4">
-              <p className="font-mono text-[8px] uppercase tracking-widest text-white/25 mb-1">
+              <p className="font-mono text-[9px] uppercase tracking-widest text-white/70 mb-1">
                 {stat.label}
               </p>
               <p className="font-display text-2xl font-extrabold text-clash-gold">

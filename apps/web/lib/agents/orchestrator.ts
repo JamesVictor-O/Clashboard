@@ -8,7 +8,6 @@ import {
 } from "@/lib/venice";
 import { getPersona } from "@/lib/agents/personas";
 import { decodePaymentResponseHeader } from "@x402/core/http";
-import { executeArenaActionWith1Shot } from "@/lib/payments/oneshot";
 import { validateAutonomousAction, remainingOperatingBudgetUSDC } from "@/lib/policy";
 import { researchStore } from "@/lib/research-store";
 import { inferResearchCategory, priceResearchArtifact, researchEndpointForCategory } from "@/lib/research-pricing";
@@ -783,10 +782,6 @@ export interface AutonomousBattleResult {
   logs: AutonomousActionLog[];
 }
 
-function defaultRecipient(): `0x${string}` {
-  return (process.env.PLATFORM_TREASURY_ADDRESS ??
-    "0x0000000000000000000000000000000000000000") as `0x${string}`;
-}
 
 function toAgentConfig(battle: Battle, agentId: string, options?: RunAutonomousBattleOptions): AgentConfig {
   const sideAgent =
@@ -945,18 +940,10 @@ export async function runAutonomousBattleAgent(
     return { agentId, battleId, entered: false, purchasedResearch, logs };
   }
 
-  const entryExecution = await executeArenaActionWith1Shot({
-    permissionContext: permission as PermissionMetadata,
-    amountUSDC: "0",
-    recipient: (ARENA_CONTRACT ?? defaultRecipient()) as `0x${string}`,
-    chainId: (permission as PermissionMetadata).chainId,
-    actionData: { battleId, action: "ENTER_BATTLE", agentId },
-  });
   log({
     action: "ENTER_BATTLE",
     reason: enterDecision.reason,
     amountUSDC: "0",
-    txHash: entryExecution.txHash,
   });
 
   const category = enterDecision.category ?? inferResearchCategory(battle.topic);

@@ -1,5 +1,6 @@
-import { CHAIN_ID } from "@/lib/contracts";
 "use client";
+
+import { CHAIN_ID } from "@/lib/contracts";
 
 interface TxLinkProps {
   hash: string;

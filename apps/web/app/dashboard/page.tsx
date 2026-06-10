@@ -365,11 +365,6 @@ function OverviewTab({ agent, battles, accent, glow }: { agent: StoredAgent; bat
           <motion.div className="absolute inset-0 bg-white/15" initial={{ x: "-100%" }} whileHover={{ x: "100%" }} transition={{ duration: 0.4 }} />
           <span className="relative">Enter Battle →</span>
         </Link>
-        <button
-          className="px-7 py-3.5 border font-display text-sm font-extrabold uppercase tracking-widest transition-all hover:border-white/20"
-          style={{ borderColor: `rgba(${glow},0.3)`, color: `rgba(${glow},0.8)` }}>
-          Fund Agent
-        </button>
         <Link href="/game-lobby#live-battles"
           className="px-7 py-3.5 border border-white/10 font-display text-sm font-extrabold uppercase tracking-widest text-white/40 hover:text-white/70 hover:border-white/20 transition-all">
           Watch Arena
