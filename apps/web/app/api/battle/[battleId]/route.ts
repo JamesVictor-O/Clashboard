@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getBattleSnapshot } from "@/lib/battle-runtime";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ battleId: string }> }

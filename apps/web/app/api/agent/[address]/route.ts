@@ -1,6 +1,9 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getAgentRecord } from "@/lib/chain";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 const agentConfigs = new Map<string, Record<string, unknown>>();
 
 export async function GET(

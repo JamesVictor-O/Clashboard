@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { processBattleStep } from "@/lib/battle-lifecycle";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 const WorkerSchema = z.object({
   battleId: z.string().min(1),
 });

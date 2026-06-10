@@ -2,6 +2,9 @@ import { NextRequest } from "next/server";
 import { z } from "zod";
 import { runBattleLifecycle } from "@/lib/battle-lifecycle";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 const StreamSchema = z.object({
   battleId: z.string().min(1),
   rounds: z.number().int().min(1).max(3).default(2),

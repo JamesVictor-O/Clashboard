@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { v4 as uuidv4 } from "uuid";
 import { keccak256, encodeAbiParameters, parseAbiParameters } from "viem";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 import {
   createBattleOnChain,
   commitRubricOnChain,

@@ -2,6 +2,9 @@ import { NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { settleBattleWithVenice } from "@/lib/battle-settlement";
 
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
+
 const VerdictSchema = z.object({
   battleId: z.string().min(1),
 });
