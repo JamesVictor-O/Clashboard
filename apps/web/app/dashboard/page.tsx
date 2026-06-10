@@ -20,6 +20,7 @@ import {
   type OpponentRule,
 } from "@/lib/autonomy/preferences";
 import type { ResearchCategory, RiskMode } from "@/lib/types";
+import { ARENA_CONTRACT, HOTTAKEROOMS_CONTRACT, REGISTRY_CONTRACT } from "@/lib/contracts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -57,7 +58,7 @@ function asAddress(value: string): `0x${string}` {
 async function fetchBattleHistory(walletAddress: string): Promise<BattleHistoryItem[]> {
   const { getPublicClient, ARENA_ABI: arenaAbi } = await import("@/lib/chain");
   const client = getPublicClient();
-  const arenaAddress = process.env.NEXT_PUBLIC_ARENA_CONTRACT as `0x${string}`;
+  const arenaAddress = ARENA_CONTRACT;
 
   const latestBlock = await client.getBlockNumber();
   const fromBlock = latestBlock > 10000n ? latestBlock - 10000n : 0n;
@@ -607,7 +608,7 @@ function AgentConfigTab({ agent, accent, glow }: { agent: StoredAgent; accent: s
       await registerResearchSessionForBackend(account);
 
       const executor = process.env.NEXT_PUBLIC_ONESHOT_EXECUTOR_ADDRESS as `0x${string}` | undefined;
-      const rooms = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}` | undefined;
+      const rooms: `0x${string}` | undefined = HOTTAKEROOMS_CONTRACT;
       if (executor && rooms) {
         const { HOTTAKEROOMS_ABI, getPublicClient } = await import("@/lib/chain");
         const already = await getPublicClient().readContract({
@@ -1153,7 +1154,7 @@ export default function DashboardPage() {
         // Read live on-chain state from AgentRegistry
         const { getPublicClient, REGISTRY_ABI } = await import("@/lib/chain");
         const client = getPublicClient();
-        const registryAddress = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT as `0x${string}`;
+        const registryAddress = REGISTRY_CONTRACT;
 
         const exists = await client.readContract({
           address: registryAddress,

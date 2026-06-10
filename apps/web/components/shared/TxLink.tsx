@@ -1,3 +1,4 @@
+import { CHAIN_ID } from "@/lib/contracts";
 "use client";
 
 interface TxLinkProps {
@@ -10,7 +11,7 @@ interface TxLinkProps {
  * short=true shows truncated hash inline.
  */
 export function TxLink({ hash, short = false }: TxLinkProps) {
-  const chainId = parseInt(process.env.NEXT_PUBLIC_CHAIN_ID ?? "84532");
+  const chainId = CHAIN_ID;
   const explorerBase =
     chainId === 8453
       ? "https://basescan.org"

@@ -7,6 +7,7 @@ import {
 import { battleStore, type StoredBattle } from "@/lib/battle-store";
 import { researchStore } from "@/lib/research-store";
 import type { Agent, Battle, BattlePhase, PersonalityType } from "@/lib/types";
+import { ARENA_CONTRACT, REGISTRY_CONTRACT } from "@/lib/contracts";
 
 const ZERO_ADDRESS = "0x0000000000000000000000000000000000000000";
 
@@ -69,7 +70,7 @@ export function deterministicRubricJson(battleId: string, topic: string) {
 
 async function getAgentDisplay(agentAddress: `0x${string}`, fallback: "A" | "B"): Promise<Agent> {
   const client = getPublicClient();
-  const registryAddress = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT as `0x${string}`;
+  const registryAddress = REGISTRY_CONTRACT;
 
   try {
     const [agent, rep] = (await client.readContract({
@@ -110,7 +111,7 @@ async function readOnChainBattle(battleId: `0x${string}`): Promise<{
   phaseNum: number;
 } | null> {
   const client = getPublicClient();
-  const arenaAddress = process.env.NEXT_PUBLIC_ARENA_CONTRACT as `0x${string}`;
+  const arenaAddress = ARENA_CONTRACT;
 
   try {
     const battleData = (await client.readContract({

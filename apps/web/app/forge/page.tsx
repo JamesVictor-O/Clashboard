@@ -9,6 +9,7 @@ import { ConnectWallet } from "@/components/shared/ConnectWallet";
 import { REGISTRY_ABI } from "@/lib/chain";
 import { writeUserContract, waitForTx } from "@/lib/wallet-contract";
 import type { PersonalityType, FightingStyle } from "@/lib/types";
+import { REGISTRY_CONTRACT } from "@/lib/contracts";
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -796,7 +797,7 @@ function StepDeploy({
     deployingRef.current = true;
     setPhase("deploying");
 
-    const registryAddress = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT as `0x${string}`;
+    const registryAddress = REGISTRY_CONTRACT;
 
     try {
       setDeployLog(["Preparing agent identity…"]);
@@ -1060,7 +1061,7 @@ export default function ForgePage() {
       try {
         const { getPublicClient, REGISTRY_ABI } = await import("@/lib/chain");
         const client = getPublicClient();
-        const registryAddress = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT as `0x${string}`;
+        const registryAddress = REGISTRY_CONTRACT;
         const exists = (await client.readContract({
           address: registryAddress,
           abi: REGISTRY_ABI,

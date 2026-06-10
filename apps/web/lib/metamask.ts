@@ -9,6 +9,7 @@ import {
 } from "@metamask/smart-accounts-kit";
 import { erc7715ProviderActions } from "@metamask/smart-accounts-kit/actions";
 import { generatePrivateKey, privateKeyToAccount } from "viem/accounts";
+import { CHAIN_ID, USDC_ADDRESS } from "@/lib/contracts";
 
 // ─── Provider Helpers ─────────────────────────────────────────────────────────
 
@@ -194,7 +195,7 @@ export function getOrCreateAgentSession(walletAddress: string): AgentSession {
   if (typeof window === "undefined") throw new Error("Not in browser");
 
   const storageKey = AGENT_SESSION_KEY(walletAddress);
-  const chainId = parseInt(process.env.NEXT_PUBLIC_CHAIN_ID ?? "84532");
+  const chainId = CHAIN_ID;
 
   // Try new format first
   const existing = localStorage.getItem(storageKey);
@@ -242,7 +243,7 @@ export function getAgentSession(walletAddress: string): AgentSession | null {
 // ─── Chain helpers ────────────────────────────────────────────────────────────
 
 function getActiveChain() {
-  const chainId = parseInt(process.env.NEXT_PUBLIC_CHAIN_ID ?? "84532");
+  const chainId = CHAIN_ID;
   return chainId === 8453 ? base : baseSepolia;
 }
 
@@ -405,8 +406,7 @@ export async function grantPermissions(
   // ── Step 2: resolve agent session ────────────────────────────────────────
   const session = getOrCreateAgentSession(params.account);
 
-  const usdcAddress = process.env.NEXT_PUBLIC_USDC_ADDRESS as `0x${string}`;
-  if (!usdcAddress) throw new Error("NEXT_PUBLIC_USDC_ADDRESS is not configured");
+  const usdcAddress = USDC_ADDRESS;
 
   const totalPeriodAmount = parseUnits(params.budgetUSDC.toString(), 6);
   // Budget split is informational — the session key holds the full grant and
@@ -497,7 +497,7 @@ export async function switchToBaseSepolia(): Promise<void> {
   const provider = getProvider();
   if (!provider) throw new Error("Wallet not connected");
 
-  const chainId = parseInt(process.env.NEXT_PUBLIC_CHAIN_ID ?? "84532");
+  const chainId = CHAIN_ID;
   const chainIdHex = `0x${chainId.toString(16)}`;
 
   try {

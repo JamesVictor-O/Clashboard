@@ -24,6 +24,7 @@ import { validatePolicyWithBalance, recordSpend, type ActionType } from "./polic
 import { getPermissionContext } from "@/lib/permissions";
 import { issueChallengeWith1Shot, acceptChallengeWith1Shot, placeBetWith1Shot } from "@/lib/oneshot/execute";
 import type { OneShotExecuteResult } from "@/lib/oneshot/client";
+import { ARENA_CONTRACT, HOTTAKEROOMS_CONTRACT } from "@/lib/contracts";
 
 // ─── Execution modes ──────────────────────────────────────────────────────────
 
@@ -119,7 +120,7 @@ export interface IssueChallengeExecuteParams {
 export async function executeIssueChallenge(
   params: IssueChallengeExecuteParams
 ): Promise<{ mode: ExecutionMode; result?: OneShotExecuteResult; policyError?: string }> {
-  const hotTakeRooms = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
+  const hotTakeRooms = HOTTAKEROOMS_CONTRACT;
   const mode = routeExecutionMode({
     agentOwner: params.agentOwner,
     actionType: "ISSUE_CHALLENGE",
@@ -210,7 +211,7 @@ export interface AcceptChallengeExecuteParams {
 export async function executeAcceptChallenge(
   params: AcceptChallengeExecuteParams
 ): Promise<{ mode: ExecutionMode; result?: OneShotExecuteResult; policyError?: string }> {
-  const hotTakeRooms = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
+  const hotTakeRooms = HOTTAKEROOMS_CONTRACT;
   const mode = routeExecutionMode({
     agentOwner: params.agentOwner,
     actionType: "ACCEPT_CHALLENGE",
@@ -300,7 +301,7 @@ export interface PlaceBetExecuteParams {
 export async function executePlaceBet(
   params: PlaceBetExecuteParams
 ): Promise<{ mode: ExecutionMode; result?: OneShotExecuteResult; policyError?: string }> {
-  const arena = process.env.NEXT_PUBLIC_ARENA_CONTRACT as `0x${string}`;
+  const arena = ARENA_CONTRACT;
   const mode = routeExecutionMode({
     agentOwner: params.agentOwner,
     actionType: "PLACE_BET",

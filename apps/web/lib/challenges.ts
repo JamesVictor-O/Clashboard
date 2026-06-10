@@ -1,5 +1,6 @@
 import { parseAbiItem } from "viem";
 import { blockRanges, getEventScanStartBlock, mapWithConcurrency } from "@/lib/event-scan";
+import { ARENA_CONTRACT, HOTTAKEROOMS_CONTRACT } from "@/lib/contracts";
 
 export interface Room {
   id: string;
@@ -40,8 +41,8 @@ export function inferChallengeCategory(topic: string): string {
 export async function fetchRooms(): Promise<Room[]> {
   const { getPublicClient, HOTTAKEROOMS_ABI: roomsAbi, ARENA_ABI: arenaAbi } = await import("@/lib/chain");
   const client = getPublicClient();
-  const roomsAddress = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
-  const arenaAddress = process.env.NEXT_PUBLIC_ARENA_CONTRACT as `0x${string}`;
+  const roomsAddress = HOTTAKEROOMS_CONTRACT;
+  const arenaAddress = ARENA_CONTRACT;
 
   const latestBlock = await client.getBlockNumber();
   const ranges = blockRanges(getEventScanStartBlock(latestBlock), latestBlock);

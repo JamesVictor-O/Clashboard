@@ -11,6 +11,7 @@ import { BudgetScreen } from "@/components/battle/BudgetScreen";
 import { HOTTAKEROOMS_ABI } from "@/lib/chain";
 import { inferChallengeCategory, type Room } from "@/lib/challenges";
 import { blockRanges, getEventScanStartBlock, mapWithConcurrency, withRpcRetry } from "@/lib/event-scan";
+import { ARENA_CONTRACT, HOTTAKEROOMS_CONTRACT, REGISTRY_CONTRACT } from "@/lib/contracts";
 
 
 
@@ -1057,8 +1058,8 @@ async function fetchRooms(): Promise<Room[]> {
 async function fetchRoomsUncached(): Promise<Room[]> {
   const { getPublicClient, HOTTAKEROOMS_ABI: roomsAbi, ARENA_ABI: arenaAbi } = await import("@/lib/chain");
   const client = getPublicClient();
-  const roomsAddress = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
-  const arenaAddress = process.env.NEXT_PUBLIC_ARENA_CONTRACT as `0x${string}`;
+  const roomsAddress = HOTTAKEROOMS_CONTRACT;
+  const arenaAddress = ARENA_CONTRACT;
 
   const latestBlock = await client.getBlockNumber();
   const ranges = blockRanges(getEventScanStartBlock(latestBlock), latestBlock);
@@ -1271,7 +1272,7 @@ function CancelChallengeButton({
       const { writeUserContract, waitForTx } = await import("@/lib/wallet-contract");
 
       const txHash = await writeUserContract({
-        address: process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`,
+        address: HOTTAKEROOMS_CONTRACT,
         abi,
         functionName: "cancelChallenge",
         args: [roomId as `0x${string}`],
@@ -1512,7 +1513,7 @@ export default function LobbyPage() {
         const { getPublicClient, REGISTRY_ABI } = await import("@/lib/chain");
         const client = getPublicClient();
         const exists = await client.readContract({
-          address: process.env.NEXT_PUBLIC_REGISTRY_CONTRACT as `0x${string}`,
+          address: REGISTRY_CONTRACT,
           abi: REGISTRY_ABI,
           functionName: "agentExists_",
           args: [addr as `0x${string}`],
@@ -1593,7 +1594,7 @@ export default function LobbyPage() {
         ])
       ) as `0x${string}`;
 
-      const roomsAddress = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
+      const roomsAddress = HOTTAKEROOMS_CONTRACT;
       const stakeWei = BigInt(Math.round(room.stake * 1_000_000));
 
       // Route: autonomous (1Shot) vs manual (EIP-5792 batch)
@@ -1677,7 +1678,7 @@ export default function LobbyPage() {
     if (!accounts[0]) throw new Error("No wallet connected");
     const account = accounts[0] as `0x${string}`;
 
-    const roomsAddress = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
+    const roomsAddress = HOTTAKEROOMS_CONTRACT;
     const stakeWei = BigInt(Math.round(stakeUsdc * 1_000_000));
     const onChainTopic = topic.slice(0, 280);
 

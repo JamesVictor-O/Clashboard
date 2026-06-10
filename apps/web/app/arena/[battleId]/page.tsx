@@ -8,6 +8,7 @@ import { ResearchFeed } from "@/components/battle/ResearchFeed";
 import { ResearchHandshake } from "@/components/battle/ResearchHandshake";
 import { useTTS, prefetchTTS } from "@/lib/use-tts";
 import type { Battle, BattlePhase, ResearchPurchase } from "@/lib/types";
+import { CHAIN_ID } from "@/lib/contracts";
 
 // ─── 3D Arena (no SSR) ───────────────────────────────────────────────────────
 
@@ -343,7 +344,7 @@ function WinnerOverlay({
   const loserPool  = Number(winner === "A" ? battle.poolB : battle.poolA) / 1_000_000;
 
   // Determine block explorer URL
-  const chainId   = process.env.NEXT_PUBLIC_CHAIN_ID ?? "84532";
+  const chainId   = String(CHAIN_ID);
   const explorerBase = chainId === "8453" ? "https://basescan.org" : "https://sepolia.basescan.org";
 
   return (

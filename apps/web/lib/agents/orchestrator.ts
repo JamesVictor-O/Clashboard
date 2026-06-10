@@ -28,6 +28,7 @@ import type {
   ResearchArtifact,
   RiskMode,
 } from "@/lib/types";
+import { ARENA_CONTRACT } from "@/lib/contracts";
 
 export interface BattleAgentConfig {
   agentConfig: AgentConfig;
@@ -930,8 +931,8 @@ export async function runAutonomousBattleAgent(
     action: "ENTER_BATTLE",
     amountUSDC: "0",
     spentUSDC: spent,
-    target: process.env.NEXT_PUBLIC_ARENA_CONTRACT,
-    allowedTargets: process.env.NEXT_PUBLIC_ARENA_CONTRACT ? [process.env.NEXT_PUBLIC_ARENA_CONTRACT] : undefined,
+    target: ARENA_CONTRACT,
+    allowedTargets: ARENA_CONTRACT ? [ARENA_CONTRACT] : undefined,
     battlesEnteredToday: options.battlesEnteredToday,
     dailyBattleLimit: options.dailyBattleLimit,
   });
@@ -947,7 +948,7 @@ export async function runAutonomousBattleAgent(
   const entryExecution = await executeArenaActionWith1Shot({
     permissionContext: permission as PermissionMetadata,
     amountUSDC: "0",
-    recipient: (process.env.NEXT_PUBLIC_ARENA_CONTRACT ?? defaultRecipient()) as `0x${string}`,
+    recipient: (ARENA_CONTRACT ?? defaultRecipient()) as `0x${string}`,
     chainId: (permission as PermissionMetadata).chainId,
     actionData: { battleId, action: "ENTER_BATTLE", agentId },
   });

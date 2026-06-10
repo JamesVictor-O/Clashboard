@@ -3,6 +3,7 @@
 import { useState, useEffect, useCallback } from "react";
 import { motion, AnimatePresence } from "framer-motion";
 import { connectWallet, getProvider, getSelectedWalletAddress, checkSmartAccountStatus } from "@/lib/metamask";
+import { CHAIN_ID } from "@/lib/contracts";
 
 /**
  * Wallet connect button that uses window.ethereum directly.
@@ -63,7 +64,7 @@ export function ConnectWallet() {
       setAddress(accounts[0]);
 
       // Switch to the target chain
-      const chainId = process.env.NEXT_PUBLIC_CHAIN_ID ?? "84532";
+      const chainId = String(CHAIN_ID);
       const hex = `0x${parseInt(chainId).toString(16)}`;
       try {
         await eth.request({ method: "wallet_switchEthereumChain", params: [{ chainId: hex }] });

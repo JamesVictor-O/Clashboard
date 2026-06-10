@@ -18,6 +18,7 @@
 import { encodeFunctionData, parseAbi, parseUnits, type Hex } from "viem";
 import { getOneShotConfig, requireOneShotConfig } from "./config";
 import { decodeDelegations } from "@metamask/smart-accounts-kit/utils";
+import { USDC_ADDRESS } from "@/lib/contracts";
 
 export const ONESHOT_PUBLIC_RELAYER_MAINNET = "https://relayer.1shotapi.com/relayers";
 export const ONESHOT_PUBLIC_RELAYER_TESTNET = "https://relayer.1shotapi.dev/relayers";
@@ -133,11 +134,7 @@ function relayerUrl(chainId: number): string {
   return chainId === 84532 || chainId === 11155111 ? ONESHOT_PUBLIC_RELAYER_TESTNET : ONESHOT_PUBLIC_RELAYER_MAINNET;
 }
 
-function usdcAddress(): `0x${string}` {
-  const address = process.env.NEXT_PUBLIC_USDC_ADDRESS;
-  if (!address) throw new Error("NEXT_PUBLIC_USDC_ADDRESS is not set");
-  return address as `0x${string}`;
-}
+function usdcAddress(): `0x${string}` { return USDC_ADDRESS; }
 
 export async function relayerRpc<T>(chainId: number, method: string, params: unknown): Promise<T> {
   const res = await fetch(relayerUrl(chainId), {

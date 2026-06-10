@@ -12,6 +12,7 @@ import {
 } from "viem";
 import { privateKeyToAccount } from "viem/accounts";
 import type { OnChainAgentRecord } from "@/lib/types";
+import { ARENA_CONTRACT, CHAIN_ID, HOTTAKEROOMS_CONTRACT, REGISTRY_CONTRACT, TREASURY_CONTRACT } from "@/lib/contracts";
 
 // ─── Chain Definitions ────────────────────────────────────────────────────────
 
@@ -161,7 +162,7 @@ export interface ArenaBattleSnapshot {
 // ─── Clients ──────────────────────────────────────────────────────────────────
 
 function getActiveChain(): Chain {
-  const chainId = parseInt(process.env.NEXT_PUBLIC_CHAIN_ID ?? "84532");
+  const chainId = CHAIN_ID;
   return chainId === 8453 ? baseMainnet : baseSepolia;
 }
 
@@ -196,29 +197,10 @@ function getPlatformAccount() {
   return privateKeyToAccount(privateKey as `0x${string}`);
 }
 
-function getContractAddress(): `0x${string}` {
-  const addr = process.env.NEXT_PUBLIC_ARENA_CONTRACT;
-  if (!addr) throw new Error("NEXT_PUBLIC_ARENA_CONTRACT is not set");
-  return addr as `0x${string}`;
-}
-
-function getRegistryAddress(): `0x${string}` {
-  const addr = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT;
-  if (!addr) throw new Error("NEXT_PUBLIC_REGISTRY_CONTRACT is not set");
-  return addr as `0x${string}`;
-}
-
-function getHotTakeRoomsAddress(): `0x${string}` {
-  const addr = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT;
-  if (!addr) throw new Error("NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT is not set");
-  return addr as `0x${string}`;
-}
-
-export function getTreasuryAddress(): `0x${string}` {
-  const addr = process.env.NEXT_PUBLIC_TREASURY_CONTRACT;
-  if (!addr) throw new Error("NEXT_PUBLIC_TREASURY_CONTRACT is not set");
-  return addr as `0x${string}`;
-}
+function getContractAddress(): `0x${string}` { return ARENA_CONTRACT; }
+function getRegistryAddress(): `0x${string}` { return REGISTRY_CONTRACT; }
+function getHotTakeRoomsAddress(): `0x${string}` { return HOTTAKEROOMS_CONTRACT; }
+export function getTreasuryAddress(): `0x${string}` { return TREASURY_CONTRACT; }
 
 // ─── Hash helpers ─────────────────────────────────────────────────────────────
 

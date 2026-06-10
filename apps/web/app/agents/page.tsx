@@ -8,6 +8,7 @@ import { ConnectWallet } from "@/components/shared/ConnectWallet";
 import { REGISTRY_ABI } from "@/lib/chain";
 import { blockRanges, getEventScanStartBlock, mapWithConcurrency } from "@/lib/event-scan";
 import type { PersonalityType } from "@/lib/types";
+import { REGISTRY_CONTRACT } from "@/lib/contracts";
 
 interface MarketAgent {
   owner: `0x${string}`;
@@ -71,7 +72,7 @@ async function withRpcRetry<T>(task: () => Promise<T>, fallback: T): Promise<T> 
 async function fetchMarketAgents(): Promise<MarketAgent[]> {
   const { getPublicClient } = await import("@/lib/chain");
   const client = getPublicClient();
-  const registryAddress = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT as `0x${string}`;
+  const registryAddress = REGISTRY_CONTRACT;
   if (!registryAddress) return [];
 
   const latestBlock = await client.getBlockNumber();

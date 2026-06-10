@@ -22,6 +22,7 @@
 
 import { encodeFunctionData, parseAbi, type Hex } from "viem";
 import type { OneShotCall } from "@/lib/oneshot/client";
+import { ARENA_CONTRACT, HOTTAKEROOMS_CONTRACT, USDC_ADDRESS } from "@/lib/contracts";
 
 // ─── ABI fragments ────────────────────────────────────────────────────────────
 
@@ -48,10 +49,7 @@ interface IssueChallengeForParams {
 export function buildIssueChallengeForCall(
   params: IssueChallengeForParams
 ): OneShotCall[] {
-  const hotTakeRooms = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
-  if (!hotTakeRooms) throw new Error("NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT not set");
-
-  const prefundCall = buildTokenTransferCall(hotTakeRooms, params.stakeWei);
+  const prefundCall = buildTokenTransferCall(HOTTAKEROOMS_CONTRACT, params.stakeWei);
   return [prefundCall];
 }
 
@@ -74,10 +72,7 @@ interface AcceptChallengeForParams {
 export function buildAcceptChallengeForCall(
   params: AcceptChallengeForParams
 ): OneShotCall[] {
-  const hotTakeRooms = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`;
-  if (!hotTakeRooms) throw new Error("NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT not set");
-
-  const prefundCall = buildTokenTransferCall(hotTakeRooms, params.stakeWei);
+  const prefundCall = buildTokenTransferCall(HOTTAKEROOMS_CONTRACT, params.stakeWei);
   return [prefundCall];
 }
 
@@ -94,10 +89,7 @@ interface PlaceBetParams {
  * The backend calls placeBetFor after 1Shot confirms this transfer.
  */
 export function buildPlaceBetCall(params: PlaceBetParams): OneShotCall[] {
-  const arenaAddress = process.env.NEXT_PUBLIC_ARENA_CONTRACT as `0x${string}`;
-  if (!arenaAddress) throw new Error("NEXT_PUBLIC_ARENA_CONTRACT not set");
-
-  const prefundCall = buildTokenTransferCall(arenaAddress, params.amountWei);
+  const prefundCall = buildTokenTransferCall(ARENA_CONTRACT, params.amountWei);
   return [prefundCall];
 }
 
@@ -109,11 +101,8 @@ export function buildTokenTransferCall(
   to: `0x${string}`,
   amountWei: bigint
 ): OneShotCall {
-  const usdcAddress = process.env.NEXT_PUBLIC_USDC_ADDRESS as `0x${string}`;
-  if (!usdcAddress) throw new Error("NEXT_PUBLIC_USDC_ADDRESS not set");
-
   return {
-    to: usdcAddress,
+    to: USDC_ADDRESS,
     data: encodeFunctionData({
       abi: ERC20_ABI_FRAGMENT,
       functionName: "transfer",

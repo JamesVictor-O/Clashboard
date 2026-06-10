@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from "react";
 import { motion } from "framer-motion";
 import type { Room } from "@/lib/challenges";
 import { fetchRooms } from "@/lib/challenges";
+import { HOTTAKEROOMS_CONTRACT } from "@/lib/contracts";
 
 function sameAddress(a?: string | null, b?: string | null) {
   return !!a && !!b && a.toLowerCase() === b.toLowerCase();
@@ -36,7 +37,7 @@ function CancelChallengeButton({
       const { writeUserContract, waitForTx } = await import("@/lib/wallet-contract");
 
       const txHash = await writeUserContract({
-        address: process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT as `0x${string}`,
+        address: HOTTAKEROOMS_CONTRACT,
         abi,
         functionName: "cancelChallenge",
         args: [roomId as `0x${string}`],

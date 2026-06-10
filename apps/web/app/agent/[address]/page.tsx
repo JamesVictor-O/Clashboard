@@ -13,6 +13,7 @@ import { AgentOpenChallenges } from "@/components/challenges/AgentOpenChallenges
 import { permissionExpiryLabel, getPermissionContext, storePermissionContext } from "@/lib/permissions";
 import { blockRanges, getEventScanStartBlock, mapWithConcurrency } from "@/lib/event-scan";
 import type { AgentConfig, Battle, PersonalityType, FightingStyle } from "@/lib/types";
+import { ARENA_CONTRACT, REGISTRY_CONTRACT } from "@/lib/contracts";
 
 const PERSONA_COLOR: Record<string, string> = {
   Historian: "#C9A227",
@@ -96,7 +97,7 @@ async function readAgentProfile(address: `0x${string}`): Promise<{
 }> {
   const { getPublicClient, REGISTRY_ABI } = await import("@/lib/chain");
   const client = getPublicClient();
-  const registryAddress = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT as `0x${string}`;
+  const registryAddress = REGISTRY_CONTRACT;
 
   const [agentOnChain, reputation] = (await client.readContract({
     address: registryAddress,
@@ -143,7 +144,7 @@ async function readAgentDisplay(address: `0x${string}`, fallback: "A" | "B") {
   try {
     const { getPublicClient, REGISTRY_ABI } = await import("@/lib/chain");
     const client = getPublicClient();
-    const registryAddress = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT as `0x${string}`;
+    const registryAddress = REGISTRY_CONTRACT;
     const [agentOnChain, reputation] = (await client.readContract({
       address: registryAddress,
       abi: REGISTRY_ABI,
@@ -180,7 +181,7 @@ async function readAgentDisplay(address: `0x${string}`, fallback: "A" | "B") {
 async function fetchRecentBattles(address: `0x${string}`): Promise<Battle[]> {
   const { getPublicClient, ARENA_ABI } = await import("@/lib/chain");
   const client = getPublicClient();
-  const arenaAddress = process.env.NEXT_PUBLIC_ARENA_CONTRACT as `0x${string}`;
+  const arenaAddress = ARENA_CONTRACT;
   if (!arenaAddress) return [];
 
   const latestBlock = await client.getBlockNumber();

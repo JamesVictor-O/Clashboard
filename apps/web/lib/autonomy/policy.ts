@@ -22,6 +22,7 @@
 import { getPermissionContext } from "@/lib/permissions";
 import { getPublicClient } from "@/lib/chain";
 import { parseAbi } from "viem";
+import { ARENA_CONTRACT, HOTTAKEROOMS_CONTRACT, USDC_ADDRESS } from "@/lib/contracts";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -55,8 +56,8 @@ const ALLOWED_ACTIONS: Set<ActionType> = new Set([
 
 function getAllowedContracts(): Set<string> {
   const contracts = new Set<string>();
-  const arena = process.env.NEXT_PUBLIC_ARENA_CONTRACT;
-  const rooms = process.env.NEXT_PUBLIC_HOTTAKEROOMS_CONTRACT;
+  const arena = ARENA_CONTRACT;
+  const rooms = HOTTAKEROOMS_CONTRACT;
   if (arena) contracts.add(arena.toLowerCase());
   if (rooms) contracts.add(rooms.toLowerCase());
   return contracts;
@@ -165,7 +166,7 @@ export async function validatePolicyWithBalance(
   const base = validatePolicy(params);
   if (!base.ok) return base;
 
-  const usdcAddress = process.env.NEXT_PUBLIC_USDC_ADDRESS as `0x${string}`;
+  const usdcAddress = USDC_ADDRESS;
   if (!usdcAddress) return base; // env not set — skip balance check in CI/test
 
   try {

@@ -9,6 +9,7 @@ import { ConnectWallet } from "@/components/shared/ConnectWallet";
 import { getConnectedWalletAccount, placeUserArenaStake } from "@/lib/wallet-contract";
 import { executePlaceBet } from "@/lib/autonomy/executor";
 import { blockRanges, getEventScanStartBlock, mapWithConcurrency, withRpcRetry } from "@/lib/event-scan";
+import { ARENA_CONTRACT, REGISTRY_CONTRACT } from "@/lib/contracts";
 
 const StagingArena3D = dynamic(() => import("@/components/lobby/StagingArena3D"), {
   ssr: false,
@@ -1170,8 +1171,8 @@ async function fetchLiveBattles(): Promise<StagedAgent[]> {
 async function fetchLiveBattlesUncached(): Promise<StagedAgent[]> {
   const { getPublicClient, ARENA_ABI: arenaAbi, REGISTRY_ABI: registryAbi } = await import("@/lib/chain");
   const client = getPublicClient();
-  const arenaAddress = process.env.NEXT_PUBLIC_ARENA_CONTRACT as `0x${string}`;
-  const registryAddress = process.env.NEXT_PUBLIC_REGISTRY_CONTRACT as `0x${string}`;
+  const arenaAddress = ARENA_CONTRACT;
+  const registryAddress = REGISTRY_CONTRACT;
 
   const battleCreatedEvent = parseAbiItem(
     "event BattleCreated(bytes32 indexed battleId, address agentA, address agentB, uint256 entryFee, uint256 bettingDeadline, bytes32 topicHash, string topic)"

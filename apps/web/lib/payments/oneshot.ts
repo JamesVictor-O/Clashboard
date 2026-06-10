@@ -8,6 +8,7 @@
  */
 
 import { getOneShotConfig, requireOneShotConfig } from "@/lib/oneshot/config";
+import { CHAIN_ID, USDC_ADDRESS } from "@/lib/contracts";
 
 const MOCK_TX_HASH = "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
 
@@ -88,7 +89,7 @@ export async function executeArenaActionWith1Shot(
     permissionContext: params.permissionContext,
     recipient: params.recipient,
     amountUSDC: params.amountUSDC,
-    token: process.env.NEXT_PUBLIC_USDC_ADDRESS,
+    token: USDC_ADDRESS,
     chainId: params.chainId,
     actionData: params.actionData,
   });
@@ -112,8 +113,8 @@ export async function payVia1Shot(params: PayVia1ShotParams): Promise<string> {
     body: JSON.stringify({
       to: recipient,
       amount: amount.toString(),
-      token: process.env.NEXT_PUBLIC_USDC_ADDRESS,
-      chain: process.env.NEXT_PUBLIC_CHAIN_ID ?? "44787",
+      token: USDC_ADDRESS,
+      chain: String(CHAIN_ID),
       memo: `Clashboard payout ${battleId}`,
       metadata: { battleId, reason },
     }),
@@ -148,8 +149,8 @@ export async function redeemDelegation(
     body: JSON.stringify({
       delegator: bettorAddress,
       amount: amount.toString(),
-      token: process.env.NEXT_PUBLIC_USDC_ADDRESS,
-      chain: process.env.NEXT_PUBLIC_CHAIN_ID ?? "44787",
+      token: USDC_ADDRESS,
+      chain: String(CHAIN_ID),
       delegationData,
       memo: `Clashboard delegated arena stake ${battleId}`,
       metadata: { battleId },

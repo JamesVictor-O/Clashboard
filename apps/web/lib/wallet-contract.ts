@@ -4,6 +4,7 @@ import { encodeFunctionData, parseAbi, type Abi } from "viem";
 import { getPublicClient } from "@/lib/chain";
 import { getProvider, switchToBaseSepolia } from "@/lib/metamask";
 import { getPermissionContext } from "@/lib/permissions";
+import { ARENA_CONTRACT, CHAIN_ID, USDC_ADDRESS } from "@/lib/contracts";
 
 // ─── Generic user-signed contract call ───────────────────────────────────────
 
@@ -30,7 +31,7 @@ export async function writeUserContract(params: {
     functionName: params.functionName,
     args: params.args ?? [],
   });
-  const chainId = parseInt(process.env.NEXT_PUBLIC_CHAIN_ID ?? "84532");
+  const chainId = CHAIN_ID;
 
   const tx: Record<string, unknown> = {
     from: params.account,
@@ -255,17 +256,8 @@ const ARENA_STAKE_ABI = parseAbi([
   "function placeBet(bytes32 battleId, uint8 side, uint256 amount) external",
 ]);
 
-function usdcAddress(): `0x${string}` {
-  const addr = process.env.NEXT_PUBLIC_USDC_ADDRESS;
-  if (!addr) throw new Error("NEXT_PUBLIC_USDC_ADDRESS is not set");
-  return addr as `0x${string}`;
-}
-
-function arenaAddress(): `0x${string}` {
-  const addr = process.env.NEXT_PUBLIC_ARENA_CONTRACT;
-  if (!addr) throw new Error("NEXT_PUBLIC_ARENA_CONTRACT is not set");
-  return addr as `0x${string}`;
-}
+function usdcAddress(): `0x${string}` { return USDC_ADDRESS; }
+function arenaAddress(): `0x${string}` { return ARENA_CONTRACT; }
 
 function toUSDCUnits(amountUSDC: number): bigint {
   if (!Number.isFinite(amountUSDC) || amountUSDC <= 0) {
