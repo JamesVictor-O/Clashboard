@@ -366,6 +366,7 @@ Clashboard/
 | **A2A Coordination** | Agents buy and resell research artifacts via x402; USDC flows directly from buying agent to selling agent's wallet address | [`buy/route.ts:31`](apps/web/app/api/agent-research/buy/route.ts#L31) · [`research-store.ts`](apps/web/lib/research-store.ts) |
 | **Venice AI** | Three separate Venice roles: debate argument generation, rebuttal generation, and judicial scoring — all `llama-3.3-70b` by default | [`venice.ts:332`](apps/web/lib/venice.ts#L332) · [`judge.ts:50`](apps/web/lib/agents/judge.ts#L50) |
 | **1Shot Relayer** | Arena actions executed via 1Shot permissionless JSON-RPC (`relayer_send7710Transaction`) after session-key ERC-7710 re-delegation. **Current status: testnet only.** EIP-7702 upgrade is checked at grant time inside [`grantPermissions()`](apps/web/lib/metamask.ts#L350) but is set by MetaMask Flask's grant flow, not routed through a separate 1Shot upgrade tx. Full 7702-through-1Shot is the planned next step. | [`execute1Shot()`](apps/web/lib/oneshot/client.ts#L320) · [`redelegateContextToRelayer()`](apps/web/lib/oneshot/client.ts#L274) |
+| **Best Use of Social Media** | Build thread documenting the ERC-7715 single-grant pattern, x402 research economy, and live battle demos as the app was built. | [@codeX_james on X](https://x.com/codeX_james/status/2064032185972097257) |
 
 ---
 
@@ -399,6 +400,56 @@ split within the total cap.
 bounded by the on-chain `periodAmount` cap — it cannot spend more than the user
 granted. However, an adversarial hot take could influence `decideAgentAction()` within
 that cap. The on-chain enforcer is the hard floor; the decision layer is soft.
+
+---
+
+## Social Media
+
+🐦 [@codeX_james — build thread on X](https://x.com/codeX_james/status/2064032185972097257)
+
+---
+
+## Developer Feedback
+
+We published detailed feedback on the MetaMask Smart Accounts Kit, the 1Shot
+relayer, and the ERC-7715/7710 + x402 integration, based on building Clashboard
+end-to-end on the full stack.
+
+📄 **Full feedback (HackMD):** https://hackmd.io/@victorjames408/SyKr2UKxMx
+
+Topics covered, in order of impact:
+
+1. **Transfer-only permission constraint** — `erc20-token-periodic` silently restricts
+   agents to raw token transfers, which pushes builders toward custodial server-wallet
+   patterns to call contract functions. Arbitrary calldata support (or a clearly
+   documented contract-call enforcer) would remove this forcing function.
+
+2. **Single-grant / multi-delegate spending under one shared cap** — the
+   session-key intermediary pattern we use (one `wallet_grantPermissions` grant →
+   two `redelegatePermissionContext` paths) works but is non-obvious. First-party
+   support for multi-executor grants in one dialog would simplify multi-path
+   agent architectures.
+
+3. **EIP-7702 upgrade status is invisible before the grant** — builders cannot
+   verify whether an EOA is already a smart account without calling `isDeployed()`,
+   which requires Smart Accounts Kit wiring. A proposed read-only RPC
+   (e.g. `wallet_getSmartAccountStatus`) would let any dapp surface this
+   before attempting a grant.
+
+4. **1Shot relayer-target requirement needs one prominent doc line** — the
+   `relayer_getCapabilities` → `targetAddress` handshake is the correct way to
+   discover the address to re-delegate to, but it is not prominent in the current
+   docs. A single callout in the "send your first 7710 tx" guide would prevent
+   hours of debugging.
+
+5. **End-to-end relayer example** — the current docs scatter the
+   getCapabilities → getFeeData → send7710Transaction → getStatus flow across
+   multiple pages. A single runnable example would replace most of the cross-page
+   guesswork.
+
+A condensed version of points 2–4 is in the
+[Technical Note](#technical-note-to-the-metamask-team) section below, drawn
+directly from our implementation.
 
 ---
 
