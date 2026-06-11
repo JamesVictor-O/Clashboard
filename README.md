@@ -1,563 +1,424 @@
 # Clashboard
 
-AI debate arena where autonomous fighters argue hot takes, buy research, submit argument hashes on-chain, and settle arena stakes through smart contracts — with zero repeat wallet popups.
+**An AI debate arena where autonomous agents spend real money from the user's wallet,
+bounded by an ERC-7715 permission and executed via ERC-7710.**
 
-Built for the **MetaMask Smart Accounts Kit × 1Shot API Cookoff**.
+> An AI debate game where agents become autonomous economic actors bounded by a
+> wallet-enforced permission — MetaMask Advanced Permissions in action.
 
-> **Live demo:** the `main` branch is deployed at [clashboard.vercel.app](https://clashboard.vercel.app)
-
----
-
-## What It Does
-
-A user forges an AI fighter once, grants **one bounded operating budget** through MetaMask ERC-7715, and then the fighter acts autonomously — no further wallet popups — to:
-
-- create and accept hot-take challenges on-chain
-- place arena stakes on battles
-- purchase x402-gated research data to sharpen arguments
-- buy research artifacts from other agents (A2A marketplace)
-- debate opponents through Venice AI across multiple rounds
-- submit argument hashes on-chain and settle USDC payouts
+Built for the **MetaMask Smart Accounts Kit × 1Shot API × Venice AI Cook Off**.
+Running on **Base Sepolia (testnet)**.
 
 ---
 
-## Hackathon Technology Stack
+## Proof It Works
 
-| Technology | What We Built | Entry Point |
+The contracts are live on Base Sepolia. Every arena battle writes on-chain state:
+rubric commitments, argument content hashes, and final settlement.
+
+| Contract | Address | BaseScan |
 |---|---|---|
-| **ERC-7715** (MetaMask Smart Accounts Kit) | One-time permission grant that delegates a daily USDC budget to the agent's session key; no per-tx popups ever | [`lib/metamask.ts`](apps/web/lib/metamask.ts) |
-| **EIP-7702** (Smart Account Upgrade) | EOA upgraded to MetaMask Stateless7702 smart account during the permission grant; status checked on every connect | [`lib/metamask.ts#L276`](apps/web/lib/metamask.ts#L276) |
-| **ERC-7710** (Re-delegation) | Session key sub-delegates to the 1Shot relayer at arena execution time, and to the x402 facilitator at research time — all without additional popups | [`lib/oneshot/client.ts#L259`](apps/web/lib/oneshot/client.ts#L259), [`lib/x402/buyer.ts#L41`](apps/web/lib/x402/buyer.ts#L41) |
-| **1Shot Permissionless Relayer** | Redeems ERC-7710 delegations on-chain to execute challenge/accept/stake contract calls — all gasless for the user | [`lib/oneshot/client.ts`](apps/web/lib/oneshot/client.ts), [`lib/oneshot/execute.ts`](apps/web/lib/oneshot/execute.ts) |
-| **x402** | Research API endpoints gated by x402 payment requirements; agents pay per-call with their delegated session key, no approval needed | [`lib/x402/next.ts`](apps/web/lib/x402/next.ts), [`lib/x402/buyer.ts`](apps/web/lib/x402/buyer.ts) |
-| **Venice AI** | Generates debate arguments, rebuttals, and judges battles; also drives research data generation behind x402 endpoints | [`lib/venice.ts`](apps/web/lib/venice.ts), [`lib/agents/orchestrator.ts`](apps/web/lib/agents/orchestrator.ts) |
+| ClashboardArena | `0xb657eC98149a202277588819c4302d7Fe596F7ac` | [view](https://sepolia.basescan.org/address/0xb657eC98149a202277588819c4302d7Fe596F7ac) |
+| HotTakeRooms | `0x888B974a4BdcfAF7586B13C511e26d8dBdaFbF70` | [view](https://sepolia.basescan.org/address/0x888B974a4BdcfAF7586B13C511e26d8dBdaFbF70) |
+| AgentRegistry | `0xF96197F51E374fC6Ad361B30C5232AD4ed14c8fF` | [view](https://sepolia.basescan.org/address/0xF96197F51E374fC6Ad361B30C5232AD4ed14c8fF) |
+| AgentTreasury | `0x2E48B58ADd4e995dD7F8EB3dDf3ccb9031c07e48` | [view](https://sepolia.basescan.org/address/0x2E48B58ADd4e995dD7F8EB3dDf3ccb9031c07e48) |
+| USDC (Base Sepolia) | `0x036CbD53842c5426634e7929541eC2318f3dCF7e` | [view](https://sepolia.basescan.org/address/0x036CbD53842c5426634e7929541eC2318f3dCF7e) |
+
+All addresses are committed to the repo at
+[`apps/web/lib/contracts.ts`](apps/web/lib/contracts.ts) — no env-var drift.
+
+To verify a live transaction: open the ClashboardArena contract on BaseScan, click
+the **Events** tab, and look for `BattleSettled` or `BetPlaced` events. Each
+`BattleSettled` event proves a 1Shot-relayed execution moved USDC from the user's
+smart account without the user signing the settlement tx.
+
+---
+
+## How We Use Each Technology
+
+### ERC-7715 — Advanced Permissions (one grant, two rails)
+
+The user sees **one** MetaMask confirmation dialog for the entire session. We request
+a single `erc20-token-periodic` permission scoped to an ephemeral session key
+(`getOrCreateAgentSession` at
+[`metamask.ts:194`](apps/web/lib/metamask.ts#L194)), not directly to any executor.
+The permission caps spending at the user's chosen USDC/day on a 24-hour rolling
+window (`periodDuration: 86400`). Both the arena and research rails share this one
+on-chain grant; the 70/30 split is metadata only — there is a single
+`periodAmount` enforcer on-chain.
+
+See [`grantPermissions()`](apps/web/lib/metamask.ts#L350) —
+[`metamask.ts:350`](apps/web/lib/metamask.ts#L350). The actual
+`wallet_grantPermissions` call is at
+[`metamask.ts:428`](apps/web/lib/metamask.ts#L428).
+
+**Grant entry points in the UI:**
+- Forge (new agent deploy): [`forge/page.tsx:837`](apps/web/app/forge/page.tsx#L837) — called immediately after the on-chain `forge()` tx confirms.
+- Lobby (returning user): [`BudgetScreen.tsx:33`](apps/web/components/battle/BudgetScreen.tsx#L33) — triggered when the user hits Accept/Create without a live permission.
+
+---
+
+### ERC-7710 Re-delegation → 1Shot Public Relayer (arena execution)
+
+When an agent takes an arena action (enter battle, place bet), the session key
+**re-delegates** its permission context down to the 1Shot relayer's `targetAddress`
+via `redelegatePermissionContext`. This re-delegation is a pure local signing
+operation — no wallet popup. The resulting narrow context is what the relayer
+actually redeems on-chain.
+
+Flow:
+1. [`redelegateContextToRelayer()`](apps/web/lib/oneshot/client.ts#L274) —
+   session wallet calls `erc7710WalletActions().redelegatePermissionContext({ to: relayerTarget })`
+2. The re-delegated context + the fee bundle are posted to the permissionless relayer
+   via [`relayer_send7710Transaction`](apps/web/lib/oneshot/client.ts#L414) inside
+   [`execute1Shot()`](apps/web/lib/oneshot/client.ts#L320)
+3. [`pollStatus()`](apps/web/lib/oneshot/client.ts#L248) polls
+   `relayer_getStatus` until the tx confirms or fails
+
+The relayer client also calls
+[`relayer_getCapabilities`](apps/web/lib/oneshot/client.ts#L226) and
+[`relayer_getFeeData`](apps/web/lib/oneshot/client.ts#L240) to discover the
+`targetAddress` and build the on-chain fee payment call.
+
+Full client: [`apps/web/lib/oneshot/client.ts`](apps/web/lib/oneshot/client.ts)
+Config: [`apps/web/lib/oneshot/config.ts`](apps/web/lib/oneshot/config.ts) — fields: `relayerUrl`, `executorAddress`, `mockEnabled`. No API key required; this is the permissionless JSON-RPC relayer.
+
+---
+
+### ERC-7710 Re-delegation → x402 Facilitator (research rail)
+
+Before making an x402-gated research request, the session key re-delegates to the
+x402 facilitator address advertised by the endpoint's
+`WWW-Authenticate: x402` header (or `FACILITATOR_SIGNER_ADDRESS` as fallback).
+This re-delegation happens inside the `delegationProvider` callback that
+`@metamask/x402` calls automatically before each payment.
+
+See [`createResearchBuyerFromSession()`](apps/web/lib/x402/buyer.ts#L41) and the
+`redelegatePermissionContext` call at
+[`buyer.ts:54`](apps/web/lib/x402/buyer.ts#L54). The `@metamask/x402`
+`x402Erc7710Client` wraps this provider and negotiates the payment handshake
+([`buyer.ts:25`](apps/web/lib/x402/buyer.ts#L25)).
+
+**Current status:** The delegation provider is fully wired. Whether `X402_ENFORCE`
+is flipped on in a given deployment controls whether the server-side middleware
+actually requires payment or passes through. For a live demo, set `X402_ENFORCE=true`.
+
+---
+
+### x402 Research Economy
+
+Three research data routes are gated behind `withX402Payment()`:
+
+| Endpoint | Source |
+|---|---|
+| `GET /api/research/sports` | [`research/sports/route.ts:29`](apps/web/app/api/research/sports/route.ts#L29) |
+| `GET /api/research/news` | [`research/news/route.ts:30`](apps/web/app/api/research/news/route.ts#L30) |
+| `GET /api/research/history` | [`research/history/route.ts:30`](apps/web/app/api/research/history/route.ts#L30) |
+
+Each endpoint prices the artifact via
+[`priceResearchArtifact()`](apps/web/lib/research-pricing.ts) and sets `payTo` to
+the platform data wallet.
+
+**Agent-to-agent resale (A2A marketplace):** After an agent buys research, it can
+list the artifact for resale. A rival agent can purchase it via
+`POST /api/agent-research/buy`
+([`buy/route.ts:31`](apps/web/app/api/agent-research/buy/route.ts#L31)), which uses
+the same `withX402Payment()` wrapper but sets `payTo` to the
+**original selling agent's wallet address** — USDC flows directly from buyer to
+seller agent, on-chain, via the 1Shot relayer.
+
+Artifact inventory: [`apps/web/lib/research-store.ts`](apps/web/lib/research-store.ts)
+(in-memory for this hackathon — see Known Limitations).
+
+---
+
+### Venice AI — Three Distinct Roles
+
+Venice is called through an OpenAI-compatible client at
+[`apps/web/lib/venice.ts`](apps/web/lib/venice.ts). Default model:
+`llama-3.3-70b` ([`venice.ts:12`](apps/web/lib/venice.ts#L12)).
+Each role can be overridden independently via env var.
+
+| Role | Function | Model env var | Source |
+|---|---|---|---|
+| Debate arguments | [`generateDebateArgument()`](apps/web/lib/venice.ts#L332) | `VENICE_DEBATE_MODEL` | `venice.ts:332` |
+| Rebuttals | [`generateRebuttal()`](apps/web/lib/venice.ts#L380) | `VENICE_DEBATE_MODEL` | `venice.ts:380` |
+| Judge / scorer | [`runJudge()`](apps/web/lib/agents/judge.ts#L50) | `VENICE_JUDGE_MODEL` | `judge.ts:50` |
+| Autonomous decision | [`decideAgentAction()`](apps/web/lib/venice.ts#L258) | `VENICE_DECISION_MODEL` | `venice.ts:258` |
+
+`decideAgentAction()` is the autonomous decision engine: given a challenge and the
+agent's on-chain reputation, Venice decides whether to ENTER, SKIP, or RESEARCH
+before committing stake. The result drives the agent autonomy loop in
+[`apps/web/lib/agents/orchestrator.ts`](apps/web/lib/agents/orchestrator.ts).
+
+---
+
+### Smart Contracts
+
+Source: [`packages/contracts/src/`](packages/contracts/src/)
+
+| Contract | One-line purpose | Deployed (Base Sepolia) |
+|---|---|---|
+| [`ClashboardArena.sol`](packages/contracts/src/ClashboardArena.sol) | Battle lifecycle, betting pool, rubric commitment, settlement, USDC payout | `0xb657eC98149a202277588819c4302d7Fe596F7ac` |
+| [`HotTakeRooms.sol`](packages/contracts/src/HotTakeRooms.sol) | Challenger posts a hot take + stake; rival accepts; forwards to Arena | `0x888B974a4BdcfAF7586B13C511e26d8dBdaFbF70` |
+| [`AgentRegistry.sol`](packages/contracts/src/AgentRegistry.sol) | On-chain agent identity (name, metadata hash, win/loss reputation) | `0xF96197F51E374fC6Ad361B30C5232AD4ed14c8fF` |
+| [`AgentTreasury.sol`](packages/contracts/src/AgentTreasury.sol) | Per-agent USDC balance; only Arena/HotTakeRooms can authorise spends | `0x2E48B58ADd4e995dD7F8EB3dDf3ccb9031c07e48` |
+
+`HotTakeRooms` holds the `authorizeExecutor` registry — the 1Shot relayer's address
+must be whitelisted here before it can redeem delegations on behalf of agents
+([`HotTakeRooms.sol:159`](packages/contracts/src/HotTakeRooms.sol#L159)).
 
 ---
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│  User (Browser)                                                  │
-│                                                                  │
-│  1. Forge fighter                                                │
-│  2. Set daily USDC budget ($1–$50)                               │
-│  3. ONE MetaMask popup                                           │
-│     wallet_grantPermissions → ERC-7715 grant to session key     │
-│     EIP-7702 auth set on-chain (EOA → Smart Account)            │
-└──────────────────────────────┬──────────────────────────────────┘
-                               │ grant stored in localStorage
-                               │ session key stored in localStorage
-                               ▼
-┌─────────────────────────────────────────────────────────────────┐
-│  Arena Actions (challenge / accept / stake)                      │
-│                                                                  │
-│  executor.ts → policy check → calldata builder                  │
-│       │                                                          │
-│       │  ERC-7710 re-delegation (browser, no popup)             │
-│       │  session key → 1Shot relayer targetAddress              │
-│       ▼                                                          │
-│  1Shot Permissionless Relayer                                    │
-│  relayer_getFeeData → relayer_send7710Transaction               │
-│       │                                                          │
-│       ▼                                                          │
-│  HotTakeRooms.issueChallengeFor()                                │
-│  HotTakeRooms.acceptChallengeFor()                               │
-│  ClashboardArena.placeBetFor()                                   │
-└─────────────────────────────────────────────────────────────────┘
-
-┌─────────────────────────────────────────────────────────────────┐
-│  Battle Runtime (server-side, triggered after challenge accept)  │
-│                                                                  │
-│  orchestrator.ts                                                 │
-│       │                                                          │
-│       │ 1. Decide research category (Venice AI)                  │
-│       │ 2. Search A2A artifact store                             │
-│       │ 3. If no artifact → x402 research purchase              │
-│       │    session key → ERC-7710 re-delegation                  │
-│       │    session key → x402 facilitator address               │
-│       │    x402 endpoint returns Venice-generated facts         │
-│       │ 4. Generate argument (Venice AI + research context)     │
-│       │ 5. Generate rebuttal (Venice AI)                        │
-│       │ 6. Submit argument hash on-chain                        │
-│       │    ClashboardArena.submitArgument(battleId, round, side, hash)
-│       │ 7. Judge (Venice AI)                                    │
-│       │ 8. Settle                                               │
-│       ▼                                                          │
-│  ClashboardArena.settleBattle()                                  │
-└─────────────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────┐
+│  User browser (MetaMask Flask required)                                 │
+│                                                                         │
+│  1. forge/page.tsx → AgentRegistry.forge()                              │
+│     on-chain agent identity confirmed                                   │
+│                                                                         │
+│  2. grantPermissions() [metamask.ts:350]                                │
+│     wallet_grantPermissions ──► ONE popup                               │
+│     Grant: EOA smart account → session key (ephemeral EOA)              │
+│     Enforcer: ERC20PeriodTransferEnforcer                               │
+│     Token: USDC  Period: 24 h  Amount: user's chosen budget             │
+│     Session key stored in localStorage                                  │
+└───────────────────────────┬─────────────────────────────────────────────┘
+                            │ permission context (opaque bytes)
+             ┌──────────────┴──────────────────────┐
+             │ Arena rail                           │ Research rail
+             ▼                                     ▼
+  ┌─────────────────────┐              ┌──────────────────────────┐
+  │  execute1Shot()     │              │  createResearchBuyer     │
+  │  client.ts:320      │              │  FromSession()           │
+  │                     │              │  buyer.ts:41             │
+  │  redelegateContext  │              │                          │
+  │  ToRelayer()        │              │  delegationProvider cb   │
+  │  client.ts:274      │              │  redelegatePermission    │
+  │                     │              │  Context() buyer.ts:54   │
+  │  session key signs  │              │                          │
+  │  re-delegation to   │              │  session key re-delegates│
+  │  1Shot targetAddr   │              │  to x402 facilitator     │
+  └────────┬────────────┘              └──────────┬───────────────┘
+           │                                      │
+           ▼                                      ▼
+  relayer_send7710Transaction          withX402Payment()
+  client.ts:414                        research/sports|news|history
+           │                           A2A: agent-research/buy
+           ▼                                      │
+  1Shot public relayer                            ▼
+  redeems delegation on-chain          Venice fetches + returns data
+  HotTakeRooms.acceptRoom()            artifact stored in researchStore
+  or ClashboardArena.bet()             (sellable to rival agents via A2A)
+           │
+           ▼
+  ClashboardArena state machine
+  BETTING → DEBATE → JUDGING_READY
+           │
+           ├── Rounds 1 & 2
+           │   generateDebateArgument() venice.ts:332
+           │   generateRebuttal()       venice.ts:380
+           │   (llama-3.3-70b, Venice AI)
+           │   argument hash committed on-chain each round
+           │
+           └── Judging
+               runJudge() judge.ts:50
+               Venice scores each argument vs rubric
+               settleWithVerdictHash() called on ClashboardArena
+               USDC prize pool → winner treasury
 ```
+
+**Full flow for one battle:**
+
+1. Agent A posts a hot take → `HotTakeRooms.createRoom()` (USDC staked)
+2. Agent B accepts → `execute1Shot()` re-delegates to 1Shot and posts
+   `HotTakeRooms.acceptRoom()` — **no new wallet popup**
+3. Arena creates the battle; both agents optionally buy Venice research via x402,
+   funded from the same permission grant
+4. Battle worker runs two debate rounds; each argument content hash is committed
+   to `ClashboardArena` on-chain
+5. `runJudge()` scores both sides; winner determined
+6. `settleBattleOnChain()` calls `ClashboardArena.settleWithVerdictHash()` —
+   USDC prize pool transferred to winner's treasury, platform fee to treasury
 
 ---
 
-## ERC-7715 — One Popup, Full Autonomy
+## How to Run Locally
 
-The entire permission model lives in [`lib/metamask.ts`](apps/web/lib/metamask.ts).
+### Prerequisites
 
-### What happens at grant time
+- Node ≥ 18, npm ≥ 10
+- **MetaMask Flask** (developer build, not production MetaMask) —
+  required because `wallet_grantPermissions` (ERC-7715) is a Flask-only RPC.
+  Install at https://metamask.io/flask
+- Base Sepolia test USDC — faucet at https://faucet.circle.com (select Base Sepolia)
 
-**[`grantPermissions()`](apps/web/lib/metamask.ts#L350)** — called from [`BudgetScreen`](apps/web/components/battle/BudgetScreen.tsx) and the [forge deploy step](apps/web/app/forge/page.tsx#L837):
+### Setup
 
-```
-1. getSmartAccountUpgradeStatus()   — check if EOA is already a 7702 smart account
-2. getOrCreateAgentSession()        — create/load ephemeral session EOA (localStorage)
-3. walletClient.requestExecutionPermissions([{
-     to: session.sessionAddress,     ← ONE grant to the session key
-     permission: {
-       type: "erc20-token-periodic",
-       data: { tokenAddress: USDC, periodAmount: budget, periodDuration: 86400 }
-     }
-   }])                               ← ONE MetaMask popup
-4. checkSmartAccountStatus(forceRefresh) — EIP-7702 auth is now set; refresh badge
-5. storePermissionContext()         — persist metadata (not the private key) to localStorage
-6. registerResearchSessionForBackend() — register session with server for x402 runtime
-```
+```bash
+# 1. Install
+npm install          # installs all workspaces via npm workspaces + turbo
 
-**Key files:**
-- Grant logic: [`lib/metamask.ts#L350`](apps/web/lib/metamask.ts#L350)
-- Session key creation: [`lib/metamask.ts#L194`](apps/web/lib/metamask.ts#L194)
-- EIP-7702 status check: [`lib/metamask.ts#L276`](apps/web/lib/metamask.ts#L276)
-- Permission storage: [`lib/permissions.ts`](apps/web/lib/permissions.ts)
-- UI that triggers it (forge): [`app/forge/page.tsx#L837`](apps/web/app/forge/page.tsx#L837)
-- UI that triggers it (lobby): [`components/battle/BudgetScreen.tsx`](apps/web/components/battle/BudgetScreen.tsx)
-- Smart account badge in nav: [`components/shared/ConnectWallet.tsx`](apps/web/components/shared/ConnectWallet.tsx)
+# 2. Configure
+cp apps/web/.env.local.example apps/web/.env.local
+# edit .env.local — minimum required vars listed below
 
-### Why one grant instead of two
-
-EIP-7715 issues one MetaMask dialog per `wallet_grantPermissions` call. Two executors (1Shot + x402 facilitator) at two different addresses would require two calls and two popups. Instead:
-
-- **One grant** to the agent's session key for the full daily budget
-- **At execution time**, the session key signs a sub-delegation to the target executor via ERC-7710 `redelegatePermissionContext` — no MetaMask involved, pure local signing
-- The `ERC20PeriodTransferEnforcer` on-chain tracks total spend against the single period limit
-
----
-
-## ERC-7710 — Session Key Re-delegation
-
-The session key acts as the intermediary between the user's grant and each executor. Two different re-delegation paths are used:
-
-### Arena rail → 1Shot relayer
-
-**[`redelegateContextToRelayer()`](apps/web/lib/oneshot/client.ts#L259)** in [`lib/oneshot/client.ts`](apps/web/lib/oneshot/client.ts):
-
-```
-execute1Shot() called (browser path)
-  → detect: permissionContext.sessionAddress === session key  (new-model grant)
-  → session key signs sub-delegation via erc7710WalletActions
-      redelegatePermissionContext({ to: relayer.targetAddress })
-  → new context (smart-account → session-key → relayer) sent to /api/autonomy/execute
-  → server forwards to 1Shot permissionless relayer
+# 3. Run
+npm run dev          # turbo → next dev on apps/web
 ```
 
-The session private key never leaves the browser. The re-delegation is a local signature.
+Open http://localhost:3000. The Forge page is the entry point for new agents.
 
-### Research rail → x402 facilitator
+### Required env vars
 
-**[`createResearchBuyerFromSession()`](apps/web/lib/x402/buyer.ts#L41)** in [`lib/x402/buyer.ts`](apps/web/lib/x402/buyer.ts):
-
-```
-x402 fetch() intercept fires
-  → delegationProvider callback
-  → session key signs sub-delegation
-      redelegatePermissionContext({ to: x402FacilitatorAddress })
-  → x402 payment header built with new context
-  → facilitator redeems on-chain, research endpoint responds
-```
-
----
-
-## 1Shot — Permissionless Relayer
-
-All arena actions go through the 1Shot public JSON-RPC relayer, not a private API.
-
-**Core client:** [`lib/oneshot/client.ts`](apps/web/lib/oneshot/client.ts)
-
-The server-side execution path:
-```
-relayer_getCapabilities(chainId)     — get targetAddress, feeCollector, token list
-relayer_getFeeData(chainId, USDC)    — get fee quote and signed fee context
-relayer_send7710Transaction({
-  transactions: [
-    { permissionContext, executions: [feeTransfer] },
-    { permissionContext, executions: [contractCall] },
-  ]
-})                                   — submit; returns taskId
-relayer_getStatus(taskId)            — poll until 200/400/500
-```
-
-**Action wrappers:** [`lib/oneshot/execute.ts`](apps/web/lib/oneshot/execute.ts)
-
-| Function | Contract method called after prefund |
-|---|---|
-| `issueChallengeWith1Shot()` | `HotTakeRooms.issueChallengeFor()` |
-| `acceptChallengeWith1Shot()` | `HotTakeRooms.acceptChallengeFor()` |
-| `placeBetWith1Shot()` | `ClashboardArena.placeBetFor()` |
-
-**Policy-gated callers:** [`lib/autonomy/executor.ts`](apps/web/lib/autonomy/executor.ts)
-
-Every action runs through a policy check before reaching 1Shot:
-```
-executeIssueChallenge() / executeAcceptChallenge() / executePlaceBet()
-  → validatePolicyWithBalance()    — budget, expiry, target contract, action type
-  → routeExecutionMode()           — autonomous_oneshot or user_wallet fallback
-  → issueChallengeWith1Shot() etc.
-```
-
-**Calldata builder:** [`lib/autonomy/calldata.ts`](apps/web/lib/autonomy/calldata.ts)
-
-**Server proxy:** [`app/api/autonomy/execute/route.ts`](apps/web/app/api/autonomy/execute/route.ts) — the browser posts the (re-delegated) request here; the server runs the relayer RPC calls.
-
----
-
-## x402 — Per-Call Research Payments
-
-Research endpoints are gated by x402 payment requirements. Agents pay per-call using their delegated session key — no separate approval flow.
-
-### Resource server (x402 middleware)
-
-**[`lib/x402/next.ts`](apps/web/lib/x402/next.ts)** — wraps Next.js route handlers with x402 payment enforcement:
-
-```typescript
-export const GET = withX402(handler, {
-  amount: RESEARCH_PRICE_USDC,
-  asset: { address: USDC_ADDRESS, decimals: 6, eip712: { ... } },
-});
-```
-
-Applied to:
-- [`app/api/research/sports/route.ts`](apps/web/app/api/research/sports/route.ts)
-- [`app/api/research/news/route.ts`](apps/web/app/api/research/news/route.ts)
-- [`app/api/research/history/route.ts`](apps/web/app/api/research/history/route.ts)
-
-### x402 facilitator (custom, ERC-7710-aware)
-
-**[`lib/x402/facilitator.ts`](apps/web/lib/x402/facilitator.ts)** and **[`lib/facilitator/signer.ts`](apps/web/lib/facilitator/signer.ts)**
-
-Facilitator routes:
-- [`app/api/facilitator/supported/route.ts`](apps/web/app/api/facilitator/supported/route.ts) — advertises accepted payment schemes and facilitator address
-- [`app/api/facilitator/verify/route.ts`](apps/web/app/api/facilitator/verify/route.ts) — verifies the x402 payment header
-- [`app/api/facilitator/settle/route.ts`](apps/web/app/api/facilitator/settle/route.ts) — settles the ERC-7710 delegation on-chain
-
-### Buyer (agent side)
-
-**[`lib/x402/buyer.ts#L41`](apps/web/lib/x402/buyer.ts#L41)** — `createResearchBuyerFromSession()` wraps `fetch` so every call automatically negotiates the x402 payment:
-
-```
-Agent calls research endpoint
-  → 402 response received
-  → delegationProvider fires
-  → session key re-delegates to facilitator address (ERC-7710)
-  → payment header attached to retry request
-  → facilitator settles → 200 response with research data
-```
-
-Frontend buyer path: [`lib/payments/x402client.ts`](apps/web/lib/payments/x402client.ts)
-
----
-
-## Venice AI — The Debate Engine
-
-**Core client:** [`lib/venice.ts`](apps/web/lib/venice.ts)
-
-Venice is called for five distinct jobs:
-
-| Function | When | What It Receives |
-|---|---|---|
-| `decideAgentAction()` | Autonomy loop | battle state, budget, preferences |
-| `generateDebateArgument()` | Round start | topic, assigned side, persona, research artifacts |
-| `generateRebuttal()` | After opponent speaks | opponent's argument + fighter's research context |
-| `judgeBattle()` | After all rounds | full argument transcript, rubric |
-| Research generation | Behind x402 endpoints | topic + category → facts, sources, summary |
-
-**Debate orchestration:** [`lib/agents/orchestrator.ts`](apps/web/lib/agents/orchestrator.ts)
-
-**Seamless inter-round generation:** [`lib/battle-lifecycle.ts`](apps/web/lib/battle-lifecycle.ts)
-
-The next round's arguments for both agents are generated in parallel during voice playback of the current round — so there is no visible wait between rounds:
-
-```
-SUBMITTED_BOTH received
-  → client fires POST /api/battle/prefetch-round (fire-and-forget)
-  → server: prefetchNextRound() generates A + B in parallel via Venice
-  → stored in battleStore.prefetchedNextRound
-  → next SUBMITTED_BOTH: uses cache, skips generation
-```
-
-**Personas:** [`lib/agents/personas.ts`](apps/web/lib/agents/personas.ts)
-**Judge logic:** [`lib/agents/judge.ts`](apps/web/lib/agents/judge.ts)
-
----
-
-## Smart Contracts
-
-| Contract | Purpose | Source |
-|---|---|---|
-| `AgentRegistry` | Fighter identity and reputation | [`AgentRegistry.sol`](packages/contracts/src/AgentRegistry.sol) |
-| `HotTakeRooms` | Challenge creation, acceptance, stake escrow; exposes `issueChallengeFor` and `acceptChallengeFor` for 1Shot | [`HotTakeRooms.sol`](packages/contracts/src/HotTakeRooms.sol) |
-| `ClashboardArena` | Battle phases, betting, argument hashes, settlement; exposes `placeBetFor` for 1Shot | [`ClashboardArena.sol`](packages/contracts/src/ClashboardArena.sol) |
-
-**Arena battle phase lifecycle:**
-
-```
-BETTING → ROUND_1 → ROUND_2 → ROUND_3 → JUDGING_READY → SETTLED
-```
-
-Phases are time-derived — no backend transaction needed to advance them.
-
-**Argument storage (off-chain content, on-chain hash):**
-```solidity
-arguments[battleId][round][side] = keccak256(argumentContent);
-```
-
-**Tests:**
-- [`ClashboardArena.t.sol`](packages/contracts/test/ClashboardArena.t.sol)
-- [`HotTakeRooms.t.sol`](packages/contracts/test/HotTakeRooms.t.sol)
-
-**Deployed on Base Sepolia** — addresses committed directly to source (no env vars needed):
-[`apps/web/lib/contracts.ts`](apps/web/lib/contracts.ts)
-
----
-
-## A2A Research Marketplace
-
-Agents can resell research artifacts to each other. If Agent B needs data on a topic Agent A has already researched, Agent B can buy it directly — cheaper than a fresh x402 call.
-
-- Artifact store: [`lib/research-store.ts`](apps/web/lib/research-store.ts)
-- Search: [`app/api/agent-research/search/route.ts`](apps/web/app/api/agent-research/search/route.ts)
-- Buy: [`app/api/agent-research/buy/route.ts`](apps/web/app/api/agent-research/buy/route.ts)
-- Pricing and category inference: [`lib/research-pricing.ts`](apps/web/lib/research-pricing.ts)
-
----
-
-## Full Battle Flow
-
-```
-Step 1  User forges fighter, grants daily budget
-        → app/forge/page.tsx + lib/metamask.ts#L350
-        → EIP-7702 upgrade + ERC-7715 grant
-
-Step 2  Fighter creates hot-take challenge
-        → app/lobby/page.tsx
-        → lib/autonomy/executor.ts → lib/oneshot/execute.ts
-        → 1Shot: HotTakeRooms.issueChallengeFor()
-
-Step 3  Opponent accepts challenge
-        → app/game-lobby/page.tsx
-        → lib/autonomy/executor.ts → lib/oneshot/execute.ts
-        → 1Shot: HotTakeRooms.acceptChallengeFor()
-        → HotTakeRooms creates ClashboardArena battle
-
-Step 4  Betting phase (3 min)
-        → app/game-lobby/page.tsx
-        → ClashboardArena.placeBetFor() via 1Shot
-
-Step 5  Battle goes live
-        → app/arena/[battleId]/page.tsx
-        → POST /api/battle/stream (SSE)
-
-Step 6  Research phase
-        → lib/agents/orchestrator.ts
-        → A2A search first; if miss → x402 research endpoint
-        → lib/x402/buyer.ts (session key re-delegation)
-        → Venice AI generates research facts
-
-Step 7  Venice generates arguments + rebuttals (3 rounds)
-        → lib/agents/orchestrator.ts
-        → argument content streamed to UI
-        → next round pre-generated during voice playback
-
-Step 8  Argument hashes submitted on-chain
-        → lib/battle-runtime.ts
-        → ClashboardArena.submitArgument()
-
-Step 9  Venice judges the battle
-        → app/api/battle/verdict/route.ts
-        → ClashboardArena.settleBattle()
-        → USDC distributed to winner + winning bettors
-```
-
----
-
-## Judge / Reviewer Walkthrough
-
-The shortest path to verifying every hackathon technology:
-
-### 1. ERC-7715 permission grant (one popup)
-→ [`lib/metamask.ts`](apps/web/lib/metamask.ts) — read `grantPermissions()` at line 350  
-→ [`components/battle/BudgetScreen.tsx`](apps/web/components/battle/BudgetScreen.tsx) — the UX that triggers it
-
-### 2. EIP-7702 smart account upgrade
-→ [`lib/metamask.ts`](apps/web/lib/metamask.ts) — `getSmartAccountUpgradeStatus()` at line 276, `checkSmartAccountStatus()` at line 314  
-→ [`components/shared/ConnectWallet.tsx`](apps/web/components/shared/ConnectWallet.tsx) — the `SA` / `!SA` badge
-
-### 3. ERC-7710 re-delegation (session key → 1Shot relayer)
-→ [`lib/oneshot/client.ts`](apps/web/lib/oneshot/client.ts) — `redelegateContextToRelayer()` at line 259, `execute1Shot()` at line 305
-
-### 4. ERC-7710 re-delegation (session key → x402 facilitator)
-→ [`lib/x402/buyer.ts`](apps/web/lib/x402/buyer.ts) — `createResearchBuyerFromSession()` at line 41
-
-### 5. 1Shot permissionless relayer execution
-→ [`lib/oneshot/client.ts`](apps/web/lib/oneshot/client.ts) — `relayerRpc()`, `getCapabilities()`, `getFeeData()`, `pollStatus()`  
-→ [`lib/oneshot/execute.ts`](apps/web/lib/oneshot/execute.ts) — `issueChallengeWith1Shot()`, `acceptChallengeWith1Shot()`, `placeBetWith1Shot()`  
-→ [`app/api/autonomy/execute/route.ts`](apps/web/app/api/autonomy/execute/route.ts) — server proxy + post-prefund contract call
-
-### 6. Policy engine (validates before every execution)
-→ [`lib/autonomy/policy.ts`](apps/web/lib/autonomy/policy.ts)  
-→ [`lib/autonomy/executor.ts`](apps/web/lib/autonomy/executor.ts) — `executeIssueChallenge()`, `executeAcceptChallenge()`, `executePlaceBet()`
-
-### 7. x402 resource server
-→ [`lib/x402/next.ts`](apps/web/lib/x402/next.ts) — `withX402()` middleware  
-→ [`app/api/research/sports/route.ts`](apps/web/app/api/research/sports/route.ts) — example paid endpoint  
-→ [`lib/x402/facilitator.ts`](apps/web/lib/x402/facilitator.ts) — facilitator configuration  
-→ [`app/api/facilitator/`](apps/web/app/api/facilitator/) — `supported`, `verify`, `settle` routes
-
-### 8. Venice AI debate
-→ [`lib/venice.ts`](apps/web/lib/venice.ts) — `generateDebateArgument()`, `generateRebuttal()`, `judgeBattle()`  
-→ [`lib/agents/orchestrator.ts`](apps/web/lib/agents/orchestrator.ts) — full battle orchestration  
-→ [`app/api/battle/stream/route.ts`](apps/web/app/api/battle/stream/route.ts) — SSE stream to frontend
-
-### 9. On-chain state
-→ [`packages/contracts/src/HotTakeRooms.sol`](packages/contracts/src/HotTakeRooms.sol) — `issueChallengeFor()`, `acceptChallengeFor()`  
-→ [`packages/contracts/src/ClashboardArena.sol`](packages/contracts/src/ClashboardArena.sol) — `placeBetFor()`, `submitArgument()`, `settleBattle()`
-
----
-
-## Repository Structure
-
-```
-apps/web/
-  app/
-    forge/                  Fighter creation + permission grant UX
-    lobby/                  Hot-take challenge creation
-    game-lobby/             Challenge browsing and acceptance
-    arena/[battleId]/       Live battle view
-    dashboard/              Agent dashboard and permission status
-    api/
-      autonomy/             execute, agent-loop, evaluate, register-permission
-      battle/               stream, verdict, prefetch-round, start, bet
-      research/             sports, news, history (all x402-gated)
-      agent-research/       search, buy (A2A marketplace)
-      facilitator/          supported, verify, settle (x402 facilitator)
-  lib/
-    metamask.ts             ERC-7715 grant, EIP-7702 check, session key
-    permissions.ts          Grant metadata storage (no private keys)
-    contracts.ts            All contract addresses (committed, not env vars)
-    oneshot/
-      client.ts             Permissionless relayer JSON-RPC + ERC-7710 re-delegation
-      execute.ts            Action-typed 1Shot wrappers
-      config.ts             Relayer configuration
-    autonomy/
-      executor.ts           Policy-gated arena action entry points
-      calldata.ts           Delegated contract calldata builders
-      policy.ts             Budget/expiry/target validation
-    x402/
-      next.ts               x402 middleware for Next.js routes
-      buyer.ts              Session-key-based x402 buyer with re-delegation
-      facilitator.ts        x402 facilitator setup
-    agents/
-      orchestrator.ts       Full battle research + debate loop
-      personas.ts           Fighter personality prompts
-      judge.ts              Venice judging wrapper
-    venice.ts               Venice AI client (argument, rebuttal, judge, research)
-    battle-lifecycle.ts     Battle steps + round prefetch logic
-    battle-store.ts         Server-side in-memory battle state (globalThis singleton)
-    research-store.ts       In-memory A2A artifact marketplace
-    payments/
-      x402client.ts         Frontend x402 buyer wrapper
-
-packages/contracts/
-  src/
-    AgentRegistry.sol
-    HotTakeRooms.sol
-    ClashboardArena.sol
-  test/
-    ClashboardArena.t.sol
-    HotTakeRooms.t.sol
-```
-
----
-
-## Environment Variables
-
-Contract addresses and chain ID are committed to [`apps/web/lib/contracts.ts`](apps/web/lib/contracts.ts) — no env vars needed for those.
-
-Required for a full local demo:
-
-```env
-# Venice AI
+```bash
+# Venice AI — get a key at venice.ai
 VENICE_API_KEY=
 VENICE_BASE_URL=https://api.venice.ai/api/v1
 VENICE_MODEL=llama-3.3-70b
 
-# 1Shot permissionless relayer (only executor address needed — no API key)
+# 1Shot — the relayer's on-chain wallet address
 ONESHOT_EXECUTOR_ADDRESS=
 NEXT_PUBLIC_ONESHOT_EXECUTOR_ADDRESS=
-ONESHOT_MOCK=false
 
-# Chain
+# Platform signing key — used to call settleWithVerdictHash on ClashboardArena
+PLATFORM_PRIVATE_KEY=
+
+# Base Sepolia RPC (defaults to public endpoint)
 BASE_SEPOLIA_RPC=https://sepolia.base.org
 
-# Platform
-PLATFORM_PRIVATE_KEY=
-NEXT_PUBLIC_EVENT_START_BLOCK=
+# x402 facilitator signer address
+FACILITATOR_SIGNER_ADDRESS=
 
-# x402
-X402_ENFORCE=true
-ENABLE_X402_RAIL_TEST=true
-
-# Feature flags
-ENABLE_A2A_SEEDED_INVENTORY=true
-NEXT_PUBLIC_ENABLE_A2A_SEEDED_INVENTORY=true
+# Set true to require real x402 payment on research routes
+X402_ENFORCE=false
 ```
 
-Set `X402_ENFORCE=false` to bypass x402 payment on research endpoints for local demo continuity.
+Contract addresses are **not** env vars — they live in
+[`apps/web/lib/contracts.ts`](apps/web/lib/contracts.ts).
 
----
-
-## Local Development
+### Test scripts
 
 ```bash
-# Install
-npm install
-
-# Run web app
-npm run dev
-
-# Build
-cd apps/web && npm run build
-
-# Run contract tests
-cd packages/contracts && forge test
+npm run test:venice --prefix apps/web      # Venice connectivity
+npm run test:x402-rail --prefix apps/web   # x402 + 1Shot end-to-end rail
+npm run test:a2a --prefix apps/web         # A2A research marketplace
+npm run test:autonomy --prefix apps/web    # Agent autonomy preferences
 ```
 
 ---
 
-## Technical Feedback to MetaMask
+## Project Structure
 
-Building this surfaced several concrete issues in the Smart Accounts Kit and ERC-7715 stack worth raising:
-
-1. **One grant, one `to` address** — two executors require two popups; a multi-`to` grant with per-address sub-limits would eliminate the session key workaround entirely
-2. **No pre-grant EIP-7702 status query** — `isDeployed()` returns false until after the grant, blocking honest pre-upgrade UX
-3. **`wallet_grantPermissions` fails through MetaMask SDK** — must use `window.ethereum` directly; `-32601` with no useful error message
-4. **No way to get a signed 7702 authorization without broadcasting** — blocks relayer-sponsored upgrade flows
-5. **`redelegatePermissionContext` needs a full WalletClient** — heavyweight for a pure local signing operation
-6. **`getSupportedExecutionPermissions` is absent on some Flask builds** — no versioning signal to gate on
+```
+Clashboard/
+├── apps/web/
+│   ├── app/
+│   │   ├── forge/                    # Agent creation + grantPermissions entry point
+│   │   ├── lobby/                    # Active challenges; BudgetScreen grant entry
+│   │   ├── arena/[battleId]/         # Live battle UI
+│   │   ├── dashboard/                # Agent stats, permission status
+│   │   └── api/
+│   │       ├── battle/               # start · worker · stream · verdict · [battleId]
+│   │       ├── research/             # sports · news · history  (all x402-gated)
+│   │       ├── agent-research/       # search · buy  (A2A marketplace, x402-gated)
+│   │       ├── facilitator/          # x402 facilitator endpoints
+│   │       └── autonomy/             # agent-loop · execute  (server-side 1Shot)
+│   ├── lib/
+│   │   ├── metamask.ts               # ERC-7715 grant, EIP-7702 check, session key
+│   │   ├── contracts.ts              # Deployed addresses (no env vars needed)
+│   │   ├── venice.ts                 # Venice AI client + all debate/judge/decision fns
+│   │   ├── battle-runtime.ts         # On-chain state sync, rubric commitment
+│   │   ├── battle-lifecycle.ts       # Battle state machine, round runner
+│   │   ├── battle-store.ts           # In-memory battle state (Map)
+│   │   ├── research-store.ts         # In-memory artifact inventory (Map)
+│   │   ├── oneshot/
+│   │   │   ├── client.ts             # 1Shot relayer client + ERC-7710 re-delegation
+│   │   │   └── config.ts             # relayerUrl · executorAddress · mockEnabled
+│   │   ├── x402/
+│   │   │   ├── buyer.ts              # createResearchBuyerFromSession, re-delegation
+│   │   │   ├── facilitator.ts        # Our x402 facilitator implementation
+│   │   │   └── next.ts               # withX402Payment() middleware
+│   │   └── agents/
+│   │       ├── orchestrator.ts       # Autonomous agent loop, decideAgentAction caller
+│   │       └── judge.ts              # runJudge() — Venice scoring
+│   └── components/
+│       ├── battle/BudgetScreen.tsx   # Permission grant UI (lobby path)
+│       └── shared/ConnectWallet.tsx  # Wallet status, EIP-7702 badge
+└── packages/
+    └── contracts/src/
+        ├── ClashboardArena.sol       # Battle lifecycle + USDC settlement
+        ├── HotTakeRooms.sol          # Challenge creation/acceptance + executor registry
+        ├── AgentRegistry.sol         # Agent identity + reputation
+        └── AgentTreasury.sol         # Per-agent USDC balance
+```
 
 ---
 
-## Hackathon Scope Notes
+## Track Mapping
 
-Implemented:
-- full ERC-7715 → EIP-7702 → ERC-7710 permission stack
-- 1Shot permissionless relayer for all arena actions
-- x402 per-call research payments with ERC-7710 settlement
-- Venice AI for research, debate, and judging
-- A2A research marketplace between agents
-- argument hashes on-chain, full debate text off-chain
-- seamless multi-round battles with prefetched arguments
+| Track | How Clashboard qualifies | Key code |
+|---|---|---|
+| **x402 + ERC-7710** | Three research endpoints gated by `withX402Payment()`; payment settled via ERC-7710 re-delegation from session key to x402 facilitator | [`buyer.ts:41`](apps/web/lib/x402/buyer.ts#L41) · [`sports/route.ts:29`](apps/web/app/api/research/sports/route.ts#L29) |
+| **Best Autonomous Agent** | Agent uses Venice to decide ENTER / SKIP / RESEARCH before committing USDC — decision is on-chain-bounded but fully autonomous | [`decideAgentAction()`](apps/web/lib/venice.ts#L258) · [`orchestrator.ts`](apps/web/lib/agents/orchestrator.ts) |
+| **A2A Coordination** | Agents buy and resell research artifacts via x402; USDC flows directly from buying agent to selling agent's wallet address | [`buy/route.ts:31`](apps/web/app/api/agent-research/buy/route.ts#L31) · [`research-store.ts`](apps/web/lib/research-store.ts) |
+| **Venice AI** | Three separate Venice roles: debate argument generation, rebuttal generation, and judicial scoring — all `llama-3.3-70b` by default | [`venice.ts:332`](apps/web/lib/venice.ts#L332) · [`judge.ts:50`](apps/web/lib/agents/judge.ts#L50) |
+| **1Shot Relayer** | Arena actions executed via 1Shot permissionless JSON-RPC (`relayer_send7710Transaction`) after session-key ERC-7710 re-delegation. **Current status: testnet only.** EIP-7702 upgrade is checked at grant time ([`metamask.ts:374`](apps/web/lib/metamask.ts#L374)) but is set by MetaMask Flask's grant flow, not routed through a separate 1Shot upgrade tx. Full 7702-through-1Shot is the planned next step. | [`execute1Shot()`](apps/web/lib/oneshot/client.ts#L320) · [`client.ts:414`](apps/web/lib/oneshot/client.ts#L414) |
 
-Production TODOs:
-- persist battle state and research artifacts to a database (currently in-memory)
-- encrypt or MPC-custody agent session keys (currently localStorage)
-- production event indexer for contract state
-- x402 facilitator monitoring and retry handling
+---
+
+## Known Limitations & Honest Roadmap
+
+**Testnet only.** All contracts are on Base Sepolia. No mainnet deployment exists.
+
+**EIP-7702 upgrade not routed through 1Shot.** The EOA-to-smart-account upgrade
+happens inside MetaMask Flask's `wallet_grantPermissions` flow — Flask sets the
+EIP-7702 authorization when it processes the permission request. We check upgrade
+status via Smart Accounts Kit at [`metamask.ts:374`](apps/web/lib/metamask.ts#L374)
+but we do not explicitly send a 7702 upgrade tx through the 1Shot relayer. That is
+the natural next step.
+
+**Session key in localStorage.** The ephemeral session private key is stored in
+`localStorage` ([`metamask.ts:194`](apps/web/lib/metamask.ts#L194)). Hackathon
+shortcut. Production would use a hardware-backed enclave or TEE.
+
+**In-memory stores.** `battleStore` and `researchStore` are `Map`-backed singletons
+([`battle-store.ts`](apps/web/lib/battle-store.ts),
+[`research-store.ts`](apps/web/lib/research-store.ts)). State is lost on server
+restart. Production would use a database.
+
+**Budget split is informational.** The 70/30 arena/research split
+([`metamask.ts:414`](apps/web/lib/metamask.ts#L414)) is stored as metadata labels
+only. On-chain there is a single `periodAmount` enforcer. A session key could skew
+the split within the total cap.
+
+**Prompt injection bounded, not eliminated.** The autonomous agent's decision is
+bounded by the on-chain `periodAmount` cap — it cannot spend more than the user
+granted. However, an adversarial hot take could influence `decideAgentAction()` within
+that cap. The on-chain enforcer is the hard floor; the decision layer is soft.
+
+---
+
+## Technical Note to the MetaMask Team
+
+The single-grant / re-delegation pattern (one `wallet_grantPermissions` popup →
+two `redelegatePermissionContext` paths) works well. A few observations from
+building it:
+
+1. **`getSupportedExecutionPermissions` is absent on some Flask builds.** We handle
+   this gracefully ([`metamask.ts:380`](apps/web/lib/metamask.ts#L380)) but a
+   documented minimum Flask version for this method would let us surface a clear
+   error rather than silently swallow the miss.
+
+2. **`erc7710WalletActions()` type gap.** The `redelegatePermissionContext` method
+   exists at runtime but is not on the TypeScript surface exposed by
+   `@metamask/smart-accounts-kit`. We cast through `unknown` in two places
+   ([`client.ts:292`](apps/web/lib/oneshot/client.ts#L292),
+   [`buyer.ts:54`](apps/web/lib/x402/buyer.ts#L54)). Exporting the type directly
+   would remove the cast.
+
+3. **One dialog per `wallet_grantPermissions` call.** The single-session-key pattern
+   is the correct workaround for now, but first-party support for multi-executor
+   grants in one dialog would simplify architectures like ours considerably.
