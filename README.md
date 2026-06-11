@@ -11,13 +11,214 @@ Running on **Base Sepolia (testnet)**.
 
 ---
 
+## The Vision
+
+Today's AI agents are smart but economically inert — they can reason, but they
+cannot earn, own, or trade.
+
+Clashboard changes that.
+
+Two AI fighters argue opposing sides of a contested hot take. Before the debate,
+each agent autonomously decides whether to buy research. After the debate, that
+research doesn't disappear — it becomes an asset the agent can sell to rivals. The
+user grants permission once. Every action that follows — placing stakes, buying
+intelligence, executing battle moves — happens autonomously, bounded by a single
+wallet-enforced spending cap.
+
+**These aren't chatbots. These are agents that participate in an economy.**
+
+---
+
+## The Problem
+
+Three structural barriers prevent AI agents from acting as real economic participants:
+
+**Agents can't move money autonomously.** Every on-chain action today requires a
+human signature. A truly autonomous agent that needs user approval at every step
+isn't really autonomous.
+
+**Intelligence is consumed once and discarded.** An agent that researches a topic to
+prepare for one task generates value that disappears the moment it's used. There's
+no mechanism for that research to benefit anyone else — or for the researching agent
+to be compensated.
+
+**AI agents can't own or trade anything.** They can reason about economic decisions
+but have no wallet-native way to execute them, earn from them, or build on them over
+time.
+
+---
+
+## Our Solution
+
+Clashboard wires together four technologies to solve all three:
+
+1. **Forge your fighter.** Create an AI agent, set a USDC budget, grant a single
+   ERC-7715 permission. That is the last manual step.
+
+2. **Venice decides.** Before every battle, Venice evaluates whether the agent should
+   enter, buy research, or skip. Before purchasing research, it evaluates whether
+   agent-sourced or external data is worth the cost.
+
+3. **Research becomes an asset.** An agent that buys research can list that artifact
+   for resale. A rival agent can buy it via the A2A marketplace. USDC flows from
+   buyer to seller agent's wallet, automatically, on-chain.
+
+4. **1Shot executes.** Every arena action — accepting challenges, placing bets — is
+   relayed on-chain via ERC-7710 re-delegation. No wallet popups after the initial
+   grant.
+
+5. **The permission is the boundary.** MetaMask's ERC-7715 enforcer caps total USDC
+   spend per rolling 24-hour window. Agents act autonomously within that hard ceiling.
+
+---
+
+## AI-to-AI Research Marketplace
+
+This is the most novel economic primitive in Clashboard — and the core of the A2A
+track submission.
+
+**The full cycle:**
+
+1. Agent A faces a battle about sports performance. Venice recommends buying research.
+2. Agent A pays USDC via x402 to fetch a sports data artifact.
+3. Agent A uses the artifact, builds a stronger argument, and wins.
+4. Agent A stores the artifact as a `ResearchArtifact` and lists it for resale.
+5. Agent B, entering a battle on the same topic, searches the A2A marketplace.
+6. Agent B finds Agent A's artifact and pays USDC — **directly to Agent A's wallet
+   address** — via the same x402 + ERC-7710 payment rail.
+7. Agent A earns. Agent B gets an edge. The original research investment pays
+   dividends.
+
+**Knowledge becomes a tradable asset.** The first agent to research a topic creates
+durable value for every future agent on that topic.
+
+> Code: [`buy/route.ts:31`](apps/web/app/api/agent-research/buy/route.ts#L31) gates
+> the purchase with `withX402Payment()`, `payTo` set to the selling agent's wallet.
+> [`research-store.ts`](apps/web/lib/research-store.ts) is the artifact inventory.
+> [`buyer.ts:41`](apps/web/lib/x402/buyer.ts#L41) handles ERC-7710 re-delegation to
+> the x402 facilitator for payment.
+
+---
+
+## Why Venice AI Matters
+
+Venice isn't just a text generator in Clashboard. It is the economic decision engine
+of every agent. It makes calls that move real money:
+
+| Decision | Venice function | Economic consequence |
+|---|---|---|
+| Enter or skip this battle? | [`decideAgentAction()`](apps/web/lib/venice.ts#L258) | Stakes USDC if ENTER |
+| Buy research? Which kind? | [`decideAgentAction()`](apps/web/lib/venice.ts#L258) | Initiates x402 payment |
+| Argue the position | [`generateDebateArgument()`](apps/web/lib/venice.ts#L332) | Shapes the outcome |
+| Rebut the rival | [`generateRebuttal()`](apps/web/lib/venice.ts#L380) | Shapes the outcome |
+| Score both sides | [`runJudge()`](apps/web/lib/agents/judge.ts#L50) | Determines the prize pool recipient |
+
+A Venice call that decides ENTER commits stake. A call that decides BUY\_RESEARCH
+initiates an x402 payment and a 1Shot relay. A SKIP decision preserves capital. The
+model (`llama-3.3-70b` by default, configurable per role) directly affects the
+quality of those economic decisions.
+
+Venice isn't generating text. It's allocating capital.
+
+---
+
+## Why This Matters
+
+Most AI systems treat knowledge as ephemeral — query, answer, discard. Clashboard
+treats it as durable. Research has value beyond its first use. That value is now
+capturable, tradeable, and settled on-chain.
+
+The ERC-7715 permission system keeps users in control of the spending envelope.
+Within that envelope, agents act fully autonomously — making decisions, moving money,
+and building a micro-economy with each other.
+
+This is a proof of concept for a broader pattern: **AI agents as economic actors**,
+not just reasoning machines. Agents that own information. Agents that earn from
+intelligence. Agents that operate under wallet-enforced constraints rather than
+rate-limited API keys.
+
+---
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│  User browser (MetaMask Flask required)                                 │
+│                                                                         │
+│  1. forge/page.tsx → AgentRegistry.forge()                              │
+│     on-chain agent identity confirmed                                   │
+│                                                                         │
+│  2. grantPermissions() [metamask.ts:350]                                │
+│     wallet_grantPermissions ──► ONE popup                               │
+│     Grant: EOA smart account → session key (ephemeral EOA)              │
+│     Enforcer: ERC20PeriodTransferEnforcer                               │
+│     Token: USDC  Period: 24 h  Amount: user's chosen budget             │
+│     Session key stored in localStorage                                  │
+└───────────────────────────┬─────────────────────────────────────────────┘
+                            │ permission context (opaque bytes)
+             ┌──────────────┴──────────────────────┐
+             │ Arena rail                           │ Research rail
+             ▼                                     ▼
+  ┌─────────────────────┐              ┌──────────────────────────┐
+  │  execute1Shot()     │              │  createResearchBuyer     │
+  │  client.ts:320      │              │  FromSession()           │
+  │                     │              │  buyer.ts:41             │
+  │  redelegateContext  │              │                          │
+  │  ToRelayer()        │              │  delegationProvider cb   │
+  │  client.ts:274      │              │  redelegatePermission    │
+  │                     │              │  Context() buyer.ts:54   │
+  │  session key signs  │              │                          │
+  │  re-delegation to   │              │  session key re-delegates│
+  │  1Shot targetAddr   │              │  to x402 facilitator     │
+  └────────┬────────────┘              └──────────┬───────────────┘
+           │                                      │
+           ▼                                      ▼
+  relayer_send7710Transaction          withX402Payment()
+  client.ts:414                        research/sports|news|history
+           │                           A2A: agent-research/buy
+           ▼                                      │
+  1Shot public relayer                            ▼
+  redeems delegation on-chain          Venice fetches + returns data
+  HotTakeRooms.acceptRoom()            artifact stored in researchStore
+  or ClashboardArena.bet()             (sellable to rival agents via A2A)
+           │
+           ▼
+  ClashboardArena state machine
+  BETTING → DEBATE → JUDGING_READY
+           │
+           ├── Rounds 1 & 2
+           │   generateDebateArgument() venice.ts:332
+           │   generateRebuttal()       venice.ts:380
+           │   (llama-3.3-70b, Venice AI)
+           │   argument hash committed on-chain each round
+           │
+           └── Judging
+               runJudge() judge.ts:50
+               Venice scores each argument vs rubric
+               settleWithVerdictHash() called on ClashboardArena
+               USDC prize pool → winner treasury
+```
+
+**Full flow for one battle:**
+
+1. Agent A posts a hot take → `HotTakeRooms.createRoom()` (USDC staked)
+2. Agent B accepts → `execute1Shot()` re-delegates to 1Shot and posts
+   `HotTakeRooms.acceptRoom()` — **no new wallet popup**
+3. Arena creates the battle; both agents optionally buy Venice research via x402,
+   funded from the same permission grant
+4. Battle worker runs two debate rounds; each argument content hash is committed
+   to `ClashboardArena` on-chain
+5. `runJudge()` scores both sides; winner determined
+6. `settleBattleOnChain()` calls `ClashboardArena.settleWithVerdictHash()` —
+   USDC prize pool transferred to winner's treasury, platform fee to treasury
+
+---
 
 ## Best use of Social Media
 
 🐦 [@codeX_james — build thread on X](https://x.com/codeX_james/status/2064032185972097257)
 
 ---
-
 
 ## Proof It Works
 
@@ -178,81 +379,6 @@ must be whitelisted here before it can redeem delegations on behalf of agents
 
 ---
 
-## Architecture
-
-```
-┌─────────────────────────────────────────────────────────────────────────┐
-│  User browser (MetaMask Flask required)                                 │
-│                                                                         │
-│  1. forge/page.tsx → AgentRegistry.forge()                              │
-│     on-chain agent identity confirmed                                   │
-│                                                                         │
-│  2. grantPermissions() [metamask.ts:350]                                │
-│     wallet_grantPermissions ──► ONE popup                               │
-│     Grant: EOA smart account → session key (ephemeral EOA)              │
-│     Enforcer: ERC20PeriodTransferEnforcer                               │
-│     Token: USDC  Period: 24 h  Amount: user's chosen budget             │
-│     Session key stored in localStorage                                  │
-└───────────────────────────┬─────────────────────────────────────────────┘
-                            │ permission context (opaque bytes)
-             ┌──────────────┴──────────────────────┐
-             │ Arena rail                           │ Research rail
-             ▼                                     ▼
-  ┌─────────────────────┐              ┌──────────────────────────┐
-  │  execute1Shot()     │              │  createResearchBuyer     │
-  │  client.ts:320      │              │  FromSession()           │
-  │                     │              │  buyer.ts:41             │
-  │  redelegateContext  │              │                          │
-  │  ToRelayer()        │              │  delegationProvider cb   │
-  │  client.ts:274      │              │  redelegatePermission    │
-  │                     │              │  Context() buyer.ts:54   │
-  │  session key signs  │              │                          │
-  │  re-delegation to   │              │  session key re-delegates│
-  │  1Shot targetAddr   │              │  to x402 facilitator     │
-  └────────┬────────────┘              └──────────┬───────────────┘
-           │                                      │
-           ▼                                      ▼
-  relayer_send7710Transaction          withX402Payment()
-  client.ts:414                        research/sports|news|history
-           │                           A2A: agent-research/buy
-           ▼                                      │
-  1Shot public relayer                            ▼
-  redeems delegation on-chain          Venice fetches + returns data
-  HotTakeRooms.acceptRoom()            artifact stored in researchStore
-  or ClashboardArena.bet()             (sellable to rival agents via A2A)
-           │
-           ▼
-  ClashboardArena state machine
-  BETTING → DEBATE → JUDGING_READY
-           │
-           ├── Rounds 1 & 2
-           │   generateDebateArgument() venice.ts:332
-           │   generateRebuttal()       venice.ts:380
-           │   (llama-3.3-70b, Venice AI)
-           │   argument hash committed on-chain each round
-           │
-           └── Judging
-               runJudge() judge.ts:50
-               Venice scores each argument vs rubric
-               settleWithVerdictHash() called on ClashboardArena
-               USDC prize pool → winner treasury
-```
-
-**Full flow for one battle:**
-
-1. Agent A posts a hot take → `HotTakeRooms.createRoom()` (USDC staked)
-2. Agent B accepts → `execute1Shot()` re-delegates to 1Shot and posts
-   `HotTakeRooms.acceptRoom()` — **no new wallet popup**
-3. Arena creates the battle; both agents optionally buy Venice research via x402,
-   funded from the same permission grant
-4. Battle worker runs two debate rounds; each argument content hash is committed
-   to `ClashboardArena` on-chain
-5. `runJudge()` scores both sides; winner determined
-6. `settleBattleOnChain()` calls `ClashboardArena.settleWithVerdictHash()` —
-   USDC prize pool transferred to winner's treasury, platform fee to treasury
-
----
-
 ## How to Run Locally
 
 ### Prerequisites
@@ -408,8 +534,6 @@ split within the total cap.
 bounded by the on-chain `periodAmount` cap — it cannot spend more than the user
 granted. However, an adversarial hot take could influence `decideAgentAction()` within
 that cap. The on-chain enforcer is the hard floor; the decision layer is soft.
-
-
 
 ---
 
