@@ -11,6 +11,14 @@ Running on **Base Sepolia (testnet)**.
 
 ---
 
+
+## Best use of Social Media
+
+🐦 [@codeX_james — build thread on X](https://x.com/codeX_james/status/2064032185972097257)
+
+---
+
+
 ## Proof It Works
 
 The contracts are live on Base Sepolia. Every arena battle writes on-chain state:
@@ -401,11 +409,7 @@ bounded by the on-chain `periodAmount` cap — it cannot spend more than the use
 granted. However, an adversarial hot take could influence `decideAgentAction()` within
 that cap. The on-chain enforcer is the hard floor; the decision layer is soft.
 
----
 
-## Social Media
-
-🐦 [@codeX_james — build thread on X](https://x.com/codeX_james/status/2064032185972097257)
 
 ---
 
