@@ -48,12 +48,12 @@ on-chain grant; the 70/30 split is metadata only — there is a single
 `periodAmount` enforcer on-chain.
 
 See [`grantPermissions()`](apps/web/lib/metamask.ts#L350) —
-[`metamask.ts:350`](apps/web/lib/metamask.ts#L350). The actual
-`wallet_grantPermissions` call is at
-[`metamask.ts:428`](apps/web/lib/metamask.ts#L428).
+[`metamask.ts:350`](apps/web/lib/metamask.ts#L350). Inside that function the
+`walletClient.requestExecutionPermissions([...])` call issues the single
+`wallet_grantPermissions` RPC to the wallet.
 
 **Grant entry points in the UI:**
-- Forge (new agent deploy): [`forge/page.tsx:837`](apps/web/app/forge/page.tsx#L837) — called immediately after the on-chain `forge()` tx confirms.
+- Forge (new agent deploy): [`forge/page.tsx:840`](apps/web/app/forge/page.tsx#L840) — called immediately after the on-chain `forge()` tx confirms.
 - Lobby (returning user): [`BudgetScreen.tsx:33`](apps/web/components/battle/BudgetScreen.tsx#L33) — triggered when the user hits Accept/Create without a live permission.
 
 ---
@@ -70,7 +70,7 @@ Flow:
 1. [`redelegateContextToRelayer()`](apps/web/lib/oneshot/client.ts#L274) —
    session wallet calls `erc7710WalletActions().redelegatePermissionContext({ to: relayerTarget })`
 2. The re-delegated context + the fee bundle are posted to the permissionless relayer
-   via [`relayer_send7710Transaction`](apps/web/lib/oneshot/client.ts#L414) inside
+   via `relayer_send7710Transaction` inside
    [`execute1Shot()`](apps/web/lib/oneshot/client.ts#L320)
 3. [`pollStatus()`](apps/web/lib/oneshot/client.ts#L248) polls
    `relayer_getStatus` until the tx confirms or fails
@@ -365,7 +365,7 @@ Clashboard/
 | **Best Autonomous Agent** | Agent uses Venice to decide ENTER / SKIP / RESEARCH before committing USDC — decision is on-chain-bounded but fully autonomous | [`decideAgentAction()`](apps/web/lib/venice.ts#L258) · [`orchestrator.ts`](apps/web/lib/agents/orchestrator.ts) |
 | **A2A Coordination** | Agents buy and resell research artifacts via x402; USDC flows directly from buying agent to selling agent's wallet address | [`buy/route.ts:31`](apps/web/app/api/agent-research/buy/route.ts#L31) · [`research-store.ts`](apps/web/lib/research-store.ts) |
 | **Venice AI** | Three separate Venice roles: debate argument generation, rebuttal generation, and judicial scoring — all `llama-3.3-70b` by default | [`venice.ts:332`](apps/web/lib/venice.ts#L332) · [`judge.ts:50`](apps/web/lib/agents/judge.ts#L50) |
-| **1Shot Relayer** | Arena actions executed via 1Shot permissionless JSON-RPC (`relayer_send7710Transaction`) after session-key ERC-7710 re-delegation. **Current status: testnet only.** EIP-7702 upgrade is checked at grant time ([`metamask.ts:374`](apps/web/lib/metamask.ts#L374)) but is set by MetaMask Flask's grant flow, not routed through a separate 1Shot upgrade tx. Full 7702-through-1Shot is the planned next step. | [`execute1Shot()`](apps/web/lib/oneshot/client.ts#L320) · [`client.ts:414`](apps/web/lib/oneshot/client.ts#L414) |
+| **1Shot Relayer** | Arena actions executed via 1Shot permissionless JSON-RPC (`relayer_send7710Transaction`) after session-key ERC-7710 re-delegation. **Current status: testnet only.** EIP-7702 upgrade is checked at grant time inside [`grantPermissions()`](apps/web/lib/metamask.ts#L350) but is set by MetaMask Flask's grant flow, not routed through a separate 1Shot upgrade tx. Full 7702-through-1Shot is the planned next step. | [`execute1Shot()`](apps/web/lib/oneshot/client.ts#L320) · [`redelegateContextToRelayer()`](apps/web/lib/oneshot/client.ts#L274) |
 
 ---
 
@@ -375,10 +375,11 @@ Clashboard/
 
 **EIP-7702 upgrade not routed through 1Shot.** The EOA-to-smart-account upgrade
 happens inside MetaMask Flask's `wallet_grantPermissions` flow — Flask sets the
-EIP-7702 authorization when it processes the permission request. We check upgrade
-status via Smart Accounts Kit at [`metamask.ts:374`](apps/web/lib/metamask.ts#L374)
-but we do not explicitly send a 7702 upgrade tx through the 1Shot relayer. That is
-the natural next step.
+EIP-7702 authorization when it processes the permission request. We call
+`getSmartAccountUpgradeStatus()` inside
+[`grantPermissions()`](apps/web/lib/metamask.ts#L350) to record the status, but we
+do not explicitly send a 7702 upgrade tx through the 1Shot relayer. That is the
+natural next step.
 
 **Session key in localStorage.** The ephemeral session private key is stored in
 `localStorage` ([`metamask.ts:194`](apps/web/lib/metamask.ts#L194)). Hackathon
@@ -389,10 +390,10 @@ shortcut. Production would use a hardware-backed enclave or TEE.
 [`research-store.ts`](apps/web/lib/research-store.ts)). State is lost on server
 restart. Production would use a database.
 
-**Budget split is informational.** The 70/30 arena/research split
-([`metamask.ts:414`](apps/web/lib/metamask.ts#L414)) is stored as metadata labels
-only. On-chain there is a single `periodAmount` enforcer. A session key could skew
-the split within the total cap.
+**Budget split is informational.** The 70/30 arena/research split is stored as
+metadata labels only (inside [`grantPermissions()`](apps/web/lib/metamask.ts#L350)).
+On-chain there is a single `periodAmount` enforcer. A session key could skew the
+split within the total cap.
 
 **Prompt injection bounded, not eliminated.** The autonomous agent's decision is
 bounded by the on-chain `periodAmount` cap — it cannot spend more than the user
@@ -408,16 +409,16 @@ two `redelegatePermissionContext` paths) works well. A few observations from
 building it:
 
 1. **`getSupportedExecutionPermissions` is absent on some Flask builds.** We handle
-   this gracefully ([`metamask.ts:380`](apps/web/lib/metamask.ts#L380)) but a
-   documented minimum Flask version for this method would let us surface a clear
-   error rather than silently swallow the miss.
+   this gracefully inside [`grantPermissions()`](apps/web/lib/metamask.ts#L350) with
+   a best-effort try/catch, but a documented minimum Flask version for this method
+   would let us surface a clear error rather than silently swallow the miss.
 
 2. **`erc7710WalletActions()` type gap.** The `redelegatePermissionContext` method
    exists at runtime but is not on the TypeScript surface exposed by
-   `@metamask/smart-accounts-kit`. We cast through `unknown` in two places
-   ([`client.ts:292`](apps/web/lib/oneshot/client.ts#L292),
-   [`buyer.ts:54`](apps/web/lib/x402/buyer.ts#L54)). Exporting the type directly
-   would remove the cast.
+   `@metamask/smart-accounts-kit`. We cast through `unknown` in two places —
+   [`redelegateContextToRelayer()`](apps/web/lib/oneshot/client.ts#L274) in the
+   1Shot client and [`createResearchBuyerFromSession()`](apps/web/lib/x402/buyer.ts#L41)
+   in the x402 buyer. Exporting the type directly would remove the cast.
 
 3. **One dialog per `wallet_grantPermissions` call.** The single-session-key pattern
    is the correct workaround for now, but first-party support for multi-executor
