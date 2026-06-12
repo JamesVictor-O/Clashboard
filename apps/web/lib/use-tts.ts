@@ -63,14 +63,40 @@ function splitIntoSpeechChunks(text: string): string[] {
   return chunks;
 }
 
-// ─── Blob cache ───────────────────────────────────────────────────────────────
-// Keyed by `${voice}::${text}`. Pre-fetched audio plays with zero latency.
-// The cache is module-level (lives for the page session) and intentionally has
-// no eviction — argument texts are short and a battle has at most ~12 arguments.
-const blobCache = new Map<string, Blob[]>();
+// ─── Audio prefetch cache ─────────────────────────────────────────────────────
+// Keyed by stable debate turn ids such as `round2_agentA`. The cache is
+// module-level (lives for the page session) and intentionally has no eviction —
+// argument texts are short and a battle has at most a few prefetched turns.
+type AudioCacheEntry = {
+  status: "generating" | "ready" | "failed";
+  audioUrl?: string;
+  promise?: Promise<string>;
+  error?: string;
+};
 
-function cacheKey(text: string, voice: string): string {
-  return `${voice}::${text}`;
+const audioCache = new Map<string, AudioCacheEntry>();
+
+async function generateTTS(text: string, voice: string): Promise<string> {
+  const chunks = splitIntoSpeechChunks(text);
+  if (chunks.length === 0) throw new Error("Cannot generate TTS for empty text");
+
+  const blobs: Blob[] = [];
+  for (const chunk of chunks) {
+    const res = await fetch("/api/tts", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: chunk, voice }),
+    });
+
+    if (!res.ok) {
+      const message = await res.text().catch(() => res.statusText);
+      throw new Error(`TTS request failed (${res.status}): ${message}`);
+    }
+
+    blobs.push(await res.blob());
+  }
+
+  return URL.createObjectURL(new Blob(blobs, { type: "audio/mpeg" }));
 }
 
 /**
@@ -81,34 +107,29 @@ function cacheKey(text: string, voice: string): string {
  * Idempotent: if the key is already cached (or a fetch is in flight) this
  * returns immediately without a duplicate request.
  */
-const inFlightPrefetch = new Set<string>();
+export async function prefetchTTS(turnKey: string, text: string, side: "A" | "B"): Promise<void> {
+  if (audioCache.has(turnKey)) return;
 
-export async function prefetchTTS(text: string, side: "A" | "B"): Promise<void> {
   const voice = side === "A" ? VOICE_A : VOICE_B;
-  const key = cacheKey(sanitizeForSpeech(text), voice);
+  const promise = generateTTS(text, voice);
 
-  if (blobCache.has(key) || inFlightPrefetch.has(key)) return;
-  inFlightPrefetch.add(key);
+  audioCache.set(turnKey, {
+    status: "generating",
+    promise,
+  });
 
   try {
-    const chunks = splitIntoSpeechChunks(text);
-    if (chunks.length === 0) return;
-
-    const blobs: Blob[] = [];
-    for (const chunk of chunks) {
-      const res = await fetch("/api/tts", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: chunk, voice }),
-      });
-      if (!res.ok) return; // don't cache partial failures
-      blobs.push(await res.blob());
-    }
-    blobCache.set(key, blobs);
-  } catch {
+    const audioUrl = await promise;
+    audioCache.set(turnKey, {
+      status: "ready",
+      audioUrl,
+    });
+  } catch (err) {
+    audioCache.set(turnKey, {
+      status: "failed",
+      error: err instanceof Error ? err.message : String(err),
+    });
     // Non-fatal — if prefetch fails useTTS will fetch on demand
-  } finally {
-    inFlightPrefetch.delete(key);
   }
 }
 
@@ -117,6 +138,7 @@ export async function prefetchTTS(text: string, side: "A" | "B"): Promise<void> 
 interface UseTTSOptions {
   enabled: boolean;
   side: "A" | "B";
+  turnKey?: string | null;
   /** Called when the audio finishes playing naturally (not when aborted by new text). */
   onDone?: () => void;
 }
@@ -132,7 +154,7 @@ interface UseTTSOptions {
  */
 export function useTTS(
   text: string,
-  { enabled, side, onDone }: UseTTSOptions
+  { enabled, side, turnKey, onDone }: UseTTSOptions
 ): { speaking: boolean } {
   const audioRef    = useRef<HTMLAudioElement | null>(null);
   const lastRef     = useRef<string>("");
@@ -143,8 +165,9 @@ export function useTTS(
   useEffect(() => { onDoneRef.current = onDone; }, [onDone]);
 
   useEffect(() => {
-    if (!enabled || !text || text === lastRef.current) return;
-    lastRef.current = text;
+    const playbackKey = `${turnKey ?? side}::${text}`;
+    if (!enabled || !text || playbackKey === lastRef.current) return;
+    lastRef.current = playbackKey;
 
     abortRef.current?.abort();
     const controller = new AbortController();
@@ -163,10 +186,9 @@ export function useTTS(
       return;
     }
 
-    const playBlob = (blob: Blob) => new Promise<void>((resolve) => {
+    const playAudioUrl = (url: string, revokeWhenDone: boolean) => new Promise<void>((resolve) => {
       if (controller.signal.aborted) { resolve(); return; }
 
-      const url = URL.createObjectURL(blob);
       const audio = new Audio(url);
       audio.volume = 0.82;
       audioRef.current = audio;
@@ -176,7 +198,7 @@ export function useTTS(
         if (finished) return;
         finished = true;
         controller.signal.removeEventListener("abort", finish);
-        URL.revokeObjectURL(url);
+        if (revokeWhenDone) URL.revokeObjectURL(url);
         resolve();
       };
 
@@ -190,17 +212,25 @@ export function useTTS(
       try {
         setSpeaking(true);
 
-        // Check if all blobs are already cached from a prefetch call.
-        const key = cacheKey(sanitizeForSpeech(text), voice);
-        const cached = blobCache.get(key);
+        const cached = turnKey ? audioCache.get(turnKey) : undefined;
 
-        if (cached && cached.length === chunks.length) {
-          // Play from cache — zero API latency
-          for (const blob of cached) {
-            if (controller.signal.aborted) return;
-            await playBlob(blob);
-          }
+        if (cached?.status === "ready" && cached.audioUrl) {
+          // Play from cache — zero API latency.
+          await playAudioUrl(cached.audioUrl, false);
         } else {
+          if (cached?.status === "generating" && cached.promise) {
+            try {
+              const audioUrl = await cached.promise;
+              if (controller.signal.aborted) return;
+              await playAudioUrl(audioUrl, false);
+              setSpeaking(false);
+              onDoneRef.current?.();
+              return;
+            } catch {
+              // Fall through to on-demand generation below.
+            }
+          }
+
           // Fetch on demand (first chunk starts playing as soon as it arrives)
           for (const chunk of chunks) {
             const res = await fetch("/api/tts", {
@@ -221,7 +251,7 @@ export function useTTS(
             const blob = await res.blob();
             if (controller.signal.aborted) return;
 
-            await playBlob(blob);
+            await playAudioUrl(URL.createObjectURL(blob), true);
             if (controller.signal.aborted) return;
           }
         }
@@ -237,7 +267,7 @@ export function useTTS(
     })();
 
     return () => { controller.abort(); };
-  }, [text, enabled, side]);
+  }, [text, enabled, side, turnKey]);
 
   useEffect(() => () => {
     abortRef.current?.abort();

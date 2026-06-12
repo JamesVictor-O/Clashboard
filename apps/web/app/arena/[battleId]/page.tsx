@@ -127,6 +127,19 @@ function roundNumberFromPhase(phase: BattlePhase | null) {
 }
 
 interface DebateRound { a: string; b: string }
+type DebateTurnKey =
+  | "round1_agentA"
+  | "round1_agentB"
+  | "round2_agentA"
+  | "round2_agentB";
+
+function debateTurnKey(roundIndex: number, side: "A" | "B"): DebateTurnKey | null {
+  if (roundIndex === 0 && side === "A") return "round1_agentA";
+  if (roundIndex === 0 && side === "B") return "round1_agentB";
+  if (roundIndex === 1 && side === "A") return "round2_agentA";
+  if (roundIndex === 1 && side === "B") return "round2_agentB";
+  return null;
+}
 
 interface FloatingEmoji {
   id: string;
@@ -1021,6 +1034,7 @@ export default function BattlePage() {
   const [roundIndex, setRoundIndex] = useState(0);
   const [turn, setTurn] = useState<"A" | "B">("A");
   const [currentText, setCurrentText] = useState("");
+  const [currentTurnKey, setCurrentTurnKey] = useState<DebateTurnKey | null>(null);
 
   const [showRebuttal, setShowRebuttal] = useState(false);
   const [showRoundBreak, setShowRoundBreak] = useState(false);
@@ -1042,6 +1056,7 @@ export default function BattlePage() {
   const { speaking: ttsSpeaking } = useTTS(phase === "live" ? currentText : "", {
     enabled: true,
     side: turn,
+    turnKey: currentTurnKey,
     onDone: () => ttsOnDoneRef.current?.(),
   });
 
@@ -1077,7 +1092,7 @@ export default function BattlePage() {
 
   const verdictCalledRef = useRef(false);
   const currentStreamingAgentRef = useRef<"A" | "B" | null>(null);
-  const pendingNextTurnRef = useRef<{ text: string; turn: "A" | "B" } | null>(null);
+  const pendingNextTurnRef = useRef<{ text: string; turn: "A" | "B"; turnKey: DebateTurnKey | null } | null>(null);
   const driverStoppedRef = useRef(false);
   const driverInFlightRef = useRef(false);
   const lastSessionRegisterRef = useRef(0);
@@ -1098,8 +1113,16 @@ export default function BattlePage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ battleId, roundIndex: nextRoundIndex, side: nextSide }),
     })
-      .then((res) => {
-        if (res.ok) setResearchProgress(`${agent.name}'s next turn is ready.`);
+      .then(async (res) => {
+        if (!res.ok) return;
+        const data = await res.json().catch(() => null) as {
+          turn?: { status?: string; text?: string };
+        } | null;
+        const turnKey = debateTurnKey(nextRoundIndex, nextSide);
+        if (turnKey && data?.turn?.text && data.turn.status !== "failed") {
+          void prefetchTTS(turnKey, data.turn.text, nextSide);
+        }
+        setResearchProgress(`${agent.name}'s next turn is ready.`);
       })
       .catch((err) => {
         console.warn("[prefetch-round] request failed:", err);
@@ -1395,6 +1418,7 @@ export default function BattlePage() {
           case "SUBMITTED_A":
             currentStreamingAgentRef.current = "A";
             setTurn("A");
+            setCurrentTurnKey(debateTurnKey(step.roundIndex ?? 0, "A"));
             setStreamStatus("debate");
             setResearchProgress(null);
             setPhase("live");
@@ -1412,6 +1436,7 @@ export default function BattlePage() {
           case "SUBMITTED_B":
             currentStreamingAgentRef.current = "B";
             setTurn("B");
+            setCurrentTurnKey(debateTurnKey(step.roundIndex ?? 0, "B"));
             setStreamStatus("debate");
             setResearchProgress(null);
             setPhase("live");
@@ -1426,13 +1451,15 @@ export default function BattlePage() {
           case "SUBMITTED_BOTH":
             currentStreamingAgentRef.current = "A";
             setTurn("A");
+            setCurrentTurnKey(debateTurnKey(step.roundIndex ?? 0, "A"));
             setStreamStatus("debate");
             setResearchProgress(null);
             setPhase("live");
             if (step.agentAText && step.agentBText) {
               // Pre-warm B's TTS audio while A is speaking so the A→B switch is instant
-              void prefetchTTS(step.agentBText, "B");
-              pendingNextTurnRef.current = { text: step.agentBText, turn: "B" };
+              const bTurnKey = debateTurnKey(step.roundIndex ?? 0, "B");
+              if (bTurnKey) void prefetchTTS(bTurnKey, step.agentBText, "B");
+              pendingNextTurnRef.current = { text: step.agentBText, turn: "B", turnKey: bTurnKey };
               setCurrentText(step.agentAText);
               setTypingDone(false);
               waitForTTS = true;
@@ -1508,6 +1535,7 @@ export default function BattlePage() {
               console.log(`[Arena Driver] SUBMITTED_BOTH: switching to agent ${pending.turn}`);
               currentStreamingAgentRef.current = pending.turn;
               setTurn(pending.turn);
+              setCurrentTurnKey(pending.turnKey);
               setCurrentText(pending.text);
               setTypingDone(false);
               if ((step.roundIndex ?? 0) === 0 && pending.turn === "B") {

@@ -17,31 +17,32 @@ Scoring rules:
 - Write a concise but educational reasoning explaining why the winner won
 - Be decisive — no ties, no hedging
 
-Output ONLY valid JSON matching this exact schema:
+Output ONLY valid JSON. Do not include markdown, code fences, comments, or text before or after the JSON.
+Use this exact shape, with real numeric scores:
 {
-  "winner": "A" | "B",
+  "winner": "A",
   "agentScores": {
     "A": {
-      "accuracy": number,
-      "evidence": number,
-      "rebuttal": number,
-      "persuasion": number,
-      "entertainment": number,
-      "total": number
+      "accuracy": 86,
+      "evidence": 82,
+      "rebuttal": 88,
+      "persuasion": 84,
+      "entertainment": 79,
+      "total": 84
     },
     "B": {
-      "accuracy": number,
-      "evidence": number,
-      "rebuttal": number,
-      "persuasion": number,
-      "entertainment": number,
-      "total": number
+      "accuracy": 78,
+      "evidence": 75,
+      "rebuttal": 73,
+      "persuasion": 76,
+      "entertainment": 81,
+      "total": 76
     }
   },
-  "bestLine": "string",
-  "turningPoint": "string",
-  "reasoning": "string",
-  "confidence": number
+  "bestLine": "The strongest quoted or paraphrased line from the debate.",
+  "turningPoint": "The decisive moment in one sentence.",
+  "reasoning": "Two concise sentences explaining why the winner won.",
+  "confidence": 0.86
 }`;
 
 /**
@@ -121,7 +122,7 @@ Judge this debate. Output only the JSON verdict.`;
   const judgeCallOptions = {
     model: getVeniceModel("judge"),
     temperature: 0.28,
-    maxTokens: Number(process.env.VENICE_JUDGE_MAX_TOKENS ?? 700),
+    maxTokens: Number(process.env.VENICE_JUDGE_MAX_TOKENS ?? 1400),
   };
 
   const judgeTimeoutMs = Number(process.env.VENICE_JUDGE_TIMEOUT_MS ?? 25_000);
@@ -139,7 +140,13 @@ Judge this debate. Output only the JSON verdict.`;
     if (!cleaned) return null;
     try {
       return JSON.parse(cleaned) as JudgeJSON;
-    } catch {
+    } catch (err) {
+      console.warn(
+        "[Judge] JSON parse failed:",
+        err instanceof Error ? err.message : String(err),
+        "raw preview:",
+        text.slice(0, 240)
+      );
       return null;
     }
   };
@@ -154,12 +161,12 @@ Judge this debate. Output only the JSON verdict.`;
       {
         role: "user",
         content:
-          "Your previous response was not valid JSON. Return ONLY valid JSON — no markdown, no code fences, no explanation. Exact schema:\n" +
-          '{"winner":"A","agentScores":{"A":{"accuracy":0,"evidence":0,"rebuttal":0,"persuasion":0,"entertainment":0,"total":0},"B":{"accuracy":0,"evidence":0,"rebuttal":0,"persuasion":0,"entertainment":0,"total":0}},"bestLine":"","turningPoint":"","reasoning":"","confidence":0.0}',
+          "Your previous response was not valid JSON. Return ONLY one complete JSON object — no markdown, no code fences, no explanation, no trailing text. Use this exact shape with real scores:\n" +
+          '{"winner":"A","agentScores":{"A":{"accuracy":86,"evidence":82,"rebuttal":88,"persuasion":84,"entertainment":79,"total":84},"B":{"accuracy":78,"evidence":75,"rebuttal":73,"persuasion":76,"entertainment":81,"total":76}},"bestLine":"short line","turningPoint":"one sentence","reasoning":"two concise sentences","confidence":0.86}',
       },
     ];
     const retryRaw = await withTimeout(
-      complete(retryMessages, { ...judgeCallOptions, temperature: 0.05, maxTokens: 450 }),
+      complete(retryMessages, { ...judgeCallOptions, temperature: 0.05 }),
       judgeTimeoutMs,
       "Venice judge retry"
     ).catch((err) => {
