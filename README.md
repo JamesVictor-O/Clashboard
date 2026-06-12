@@ -336,8 +336,12 @@ the same `withX402Payment()` wrapper but sets `payTo` to the
 **original selling agent's wallet address** — USDC flows directly from buyer to
 seller agent, on-chain, via the 1Shot relayer.
 
-Artifact inventory: [`apps/web/lib/research-store.ts`](apps/web/lib/research-store.ts)
-(in-memory for this hackathon — see Known Limitations).
+Artifact content is generated at purchase time by Venice AI (topic-specific facts,
+not static templates) via
+[`generate-research-artifact.ts`](apps/web/lib/research/generate-research-artifact.ts).
+Sources are labelled `"Venice-generated synthesis"`. Artifact inventory:
+[`apps/web/lib/research-store.ts`](apps/web/lib/research-store.ts) (in-memory —
+see Known Limitations).
 
 ---
 
@@ -524,6 +528,17 @@ shortcut. Production would use a hardware-backed enclave or TEE.
 ([`battle-store.ts`](apps/web/lib/battle-store.ts),
 [`research-store.ts`](apps/web/lib/research-store.ts)). State is lost on server
 restart. Production would use a database.
+
+**Research artifacts are Venice-generated synthesis.** The x402 payment rail,
+ERC-7710 re-delegation, and A2A resale mechanism are real. The content inside each
+`ResearchArtifact` — `summary`, `facts`, and `sources` — is generated at purchase
+time by Venice AI (`gemini-3-5-flash` via `VENICE_RESEARCH_MODEL`) using the agent's
+debate topic as input. Sources are honestly labelled `"Venice-generated synthesis"`.
+After purchase, the artifact stored in the A2A marketplace contains topic-specific
+facts generated at that moment, not static template text. Wiring to a live sports
+or news API would replace the Venice call in
+[`generate-research-artifact.ts`](apps/web/lib/research/generate-research-artifact.ts)
+without changing the payment or resale flow.
 
 **Budget split is informational.** The 70/30 arena/research split is stored as
 metadata labels only (inside [`grantPermissions()`](apps/web/lib/metamask.ts#L350)).

@@ -5,7 +5,11 @@ import { inferResearchCategory, priceResearchArtifact } from "@/lib/research-pri
 import { researchStore } from "@/lib/research-store";
 import { getX402PayToAddress, X402_NETWORK_ID } from "@/lib/x402/facilitator";
 import { withX402Payment } from "@/lib/x402/next";
+import { generateResearchArtifact } from "@/lib/research/generate-research-artifact";
 import type { ResearchArtifact } from "@/lib/types";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const QuerySchema = z.object({
   topic: z.string().min(1).max(280),
@@ -42,6 +46,8 @@ export async function GET(req: NextRequest) {
       mimeType: "application/json",
     },
     async () => {
+      const generated = await generateResearchArtifact({ topic: parsed.data.topic, category });
+
       const artifact: ResearchArtifact = {
         id: `research_${randomUUID()}`,
         ownerAgentId: parsed.data.ownerAgentId,
@@ -50,13 +56,9 @@ export async function GET(req: NextRequest) {
           "0x0000000000000000000000000000000000000000") as `0x${string}`,
         topic: parsed.data.topic,
         category,
-        facts: [
-          `Current discourse around ${parsed.data.topic} is split across fan sentiment and expert commentary.`,
-          "Recent news context should be treated as supporting evidence, not the whole argument.",
-          "Debate strength improves when the fighter separates popularity from measurable impact.",
-        ],
-        sources: ["Mock News Sentiment Feed", "Mock Trend Monitor"],
-        summary: `News and sentiment research packet for ${parsed.data.topic}.`,
+        summary: generated.summary,
+        facts: generated.facts,
+        sources: generated.sources,
         priceUSDC,
         createdAt: Date.now(),
       };

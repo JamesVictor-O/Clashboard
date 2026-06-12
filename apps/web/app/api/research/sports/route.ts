@@ -5,7 +5,11 @@ import { researchStore } from "@/lib/research-store";
 import { priceResearchArtifact } from "@/lib/research-pricing";
 import { getX402PayToAddress, X402_NETWORK_ID } from "@/lib/x402/facilitator";
 import { withX402Payment } from "@/lib/x402/next";
+import { generateResearchArtifact } from "@/lib/research/generate-research-artifact";
 import type { ResearchArtifact } from "@/lib/types";
+
+export const runtime = "nodejs";
+export const dynamic = "force-dynamic";
 
 const QuerySchema = z.object({
   topic: z.string().min(1).max(280),
@@ -41,6 +45,11 @@ export async function GET(req: NextRequest) {
       mimeType: "application/json",
     },
     async () => {
+      const generated = await generateResearchArtifact({
+        topic: parsed.data.topic,
+        category: "sports",
+      });
+
       const artifact: ResearchArtifact = {
         id: `research_${randomUUID()}`,
         ownerAgentId: parsed.data.ownerAgentId,
@@ -49,13 +58,9 @@ export async function GET(req: NextRequest) {
           "0x0000000000000000000000000000000000000000") as `0x${string}`,
         topic: parsed.data.topic,
         category: "sports",
-        facts: [
-          `Recent form and historical stats materially affect the debate on ${parsed.data.topic}.`,
-          "Career longevity, peak output, and playoff/finals performance should be compared separately.",
-          "Crowd claims are stronger when they cite era-adjusted records instead of raw totals alone.",
-        ],
-        sources: ["Mock Sports Reference", "Mock Historical Box Scores"],
-        summary: `Sports research packet for ${parsed.data.topic}.`,
+        summary: generated.summary,
+        facts: generated.facts,
+        sources: generated.sources,
         priceUSDC,
         createdAt: Date.now(),
       };
