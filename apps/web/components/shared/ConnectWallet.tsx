@@ -5,6 +5,10 @@ import { motion, AnimatePresence } from "framer-motion";
 import { connectWallet, getProvider, getSelectedWalletAddress, checkSmartAccountStatus } from "@/lib/metamask";
 import { CHAIN_ID } from "@/lib/contracts";
 
+function emitWalletChanged(address: string | null) {
+  window.dispatchEvent(new CustomEvent("clashboard:walletChanged", { detail: { address } }));
+}
+
 /**
  * Wallet connect button that uses window.ethereum directly.
  * The MetaMask SDK wraps window.ethereum but shows an "choose extension" modal
@@ -45,6 +49,7 @@ export function ConnectWallet() {
       const addr = list[0] ?? null;
       setAddress(addr);
       setSaActive(null);
+      emitWalletChanged(addr);
       if (addr) void runSmartAccountCheck(addr);
     };
     eth.on?.("accountsChanged", onAccountsChanged);
@@ -62,6 +67,7 @@ export function ConnectWallet() {
       const accounts = await connectWallet();
       if (!accounts[0]) throw new Error("No accounts returned");
       setAddress(accounts[0]);
+      emitWalletChanged(accounts[0]);
 
       // Switch to the target chain
       const chainId = String(CHAIN_ID);
@@ -99,6 +105,7 @@ export function ConnectWallet() {
   const handleDisconnect = () => {
     setAddress(null);
     setSaActive(null);
+    emitWalletChanged(null);
   };
 
   const shortAddress = address

@@ -126,6 +126,12 @@ type StatusResult = {
   receipt?: { transactionHash: `0x${string}` };
 };
 
+type PaymentShortfall = {
+  payment: bigint;
+  required: bigint;
+  shortfall: bigint;
+};
+
 const MOCK_TX = "0x0000000000000000000000000000000000000000000000000000000000000000" as const;
 
 function relayerUrl(chainId: number): string {
@@ -200,6 +206,15 @@ export function decimalsOf(token: TokenDetails): number {
 export function feeAmountToAtoms(amount: string, decimals: number): bigint {
   if (/^\d+$/.test(amount)) return BigInt(amount);
   return parseUnits(amount, decimals);
+}
+
+function parsePaymentShortfall(message: string): PaymentShortfall | null {
+  const match = message.match(/payment is (\d+) but the total required payment is (\d+)/i);
+  if (!match) return null;
+  const payment = BigInt(match[1]);
+  const required = BigInt(match[2]);
+  if (required <= payment) return null;
+  return { payment, required, shortfall: required - payment };
 }
 
 export async function getCapabilities(chainId: number): Promise<RelayerCapability> {
@@ -369,39 +384,55 @@ export async function execute1Shot(req: OneShotExecuteRequest): Promise<OneShotE
   const feeAmount = feeAmountToAtoms(feeData.minFee, feeTokenDecimals);
   const permissionContext = normalizePermissionContext(req.permissionContext.context);
 
-  const executions = [
-    {
-      target: token,
-      value: "0x0",
-      data: encodeFunctionData({
-        abi: ERC20_TRANSFER_ABI,
-        functionName: "transfer",
-        args: [feeCollector, feeAmount],
-      }) as Hex,
-    },
-    ...req.calls.map((call) => ({
-      target: call.to,
-      value: call.value ?? "0x0",
-      data: call.data,
-    })),
-  ];
+  const buildTransactions = (feePaymentAmount: bigint) => {
+    const executions = [
+      {
+        target: token,
+        value: "0x0",
+        data: encodeFunctionData({
+          abi: ERC20_TRANSFER_ABI,
+          functionName: "transfer",
+          args: [feeCollector, feePaymentAmount],
+        }) as Hex,
+      },
+      ...req.calls.map((call) => ({
+        target: call.to,
+        value: call.value ?? "0x0",
+        data: call.data,
+      })),
+    ];
 
-  // ERC20PeriodTransferEnforcer only accepts one ERC-20 transfer execution per
-  // redemption. Keep fee and action prefunds as separate redemption entries.
-  const transactions = executions.map((execution) => ({
-    permissionContext,
-    executions: [execution],
-  }));
+    // ERC20PeriodTransferEnforcer only accepts one ERC-20 transfer execution per
+    // redemption. Keep each transfer as its own redemption entry.
+    return executions.map((execution) => ({
+      permissionContext,
+      executions: [execution],
+    }));
+  };
 
-  const taskId = await relayerRpc<`0x${string}`>(chainId, "relayer_send7710Transaction", {
-    chainId: String(chainId),
-    context: feeData.context,
-    transactions,
-  });
+  const sendAndPoll = async (feePaymentAmount: bigint) => {
+    const taskId = await relayerRpc<`0x${string}`>(chainId, "relayer_send7710Transaction", {
+      chainId: String(chainId),
+      context: feeData.context,
+      transactions: buildTransactions(feePaymentAmount),
+    });
+    const status = await pollStatus(chainId, taskId);
+    return { taskId, status };
+  };
 
-  const status = await pollStatus(chainId, taskId);
+  let { taskId, status } = await sendAndPoll(feeAmount);
   if (status.status === 400 || status.status === 500) {
-    throw new Error(`1Shot task ${taskId} failed: ${status.message ?? JSON.stringify(status.data ?? {})}`);
+    const message = status.message ?? JSON.stringify(status.data ?? {});
+    const shortfall = parsePaymentShortfall(message);
+    if (shortfall) {
+      console.warn(
+        `[1Shot] Fee payment ${shortfall.payment} below required ${shortfall.required}; retrying with required fee payment.`
+      );
+      ({ taskId, status } = await sendAndPoll(shortfall.required));
+    }
+    if (status.status === 400 || status.status === 500) {
+      throw new Error(`1Shot task ${taskId} failed: ${status.message ?? JSON.stringify(status.data ?? {})}`);
+    }
   }
   if (status.status !== 200) {
     const plateauMs = RELAYER_POLL_SCHEDULE_MS[RELAYER_POLL_SCHEDULE_MS.length - 1];

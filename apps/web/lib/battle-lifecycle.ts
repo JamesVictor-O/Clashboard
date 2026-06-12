@@ -1,5 +1,10 @@
 import { runDebateRound, runResearchPhase, setupBattle } from "@/lib/agents/orchestrator";
-import { battleStore, type StoredBattle } from "@/lib/battle-store";
+import {
+  battleStore,
+  type DebateTurnKey,
+  type DebateTurnState,
+  type StoredBattle,
+} from "@/lib/battle-store";
 import { deterministicRubricJson, ensureBattleRuntime } from "@/lib/battle-runtime";
 import { researchStore } from "@/lib/research-store";
 import {
@@ -281,78 +286,144 @@ function phaseFromContractNum(n: number): BattlePhase {
 /** Concurrent step guard — prevents two ticks from racing on the same battle. */
 const stepInFlight = new Set<string>();
 
-/** Prefetch guard — at most one lookahead generation per battle at a time. */
+/** Prefetch guard — at most one lookahead generation per battle turn at a time. */
 const prefetchInFlight = new Set<string>();
 
-/**
- * Pre-generate the next debate round's arguments while the current round's
- * voices are still playing on the client.
- *
- * Called fire-and-forget from the arena page immediately after a SUBMITTED_BOTH
- * step lands. Results are cached in stored.prefetchedNextRound. When the actual
- * next-round SUBMITTED_BOTH tick runs, it finds the cache and skips Venice AI
- * generation entirely — going straight to on-chain submission.
- *
- * Both agents are generated in parallel. A and B can do this safely because
- * the current step runner already generates them with the same rounds history
- * (neither sees the other's current-round text — only previous rounds).
- */
-export async function prefetchNextRound(battleId: `0x${string}`): Promise<void> {
-  if (prefetchInFlight.has(battleId)) return;
-  prefetchInFlight.add(battleId);
-  try {
-    const stored = battleStore.get(battleId);
-    if (!stored) return;
+function debateTurnKey(roundIndex: number, side: "A" | "B"): DebateTurnKey | null {
+  if (roundIndex === 0 && side === "A") return "round1_agentA";
+  if (roundIndex === 0 && side === "B") return "round1_agentB";
+  if (roundIndex === 1 && side === "A") return "round2_agentA";
+  if (roundIndex === 1 && side === "B") return "round2_agentB";
+  return null;
+}
 
-    const pending = stored.pendingRound;
-    if (!pending?.agentAText || !pending?.agentBText) return;
+function setDebateTurnState(
+  stored: StoredBattle,
+  key: DebateTurnKey,
+  state: Omit<DebateTurnState, "updatedAt">
+) {
+  stored.debateTurns = {
+    ...(stored.debateTurns ?? {}),
+    [key]: { ...state, updatedAt: Date.now() },
+  };
+}
 
-    const nextRoundIndex = pending.roundIndex + 1;
-    const totalRounds = stored.battle.totalRounds ?? 2;
-    if (nextRoundIndex >= totalRounds) return; // no more debate rounds
+function completedRoundFromPending(stored: StoredBattle): Round | null {
+  const pending = stored.pendingRound;
+  if (!pending?.agentAText || !pending?.agentBText) return null;
+  return {
+    index: pending.roundIndex,
+    agentAText: pending.agentAText,
+    agentBText: pending.agentBText,
+    timestamp: Date.now(),
+  };
+}
 
-    // Already cached
-    if (stored.prefetchedNextRound?.forRoundIndex === nextRoundIndex) return;
+function roundsForGeneration(stored: StoredBattle, roundIndex: number, side: "A" | "B"): Round[] | null {
+  if (roundIndex === 0) return stored.rounds;
 
-    const { agentAConfig, agentBConfig } = await setupBattle(stored.battle);
-    if (stored.researchContextA) agentAConfig.researchContext = stored.researchContextA;
-    if (stored.researchContextB) agentBConfig.researchContext = stored.researchContextB;
+  const rounds = [...stored.rounds];
+  const currentPendingAsPrior = completedRoundFromPending(stored);
+  if (currentPendingAsPrior && currentPendingAsPrior.index === roundIndex - 1) {
+    rounds.push(currentPendingAsPrior);
+  }
 
-    // Simulate the rounds history the worker will have after ADVANCED_ROUND runs.
-    // We include the current round's texts so agents can form proper rebuttals.
-    const simulatedRounds: import("@/lib/types").Round[] = [
-      ...stored.rounds,
+  if (side === "B" && roundIndex === 1) {
+    const key = debateTurnKey(roundIndex, "A");
+    const agentAText = key ? stored.debateTurns?.[key]?.text ?? stored.pendingRound?.agentAText : stored.pendingRound?.agentAText;
+    if (!agentAText) return null;
+    const roundOne = rounds.find((round) => round.index === 0);
+    if (!roundOne) return null;
+    return [
+      roundOne,
       {
-        index: pending.roundIndex,
-        agentAText: pending.agentAText,
-        agentBText: pending.agentBText,
+        index: roundIndex,
+        agentAText,
+        agentBText: "",
         timestamp: Date.now(),
       },
     ];
+  }
 
-    console.log(`[Prefetch] generating round ${nextRoundIndex + 1} for battle ${battleId}`);
+  return rounds;
+}
 
-    const [agentAText, agentBText] = await Promise.all([
-      (async () => {
-        let text = "";
-        await runDebateRound(stored.battle, agentAConfig, "A", simulatedRounds, (token) => { text += token; });
-        return text;
-      })(),
-      (async () => {
-        let text = "";
-        await runDebateRound(stored.battle, agentBConfig, "B", simulatedRounds, (token) => { text += token; });
-        return text;
-      })(),
-    ]);
+async function generateTurnText(stored: StoredBattle, roundIndex: number, side: "A" | "B"): Promise<string | null> {
+  const rounds = roundsForGeneration(stored, roundIndex, side);
+  if (!rounds) return null;
 
-    stored.prefetchedNextRound = { forRoundIndex: nextRoundIndex, agentAText, agentBText };
+  const { agentAConfig, agentBConfig } = await setupBattle(stored.battle);
+  if (stored.researchContextA) agentAConfig.researchContext = stored.researchContextA;
+  if (stored.researchContextB) agentBConfig.researchContext = stored.researchContextB;
+  const agentConfig = side === "A" ? agentAConfig : agentBConfig;
+
+  let text = "";
+  await runDebateRound(stored.battle, agentConfig, side, rounds, (token) => {
+    text += token;
+  });
+  return text;
+}
+
+/**
+ * Pre-generate a single upcoming debate turn while the opponent is speaking.
+ * Round 2 A sees both round 1 openings. Round 2 B sees round 1 plus A's
+ * round 2 rebuttal, so the second rebuttal is actually reactive.
+ */
+export async function prefetchDebateTurn(
+  battleId: `0x${string}`,
+  params: { roundIndex: number; side: "A" | "B" }
+): Promise<DebateTurnState | undefined> {
+  const key = debateTurnKey(params.roundIndex, params.side);
+  if (!key) return undefined;
+
+  const flightKey = `${battleId}:${key}`;
+  if (prefetchInFlight.has(flightKey)) {
+    return battleStore.get(battleId)?.debateTurns?.[key];
+  }
+  prefetchInFlight.add(flightKey);
+  try {
+    const stored = battleStore.get(battleId);
+    if (!stored) return undefined;
+
+    const existing = stored.debateTurns?.[key];
+    if (existing?.status === "ready" && existing.text) return existing;
+
+    setDebateTurnState(stored, key, { status: "generating" });
     battleStore.set(battleId, stored);
-    console.log(`[Prefetch] round ${nextRoundIndex + 1} ready for battle ${battleId}`);
+    console.log(`[Prefetch] generating ${key} for battle ${battleId}`);
+
+    const text = await generateTurnText(stored, params.roundIndex, params.side);
+    const latest = battleStore.get(battleId) ?? stored;
+    if (latest.debateTurns?.[key]?.status === "completed") {
+      return latest.debateTurns[key];
+    }
+    if (!text) {
+      setDebateTurnState(latest, key, {
+        status: "failed",
+        error: "Required prior turn context is not ready.",
+      });
+      battleStore.set(battleId, latest);
+      return latest.debateTurns?.[key];
+    }
+
+    setDebateTurnState(latest, key, { status: "ready", text });
+    battleStore.set(battleId, latest);
+    console.log(`[Prefetch] ${key} ready for battle ${battleId}`);
+    return latest.debateTurns?.[key];
   } catch (err) {
-    console.warn(`[Prefetch] background generation failed for battle ${battleId}:`, err);
+    const stored = battleStore.get(battleId);
+    if (stored) {
+      setDebateTurnState(stored, key, {
+        status: "failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+      battleStore.set(battleId, stored);
+    }
+    console.warn(`[Prefetch] background generation failed for ${battleId}:${key}:`, err);
     // Non-fatal — the main step runner will generate normally on the next tick.
+    return stored?.debateTurns?.[key];
   } finally {
-    prefetchInFlight.delete(battleId);
+    prefetchInFlight.delete(flightKey);
   }
 }
 
@@ -516,52 +587,66 @@ async function _runStep(
         };
       }
 
-      // ── Normal path: generate A and B together so the client gets both
-      //    texts in one response, eliminating the inter-agent dead-time gap.
-      //
-      //    Fast path: if the client fired a prefetch while the previous round's
-      //    voices were playing, the arguments are already cached — skip Venice AI
-      //    and go straight to on-chain submission.
       let agentAText = "";
-      let agentBText = "";
 
-      const prefetch = stored.prefetchedNextRound;
-      if (prefetch?.forRoundIndex === roundIndex && prefetch.agentAText && prefetch.agentBText) {
-        log("using prefetched arguments — skipping generation");
-        agentAText = prefetch.agentAText;
-        agentBText = prefetch.agentBText;
-        stored.prefetchedNextRound = undefined;
+      const turnKey = debateTurnKey(roundIndex, "A");
+      const prefetchedA = turnKey ? stored.debateTurns?.[turnKey] : undefined;
+      if (prefetchedA?.status === "ready" && prefetchedA.text) {
+        log(`using prefetched ${turnKey}`);
+        agentAText = prefetchedA.text;
       } else {
-        log("generating Agent A argument");
+        if (prefetchedA?.status === "generating") {
+          log(`${turnKey} still generating — waiting in foreground`);
+        } else {
+          log("generating Agent A argument");
+        }
         emit({ type: "turn", data: { agent: "A", round: roundIndex + 1 } });
 
-        await runDebateRound(stored.battle, agentAConfig, "A", stored.rounds, (token) => {
+        await runDebateRound(stored.battle, agentAConfig, "A", roundsForGeneration(stored, roundIndex, "A") ?? stored.rounds, (token) => {
           agentAText += token;
           emit({ type: "token", data: { agent: "A", text: token } });
         });
-
-        log("generating Agent B argument");
-        emit({ type: "turn", data: { agent: "B", round: roundIndex + 1 } });
-
-        await runDebateRound(stored.battle, agentBConfig, "B", stored.rounds, (token) => {
-          agentBText += token;
-          emit({ type: "token", data: { agent: "B", text: token } });
-        });
       }
 
-      // Submit both on-chain sequentially (same relayer key, avoid nonce race).
       const txA = await safeWrite(`submitArgument A round ${roundIndex + 1}`, () =>
         submitArgumentOnChain({ battleId, side: 1, contentHash: argContentHash(agentAText) })
-      );
-      const txB = await safeWrite(`submitArgument B round ${roundIndex + 1}`, () =>
-        submitArgumentOnChain({ battleId, side: 2, contentHash: argContentHash(agentBText) })
       );
 
       pending.agentAText = agentAText;
       pending.agentATxHash = txA ?? undefined;
+      stored.pendingRound = pending;
+      if (turnKey) setDebateTurnState(stored, turnKey, { status: "completed", text: agentAText });
+
+      // Round 1 is preloaded before playback starts, so send B too. Later
+      // rounds intentionally return after A so B can react to A's new rebuttal.
+      if (roundIndex > 0) {
+        battleStore.set(battleId, stored);
+        log("submitted Agent A argument");
+        return {
+          battleId, action: "SUBMITTED_A", phase: contractPhase,
+          roundIndex, txHash: txA ?? undefined, logs,
+          agentAText,
+        };
+      }
+
+      let agentBText = "";
+      log("generating Agent B argument");
+      emit({ type: "turn", data: { agent: "B", round: roundIndex + 1 } });
+
+      await runDebateRound(stored.battle, agentBConfig, "B", stored.rounds, (token) => {
+        agentBText += token;
+        emit({ type: "token", data: { agent: "B", text: token } });
+      });
+
+      const txB = await safeWrite(`submitArgument B round ${roundIndex + 1}`, () =>
+        submitArgumentOnChain({ battleId, side: 2, contentHash: argContentHash(agentBText) })
+      );
+
       pending.agentBText = agentBText;
       pending.agentBTxHash = txB ?? undefined;
       stored.pendingRound = pending;
+      const bTurnKey = debateTurnKey(roundIndex, "B");
+      if (bTurnKey) setDebateTurnState(stored, bTurnKey, { status: "completed", text: agentBText });
       battleStore.set(battleId, stored);
       log("submitted Agent A + Agent B arguments");
 
@@ -592,14 +677,25 @@ async function _runStep(
         };
       }
 
-      log("generating Agent B argument");
-      emit({ type: "turn", data: { agent: "B", round: roundIndex + 1 } });
-
       let agentBText = "";
-      await runDebateRound(stored.battle, agentBConfig, "B", stored.rounds, (token) => {
-        agentBText += token;
-        emit({ type: "token", data: { agent: "B", text: token } });
-      });
+      const turnKey = debateTurnKey(roundIndex, "B");
+      const prefetchedB = turnKey ? stored.debateTurns?.[turnKey] : undefined;
+      if (prefetchedB?.status === "ready" && prefetchedB.text) {
+        log(`using prefetched ${turnKey}`);
+        agentBText = prefetchedB.text;
+      } else {
+        if (prefetchedB?.status === "generating") {
+          log(`${turnKey} still generating — waiting in foreground`);
+        } else {
+          log("generating Agent B argument");
+        }
+        emit({ type: "turn", data: { agent: "B", round: roundIndex + 1 } });
+
+        await runDebateRound(stored.battle, agentBConfig, "B", roundsForGeneration(stored, roundIndex, "B") ?? stored.rounds, (token) => {
+          agentBText += token;
+          emit({ type: "token", data: { agent: "B", text: token } });
+        });
+      }
 
       const txB = await safeWrite(`submitArgument B round ${roundIndex + 1}`, () =>
         submitArgumentOnChain({ battleId, side: 2, contentHash: argContentHash(agentBText) })
@@ -608,6 +704,7 @@ async function _runStep(
       pending.agentBText = agentBText;
       pending.agentBTxHash = txB ?? undefined;
       stored.pendingRound = pending;
+      if (turnKey) setDebateTurnState(stored, turnKey, { status: "completed", text: agentBText });
       battleStore.set(battleId, stored);
       log("submitted Agent B argument");
 
@@ -687,5 +784,10 @@ async function _runStep(
 
   // ── TERMINAL / UNKNOWN ────────────────────────────────────────────────────
   log(`terminal state — no action taken`);
+  if (contractPhase === "SETTLED") {
+    stored.phase = "SETTLED";
+    stored.battle.state = "SETTLED";
+    battleStore.set(battleId, stored);
+  }
   return { battleId, action: "NO_OP", phase: contractPhase, logs };
 }

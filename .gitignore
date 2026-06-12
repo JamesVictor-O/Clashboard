@@ -27,6 +27,7 @@ packages/contracts/lib/
 
 # Clashboard runtime — contains agent session private keys, never commit
 .clashboard-sessions.json
+apps/web/.clashboard-arena-perms.json
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*

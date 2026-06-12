@@ -158,12 +158,23 @@ export async function syncBattleRuntimeFromChain(battleId: `0x${string}`): Promi
     getAgentDisplay(tuple[2], "B"),
   ]);
 
+  let phase = mapContractPhase(phaseNum);
+  if (existing?.phase === "SETTLED") {
+    phase = "SETTLED";
+  }
+
+  const winner = tuple[3].toLowerCase() === ZERO_ADDRESS ? existing?.battle.winner ?? null : tuple[3];
+  const state =
+    phase === "SETTLED" || winner
+      ? "SETTLED"
+      : mapContractState(stateNum);
+
   const battle: Battle = {
     id: battleId,
     topic,
     agentA,
     agentB,
-    state: mapContractState(stateNum),
+    state,
     poolA: tuple[5] + tuple[7],
     poolB: tuple[6] + tuple[8],
     bettingDeadline: tuple[9],
@@ -174,13 +185,12 @@ export async function syncBattleRuntimeFromChain(battleId: `0x${string}`): Promi
     currentRoundDeadline: tuple[16],
     prepareDeadline: tuple[17],
     rubricHash,
-    winner: tuple[3].toLowerCase() === ZERO_ADDRESS ? null : tuple[3],
+    winner,
     bettorCount: 0,
     createdAt: Number(tuple[9] - 300n) * 1000,
   };
 
   const nowSec = BigInt(Math.floor(Date.now() / 1000));
-  let phase = mapContractPhase(phaseNum);
   if (phase === "BETTING" && nowSec >= battle.bettingDeadline) {
     phase = "PREPARING";
   }
@@ -219,6 +229,7 @@ export async function syncBattleRuntimeFromChain(battleId: `0x${string}`): Promi
     researchContextA: existing?.researchContextA,
     researchContextB: existing?.researchContextB,
     pendingRound: existing?.pendingRound,
+    debateTurns: existing?.debateTurns,
   };
 
   battleStore.set(battleId, stored);

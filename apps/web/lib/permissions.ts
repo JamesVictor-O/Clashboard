@@ -78,6 +78,20 @@ export function getResearchPermissionContext(address: string): StoredPermission 
   return readPermissionContext(address, RESEARCH_PERMISSION_KEY(address));
 }
 
+export function getAnyActivePermissionContext(): StoredPermission | null {
+  if (typeof window === "undefined") return null;
+
+  for (let i = 0; i < localStorage.length; i++) {
+    const key = localStorage.key(i);
+    if (!key?.startsWith("clashboard_perms_")) continue;
+    const address = key.replace("clashboard_perms_", "");
+    const permission = readPermissionContext(address, key);
+    if (permission) return permission;
+  }
+
+  return null;
+}
+
 function readPermissionContext(address: string, storageKey: string): StoredPermission | null {
   if (typeof window === "undefined") return null;
   try {

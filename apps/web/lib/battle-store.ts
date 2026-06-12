@@ -17,11 +17,25 @@ export interface PendingRound {
   agentBTxHash?: string;
 }
 
-export interface PrefetchedRound {
-  /** 0-based round index this pre-generation targets */
-  forRoundIndex: number;
-  agentAText: string;
-  agentBText: string;
+export type DebateTurnKey =
+  | "round1_agentA"
+  | "round1_agentB"
+  | "round2_agentA"
+  | "round2_agentB";
+
+export type DebateTurnStatus =
+  | "idle"
+  | "generating"
+  | "ready"
+  | "speaking"
+  | "completed"
+  | "failed";
+
+export interface DebateTurnState {
+  status: DebateTurnStatus;
+  text?: string;
+  error?: string;
+  updatedAt: number;
 }
 
 export interface StoredBattle {
@@ -35,12 +49,8 @@ export interface StoredBattle {
   researchContextB?: string;
   /** Partial-round progress for the step-based state machine runner */
   pendingRound?: PendingRound;
-  /**
-   * Arguments pre-generated while the current round's voices are still playing.
-   * When present, the next SUBMITTED_BOTH step uses these directly and skips
-   * the Venice AI generation call — eliminating the inter-round wait for users.
-   */
-  prefetchedNextRound?: PrefetchedRound;
+  /** Per-turn background generation state for live conversational playback. */
+  debateTurns?: Partial<Record<DebateTurnKey, DebateTurnState>>;
 }
 
 // ─── In-Memory Store ──────────────────────────────────────────────────────────
@@ -100,7 +110,7 @@ class BattleStore {
 // Singleton — pinned to globalThis so it survives Next.js dev hot-reloads
 // that re-evaluate the module but reuse the same Node.js process. Without
 // this, a route recompilation creates a fresh BattleStore and loses all
-// in-memory state (pendingRound, prefetchedNextRound, etc.).
+// in-memory state (pendingRound, debateTurns, etc.).
 const g = globalThis as typeof globalThis & { __clashboardBattleStore?: BattleStore };
 export const battleStore = g.__clashboardBattleStore ?? (g.__clashboardBattleStore = new BattleStore());
 

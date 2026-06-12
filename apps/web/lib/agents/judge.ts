@@ -121,21 +121,32 @@ Judge this debate. Output only the JSON verdict.`;
   const judgeCallOptions = {
     model: getVeniceModel("judge"),
     temperature: 0.28,
-    maxTokens: Number(process.env.VENICE_JUDGE_MAX_TOKENS ?? 900),
+    maxTokens: Number(process.env.VENICE_JUDGE_MAX_TOKENS ?? 700),
   };
 
-  const raw = await complete(judgeMessages, judgeCallOptions);
+  const judgeTimeoutMs = Number(process.env.VENICE_JUDGE_TIMEOUT_MS ?? 25_000);
+  const raw = await withTimeout(
+    complete(judgeMessages, judgeCallOptions),
+    judgeTimeoutMs,
+    "Venice judge"
+  ).catch((err) => {
+    console.warn("[Judge] initial call failed:", err);
+    return "";
+  });
 
-  const parseJudgeRaw = (text: string): JudgeJSON => {
-    const cleaned = text.replace(/```json\n?|\n?```/g, "").trim();
-    return JSON.parse(cleaned) as JudgeJSON;
+  const parseJudgeRaw = (text: string): JudgeJSON | null => {
+    const cleaned = extractJsonObject(text);
+    if (!cleaned) return null;
+    try {
+      return JSON.parse(cleaned) as JudgeJSON;
+    } catch {
+      return null;
+    }
   };
 
-  let parsed: JudgeJSON;
+  let parsed = parseJudgeRaw(raw);
 
-  try {
-    parsed = parseJudgeRaw(raw);
-  } catch {
+  if (!parsed) {
     // Retry once with a stricter repair prompt — never silently pick a winner.
     const retryMessages: ChatMsg[] = [
       ...judgeMessages,
@@ -147,17 +158,26 @@ Judge this debate. Output only the JSON verdict.`;
           '{"winner":"A","agentScores":{"A":{"accuracy":0,"evidence":0,"rebuttal":0,"persuasion":0,"entertainment":0,"total":0},"B":{"accuracy":0,"evidence":0,"rebuttal":0,"persuasion":0,"entertainment":0,"total":0}},"bestLine":"","turningPoint":"","reasoning":"","confidence":0.0}',
       },
     ];
-    const retryRaw = await complete(retryMessages, { ...judgeCallOptions, temperature: 0.1 });
-    try {
-      parsed = parseJudgeRaw(retryRaw);
-    } catch {
-      throw new Error(`Judge returned invalid JSON after retry: ${retryRaw}`);
-    }
+    const retryRaw = await withTimeout(
+      complete(retryMessages, { ...judgeCallOptions, temperature: 0.05, maxTokens: 450 }),
+      judgeTimeoutMs,
+      "Venice judge retry"
+    ).catch((err) => {
+      console.warn("[Judge] retry failed:", err);
+      return "";
+    });
+    parsed = parseJudgeRaw(retryRaw);
+  }
+
+  if (!parsed) {
+    console.warn("[Judge] Venice returned invalid JSON after retry. Using deterministic fallback verdict.");
+    return deterministicJudgeFallback(battle, rounds);
   }
 
   // Validate required fields
   if (!parsed.winner || !["A", "B"].includes(parsed.winner)) {
-    throw new Error("Judge did not return a valid winner");
+    console.warn("[Judge] Venice did not return a valid winner. Using deterministic fallback verdict.");
+    return deterministicJudgeFallback(battle, rounds);
   }
 
   const winnerScores =
@@ -166,7 +186,8 @@ Judge this debate. Output only the JSON verdict.`;
     parsed.scores;
 
   if (!winnerScores) {
-    throw new Error("Judge did not return usable scores");
+    console.warn("[Judge] Venice did not return usable scores. Using deterministic fallback verdict.");
+    return deterministicJudgeFallback(battle, rounds);
   }
 
   const witLikeScore =
@@ -192,5 +213,96 @@ Judge this debate. Output only the JSON verdict.`;
 }
 
 function clamp(value: number, min: number, max: number): number {
+  if (!Number.isFinite(value)) return min;
   return Math.max(min, Math.min(max, value));
+}
+
+function extractJsonObject(raw: string): string | null {
+  const text = raw.replace(/```(?:json)?/gi, "").replace(/```/g, "").trim();
+  if (!text) return null;
+
+  const directStart = text.indexOf("{");
+  const directEnd = text.lastIndexOf("}");
+  if (directStart === -1 || directEnd === -1 || directEnd <= directStart) return null;
+
+  return text.slice(directStart, directEnd + 1);
+}
+
+async function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  let timeoutId: ReturnType<typeof setTimeout> | undefined;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<never>((_, reject) => {
+        timeoutId = setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms);
+      }),
+    ]);
+  } finally {
+    if (timeoutId) clearTimeout(timeoutId);
+  }
+}
+
+function deterministicJudgeFallback(battle: Battle, rounds: Round[]): JudgeResult {
+  const scoreSide = (side: "A" | "B") => {
+    const texts = rounds.map((round) => side === "A" ? round.agentAText : round.agentBText);
+    const opponentTexts = rounds.map((round) => side === "A" ? round.agentBText : round.agentAText);
+    const joined = texts.join(" ");
+    const lower = joined.toLowerCase();
+    const words = joined.trim().split(/\s+/).filter(Boolean).length;
+    const evidenceTerms = [
+      "because", "data", "evidence", "research", "history", "record", "metric",
+      "numbers", "example", "context", "fact", "proved", "shows",
+    ];
+    const rebuttalTerms = ["but", "however", "answer", "claim", "opponent", "wrong", "missed", "not"];
+    const evidenceHits = evidenceTerms.reduce((count, term) => count + countTerm(lower, term), 0);
+    const rebuttalHits = rebuttalTerms.reduce((count, term) => count + countTerm(lower, term), 0);
+    const directReference = opponentTexts.some((text) => {
+      const opponentWords = new Set(
+        text.toLowerCase().split(/\W+/).filter((word) => word.length > 5)
+      );
+      return lower.split(/\W+/).some((word) => opponentWords.has(word));
+    });
+
+    return {
+      accuracy: clamp(62 + evidenceHits * 3 + Math.min(10, words / 35), 55, 92),
+      wit: clamp(58 + (joined.match(/[!?]/g)?.length ?? 0) * 3 + Math.min(12, words / 45), 52, 90),
+      rebuttal: clamp(60 + rebuttalHits * 3 + (directReference ? 8 : 0), 54, 94),
+    };
+  };
+
+  const aScores = scoreSide("A");
+  const bScores = scoreSide("B");
+  const total = (scores: DebateScores) => scores.accuracy * 0.4 + scores.wit * 0.3 + scores.rebuttal * 0.3;
+  const aTotal = total(aScores);
+  const bTotal = total(bScores);
+  const winner: "A" | "B" = aTotal >= bTotal ? "A" : "B";
+  const winnerScores = winner === "A" ? aScores : bScores;
+  const winnerName = winner === "A" ? battle.agentA.name : battle.agentB.name;
+  const bestLine = bestLineForSide(rounds, winner);
+
+  return {
+    winner,
+    scores: winnerScores,
+    bestLine,
+    reasoning:
+      `${winnerName} wins the fallback verdict because their transcript scored higher on evidence density, direct rebuttal language, and crowd-ready delivery. Venice judging returned malformed JSON, so Clashboard used this deterministic backup to keep settlement moving.`,
+    confidence: clamp(0.66 + Math.min(0.18, Math.abs(aTotal - bTotal) / 100), 0.6, 0.84),
+  };
+}
+
+function countTerm(text: string, term: string): number {
+  return text.split(term).length - 1;
+}
+
+function bestLineForSide(rounds: Round[], side: "A" | "B"): string {
+  const text = rounds.map((round) => side === "A" ? round.agentAText : round.agentBText).join(" ");
+  const sentences = text
+    .split(/(?<=[.!?])\s+/)
+    .map((sentence) => sentence.trim())
+    .filter((sentence) => sentence.length > 24);
+  const best =
+    sentences.find((sentence) => /because|but|however|data|evidence|research|record|history/i.test(sentence)) ??
+    sentences[0] ??
+    "The stronger case answered the opponent and gave the crowd a clearer reason to believe.";
+  return best.length > 180 ? `${best.slice(0, 177)}...` : best;
 }

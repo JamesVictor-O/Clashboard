@@ -2,7 +2,7 @@
 
 import { useParams, useRouter } from "next/navigation";
 import { useState, useEffect, useRef, useCallback } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import { motion, AnimatePresence, useReducedMotion } from "framer-motion";
 import dynamic from "next/dynamic";
 import { ResearchFeed } from "@/components/battle/ResearchFeed";
 import { ResearchHandshake } from "@/components/battle/ResearchHandshake";
@@ -318,6 +318,98 @@ function RoundBreakOverlay({
       </motion.div>
 
       <div className="absolute bottom-0 left-0 right-0 h-[1px] bg-gradient-to-r from-transparent via-clash-gold/30 to-transparent" />
+    </motion.div>
+  );
+}
+
+// ─── Judging Overlay ─────────────────────────────────────────────────────────
+
+function JudgingOverlay({ battle }: { battle: Battle }) {
+  const reduceMotion = useReducedMotion();
+
+  return (
+    <motion.div
+      role="status"
+      aria-live="polite"
+      className="fixed inset-0 z-40 flex items-center justify-center overflow-hidden bg-clash-black/92 px-5 backdrop-blur-sm"
+      initial={{ opacity: 0 }}
+      animate={{ opacity: 1 }}
+      exit={{ opacity: 0, transition: { duration: reduceMotion ? 0 : 0.2 } }}
+      transition={{ duration: reduceMotion ? 0 : 0.25, ease: "easeOut" }}
+    >
+      <div
+        className="absolute inset-0 pointer-events-none opacity-45"
+        style={{
+          background:
+            `radial-gradient(circle at 28% 40%, ${battle.agentA.color}22 0%, transparent 28%), ` +
+            `radial-gradient(circle at 72% 42%, ${battle.agentB.color}22 0%, transparent 30%)`,
+        }}
+      />
+      <div className="absolute inset-x-0 top-1/2 h-px bg-gradient-to-r from-transparent via-clash-gold/30 to-transparent" />
+
+      <motion.div
+        className="relative z-10 w-full max-w-xl text-center"
+        initial={reduceMotion ? false : { y: 18, scale: 0.98, opacity: 0 }}
+        animate={{ y: 0, scale: 1, opacity: 1 }}
+        transition={{ duration: reduceMotion ? 0 : 0.3, ease: [0.16, 1, 0.3, 1] }}
+      >
+        <div className="mx-auto mb-5 flex h-16 w-16 items-center justify-center rounded-full border border-clash-gold/30 bg-clash-gold/10">
+          <motion.span
+            className="font-display text-3xl"
+            animate={reduceMotion ? undefined : { scale: [1, 1.08, 1], rotate: [0, -4, 4, 0] }}
+            transition={{ duration: 1.1, repeat: Infinity, ease: "easeInOut" }}
+          >
+            🏆
+          </motion.span>
+        </div>
+
+        <p className="mb-3 font-mono text-[10px] uppercase tracking-[0.36em] text-clash-gold/70">
+          Battle Complete
+        </p>
+
+        <h2
+          className="font-display font-extrabold uppercase leading-none text-white"
+          style={{
+            fontSize: "clamp(2.5rem, 10vw, 5.6rem)",
+            textShadow: "0 0 70px rgba(255,184,0,0.18)",
+          }}
+        >
+          To The Judge
+        </h2>
+
+        <p className="mx-auto mt-5 max-w-md font-body text-sm leading-relaxed text-white/55">
+          The final argument landed. The judge is reviewing the transcript and preparing to crown the champion.
+        </p>
+
+        <div className="mt-7 grid grid-cols-[1fr_auto_1fr] items-center gap-3">
+          <div className="min-w-0 text-right">
+            <div className="truncate font-display text-sm font-bold uppercase" style={{ color: battle.agentA.color }}>
+              {battle.agentA.name}
+            </div>
+            <div className="font-body text-[10px] uppercase tracking-widest text-white/25">Agent A</div>
+          </div>
+          <div className="flex h-11 w-11 items-center justify-center rounded-full border border-white/10 bg-white/[0.04] font-display text-xs font-extrabold text-white/55">
+            VS
+          </div>
+          <div className="min-w-0 text-left">
+            <div className="truncate font-display text-sm font-bold uppercase" style={{ color: battle.agentB.color }}>
+              {battle.agentB.name}
+            </div>
+            <div className="font-body text-[10px] uppercase tracking-widest text-white/25">Agent B</div>
+          </div>
+        </div>
+
+        <div className="mx-auto mt-8 flex w-full max-w-xs items-center gap-2" aria-hidden="true">
+          {[0, 1, 2].map((i) => (
+            <motion.span
+              key={i}
+              className="h-1.5 flex-1 rounded-full bg-clash-gold/50"
+              animate={reduceMotion ? undefined : { opacity: [0.25, 1, 0.25] }}
+              transition={{ duration: 1, repeat: Infinity, delay: i * 0.16, ease: "easeInOut" }}
+            />
+          ))}
+        </div>
+      </motion.div>
     </motion.div>
   );
 }
@@ -932,6 +1024,7 @@ export default function BattlePage() {
 
   const [showRebuttal, setShowRebuttal] = useState(false);
   const [showRoundBreak, setShowRoundBreak] = useState(false);
+  const [showJudgingOverlay, setShowJudgingOverlay] = useState(false);
   const [showWinner, setShowWinner] = useState(false);
   const [winner, setWinner] = useState<"A" | "B" | null>(null);
 
@@ -991,6 +1084,27 @@ export default function BattlePage() {
   const serverPhaseRef = useRef<BattlePhase | null>(serverPhase);
   const streamStatusRef = useRef<StreamStatus>(streamStatus);
   const ttsSpeakingRef = useRef(ttsSpeaking);
+
+  const prefetchDebateTurnInBackground = useCallback((nextRoundIndex: number, nextSide: "A" | "B") => {
+    if (isDemo) return;
+    const agent = nextSide === "A" ? battle.agentA : battle.agentB;
+    const copy =
+      nextSide === "A"
+        ? `${agent.name} is preparing a rebuttal.`
+        : `${agent.name} is preparing a response.`;
+    setResearchProgress(copy);
+    void fetch("/api/battle/prefetch-round", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ battleId, roundIndex: nextRoundIndex, side: nextSide }),
+    })
+      .then((res) => {
+        if (res.ok) setResearchProgress(`${agent.name}'s next turn is ready.`);
+      })
+      .catch((err) => {
+        console.warn("[prefetch-round] request failed:", err);
+      });
+  }, [battle.agentA, battle.agentB, battleId, isDemo]);
 
   useEffect(() => {
     serverPhaseRef.current = serverPhase;
@@ -1096,9 +1210,11 @@ export default function BattlePage() {
           if (data.phase === "SETTLED") {
             setStreamStatus("settled");
             setPhase("verdict");
+            setShowJudgingOverlay(false);
           } else if (data.phase === "JUDGING_READY") {
             setStreamStatus("judging_ready");
             setPhase("verdict");
+            setShowJudgingOverlay(true);
           } else if (data.phase === "PREPARING") {
             setStreamStatus("research");
             setPhase((current) => (current === "countdown" ? "betting" : current));
@@ -1258,6 +1374,7 @@ export default function BattlePage() {
 
         let waitForTTS = false;
         let speechCharCount = 0;
+        let nextTickDelayMs: number | null = null;
 
         switch (step.action) {
           case "WAITING":
@@ -1282,6 +1399,9 @@ export default function BattlePage() {
             setResearchProgress(null);
             setPhase("live");
             if (step.agentAText) {
+              if ((step.roundIndex ?? 0) > 0) {
+                prefetchDebateTurnInBackground(step.roundIndex ?? 1, "B");
+              }
               setCurrentText(step.agentAText);
               setTypingDone(false);
               waitForTTS = true;
@@ -1317,13 +1437,6 @@ export default function BattlePage() {
               setTypingDone(false);
               waitForTTS = true;
               speechCharCount = step.agentAText.length;
-              // Start generating next-round arguments in the background while voices play.
-              // By the time both speeches end the next round is ready — no inter-round wait.
-              void fetch("/api/battle/prefetch-round", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ battleId }),
-              }).catch((err) => console.warn("[prefetch-round] request failed:", err));
             }
             break;
 
@@ -1331,12 +1444,23 @@ export default function BattlePage() {
             setStreamStatus("debate");
             setResearchProgress(null);
             await refreshSnapshot();
+            if (step.phase === "ROUND_2" || step.phase === "ROUND_3" || step.phase === "JUDGING_READY") {
+              nextTickDelayMs = 500;
+            }
+            if (step.phase === "JUDGING_READY") {
+              setStreamStatus("judging_ready");
+              setPhase("verdict");
+              setShowRoundBreak(false);
+              setShowJudgingOverlay(true);
+              spawnEmojis(["🏆", "👑", "🔥", "💰"]);
+            }
             break;
 
           case "SETTLED":
             setStreamStatus("settled");
             setResearchProgress(null);
             setPhase("verdict");
+            setShowJudgingOverlay(false);
             verdictCalledRef.current = true;
             if (step.txHash) setSettleTxHash(step.txHash);
             if (step.judgeScores) setJudgeScores(step.judgeScores);
@@ -1352,12 +1476,14 @@ export default function BattlePage() {
             return;
 
           case "NO_OP":
+            if (step.phase === "SETTLED") setShowJudgingOverlay(false);
             driverStoppedRef.current = true;
             console.log(`[Arena Driver] stopped: ${step.phase}`);
             return;
         }
 
         if (TERMINAL.has(step.phase)) {
+          setShowJudgingOverlay(false);
           driverStoppedRef.current = true;
           console.log(`[Arena Driver] stopped: ${step.phase}`);
           return;
@@ -1384,6 +1510,9 @@ export default function BattlePage() {
               setTurn(pending.turn);
               setCurrentText(pending.text);
               setTypingDone(false);
+              if ((step.roundIndex ?? 0) === 0 && pending.turn === "B") {
+                prefetchDebateTurnInBackground(1, "A");
+              }
 
               let bResolved = false;
               const bFallbackMs = Math.min(180_000, Math.max(45_000, pending.text.length * 85));
@@ -1407,7 +1536,7 @@ export default function BattlePage() {
           timerId = setTimeout(proceed, fallbackMs);
           console.log("[Arena Driver] waiting for TTS to finish");
         } else {
-          const delay = POLL_MIN + Math.random() * (POLL_MAX - POLL_MIN);
+          const delay = nextTickDelayMs ?? (POLL_MIN + Math.random() * (POLL_MAX - POLL_MIN));
           console.log(`[Arena Driver] next tick in ${Math.round(delay)}ms`);
           timerId = setTimeout(tick, delay);
         }
@@ -1539,12 +1668,15 @@ export default function BattlePage() {
           if (isDemo) {
             const w: "A" | "B" = newScores.A > newScores.B ? "A" : "B";
             setWinner(w);
+            setShowJudgingOverlay(true);
             setTimeout(() => {
+              setShowJudgingOverlay(false);
               setShowWinner(true);
               spawnEmojis(["🏆", "🎉", "👑", "🥇", "🔥", "💰"]);
             }, 600);
           } else if (!verdictCalledRef.current) {
             verdictCalledRef.current = true;
+            setShowJudgingOverlay(true);
             fetch("/api/battle/verdict", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
@@ -1554,6 +1686,7 @@ export default function BattlePage() {
               .then((result: { winnerSide?: "A" | "B" }) => {
                 setWinner(result.winnerSide ?? (newScores.A > newScores.B ? "A" : "B"));
                 setTimeout(() => {
+                  setShowJudgingOverlay(false);
                   setShowWinner(true);
                   spawnEmojis(["🏆", "🎉", "👑", "🥇", "🔥", "💰"]);
                 }, 600);
@@ -1562,6 +1695,7 @@ export default function BattlePage() {
                 const w: "A" | "B" = newScores.A > newScores.B ? "A" : "B";
                 setWinner(w);
                 setTimeout(() => {
+                  setShowJudgingOverlay(false);
                   setShowWinner(true);
                   spawnEmojis(["🏆", "🎉", "👑", "🥇", "🔥", "💰"]);
                 }, 600);
@@ -1847,6 +1981,12 @@ export default function BattlePage() {
             scores={roundScores}
             battle={battle}
           />
+        )}
+      </AnimatePresence>
+
+      <AnimatePresence>
+        {showJudgingOverlay && !showWinner && (
+          <JudgingOverlay key="judging" battle={battle} />
         )}
       </AnimatePresence>
 

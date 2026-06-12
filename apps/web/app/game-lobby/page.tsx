@@ -8,6 +8,7 @@ import { parseAbi, parseAbiItem } from "viem";
 import { ConnectWallet } from "@/components/shared/ConnectWallet";
 import { getConnectedWalletAccount, placeUserArenaStake } from "@/lib/wallet-contract";
 import { executePlaceBet } from "@/lib/autonomy/executor";
+import { getAnyActivePermissionContext } from "@/lib/permissions";
 import { blockRanges, getEventScanStartBlock, mapWithConcurrency, withRpcRetry } from "@/lib/event-scan";
 import { ARENA_CONTRACT, REGISTRY_CONTRACT } from "@/lib/contracts";
 
@@ -137,7 +138,8 @@ function StakeModal({
         throw new Error("This battle does not accept on-chain stakes");
       }
 
-      const account = await getConnectedWalletAccount();
+      const activePermission = getAnyActivePermissionContext();
+      const account = activePermission?.walletAddress ?? await getConnectedWalletAccount();
       const stakeAmount = Number(amount);
       const execution = await executePlaceBet({
         agentOwner: account,
@@ -150,6 +152,9 @@ function StakeModal({
       if (execution.policyError) throw new Error(execution.policyError);
 
       if (execution.mode !== "autonomous_oneshot") {
+        if (activePermission) {
+          throw new Error("1Shot prediction failed. Renew your arena permission before retrying.");
+        }
         await placeUserArenaStake({
           account,
           battleId: agent.id as `0x${string}`,

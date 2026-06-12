@@ -29,6 +29,7 @@ const CATEGORY_COLORS: Record<
   { fg: string; bg: string; glow: string }
 > = {
   Sports: { fg: "#FFB800", bg: "rgba(255,184,0,0.1)", glow: "255,184,0" },
+  Politics: { fg: "#EF4444", bg: "rgba(239,68,68,0.1)", glow: "239,68,68" },
   Music: { fg: "#BE1A1A", bg: "rgba(190,26,26,0.1)", glow: "190,26,26" },
   Crypto: { fg: "#10B981", bg: "rgba(16,185,129,0.1)", glow: "16,185,129" },
   Tech: { fg: "#1A3FBE", bg: "rgba(26,63,190,0.1)", glow: "26,63,190" },
@@ -1567,6 +1568,22 @@ export default function LobbyPage() {
       }
     };
 
+    const resetActionUiForWalletChange = () => {
+      setShowCreate(false);
+      setShowBudgetModal(false);
+      setPendingCreate(null);
+      setPendingAccept(null);
+      setAcceptTxState("idle");
+      setAcceptTxError(null);
+    };
+
+    const applyWalletAddress = (addr: string | null) => {
+      setWalletAddress(addr);
+      setHasAgent(null);
+      resetActionUiForWalletChange();
+      if (addr) checkAgent(addr);
+    };
+
     let cleanup: void | (() => void);
     const initWallet = async () => {
       const { getProvider, getSelectedWalletAddress } = await import("@/lib/metamask");
@@ -1575,20 +1592,24 @@ export default function LobbyPage() {
 
       const selected = getSelectedWalletAddress();
       if (selected) {
-        setWalletAddress(selected);
-        checkAgent(selected);
+        applyWalletAddress(selected);
       }
 
       // Keep wallet state in sync — account switch or disconnect in MetaMask
       const onAccountsChanged = (accs: unknown) => {
         const list = accs as string[];
-        const addr = list[0] ?? null;
-        setWalletAddress(addr);
-        setHasAgent(null);
-        if (addr) checkAgent(addr);
+        applyWalletAddress(list[0] ?? null);
+      };
+      const onAppWalletChanged = (event: Event) => {
+        const detail = (event as CustomEvent<{ address?: string | null }>).detail;
+        applyWalletAddress(detail?.address ?? null);
       };
       eth.on?.("accountsChanged", onAccountsChanged);
-      return () => eth.removeListener?.("accountsChanged", onAccountsChanged);
+      window.addEventListener("clashboard:walletChanged", onAppWalletChanged);
+      return () => {
+        eth.removeListener?.("accountsChanged", onAccountsChanged);
+        window.removeEventListener("clashboard:walletChanged", onAppWalletChanged);
+      };
     };
 
     initWallet().then((fn) => { cleanup = fn; }).catch(() => {});
@@ -1610,6 +1631,7 @@ export default function LobbyPage() {
   });
 
   function handleAccept(room: Room) {
+    if (acceptTxState !== "idle") return;
     if (hasAgent === false) {
       setNoAgentToast(true);
       setTimeout(() => setNoAgentToast(false), 5000);
@@ -1655,7 +1677,6 @@ export default function LobbyPage() {
 
       if (execution.mode === "autonomous_oneshot") {
         // 1Shot executed — no wallet popup.
-        setAcceptTxState("accepting");
         setRooms((prev) =>
           prev.map((r) =>
             r.id === room.id
@@ -1663,6 +1684,9 @@ export default function LobbyPage() {
               : r
           )
         );
+        setAcceptTxState("idle");
+        setAcceptTxError(null);
+        setPendingAccept(null);
         router.push("/game-lobby");
         return;
       }
@@ -1777,6 +1801,11 @@ export default function LobbyPage() {
     setWalletAddress(account);
 
     setShowCreate(false);
+    setShowBudgetModal(false);
+    setPendingCreate(null);
+    setPendingAccept(null);
+    setAcceptTxState("idle");
+    setAcceptTxError(null);
     setTimeout(() => fetchRooms().then((fresh) => { setRooms(fresh); saveRoomsCache(fresh); }).catch(() => {}), 4000);
   }
 

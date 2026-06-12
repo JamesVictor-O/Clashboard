@@ -6,6 +6,7 @@ import clsx from "clsx";
 import type { Battle, BattlePhase } from "@/lib/types";
 import { getConnectedWalletAccount, placeUserArenaStake } from "@/lib/wallet-contract";
 import { executePlaceBet } from "@/lib/autonomy/executor";
+import { getAnyActivePermissionContext } from "@/lib/permissions";
 
 interface BettingPanelProps {
   battle: Battle;
@@ -53,7 +54,8 @@ export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) 
         throw new Error("This demo battle does not accept on-chain stakes");
       }
 
-      const account = await getConnectedWalletAccount();
+      const activePermission = getAnyActivePermissionContext();
+      const account = activePermission?.walletAddress ?? await getConnectedWalletAccount();
       const execution = await executePlaceBet({
         agentOwner: account,
         battleId: battle.id as `0x${string}`,
@@ -65,6 +67,9 @@ export function BettingPanel({ battle, phase, onBetPlaced }: BettingPanelProps) 
       if (execution.policyError) throw new Error(execution.policyError);
 
       if (execution.mode !== "autonomous_oneshot") {
+        if (activePermission) {
+          throw new Error("1Shot prediction failed. Renew your arena permission before retrying.");
+        }
         await placeUserArenaStake({
           account,
           battleId: battle.id as `0x${string}`,
