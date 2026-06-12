@@ -9,7 +9,7 @@ import type {
 // Venice AI is OpenAI-compatible. Keep every runtime knob in env so the
 // arena can swap models without code changes during judging/demo day.
 export const DEFAULT_VENICE_BASE_URL = "https://api.venice.ai/api/v1";
-export const DEFAULT_VENICE_MODEL = "llama-3.3-70b";
+export const DEFAULT_VENICE_MODEL = "deepseek-v4-flash";
 
 export type VeniceModelPurpose = "decision" | "debate" | "judge" | "research";
 
@@ -213,13 +213,6 @@ function debateMaxTokens(): number {
   return intFromEnv("VENICE_DEBATE_MAX_TOKENS", 420);
 }
 
-function researchMaxTokens(): number {
-  return intFromEnv("VENICE_RESEARCH_MAX_TOKENS", 750);
-}
-
-function judgeMaxTokens(): number {
-  return intFromEnv("VENICE_JUDGE_MAX_TOKENS", 900);
-}
 
 // ─── Dev Prompt Logging ───────────────────────────────────────────────────────
 
