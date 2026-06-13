@@ -554,55 +554,67 @@ function CreateDrawer({
       initial={{ opacity: 0 }}
       animate={{ opacity: 1 }}
       exit={{ opacity: 0 }}
-      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-6"
-      style={{ background: "rgba(0,0,0,0.92)", backdropFilter: "blur(12px)" }}
+      className="fixed inset-0 z-50 flex items-end sm:items-center justify-center p-0 sm:p-5"
+      style={{ background: "rgba(3,3,8,0.86)", backdropFilter: "blur(18px)" }}
       onClick={submitting ? undefined : onClose}
     >
       <motion.div
-        initial={{ y: "60%", opacity: 0 }}
+        initial={{ y: 26, opacity: 0, scale: 0.98 }}
         animate={{ y: 0, opacity: 1 }}
-        exit={{ y: "60%", opacity: 0 }}
-        transition={{ type: "spring", damping: 30, stiffness: 340 }}
-        className="relative w-full sm:max-w-2xl bg-[#0A0A0F] overflow-hidden flex flex-col"
+        exit={{ y: 24, opacity: 0, scale: 0.98 }}
+        transition={{ type: "spring", damping: 34, stiffness: 360 }}
+        className="relative w-full sm:max-w-5xl bg-[#09090E] overflow-hidden flex flex-col rounded-t-[8px] sm:rounded-[8px]"
         style={{
-          border: "1px solid rgba(255,255,255,0.1)",
+          border: "1px solid rgba(255,255,255,0.12)",
           maxHeight: "92dvh",
+          boxShadow: "0 26px 90px rgba(0,0,0,0.58)",
         }}
         onClick={(e) => e.stopPropagation()}
       >
-        {/* ── Animated top accent bar ──────────────────────────────── */}
+        {/* ── Top accent bar ───────────────────────────────────────── */}
         <motion.div
           className="h-[2px] w-full flex-shrink-0"
           style={{
             background: finalTopic
-              ? `linear-gradient(90deg, transparent 0%, ${activeCat.fg} 40%, ${activeCat.fg} 60%, transparent 100%)`
-              : "linear-gradient(90deg, transparent 0%, #FFB800 40%, #FFB800 60%, transparent 100%)",
+              ? `linear-gradient(90deg, ${activeCat.fg} 0%, rgba(255,255,255,0.26) 42%, transparent 100%)`
+              : "linear-gradient(90deg, #FFB800 0%, rgba(255,255,255,0.2) 42%, transparent 100%)",
           }}
           animate={{ opacity: [0.7, 1, 0.7] }}
           transition={{ duration: 1.8, repeat: Infinity }}
         />
 
         {/* ── Header ───────────────────────────────────────────────── */}
-        <div className="flex-shrink-0 relative px-6 py-5 border-b border-white/6">
+        <div className="flex-shrink-0 relative px-5 sm:px-6 py-4 border-b border-white/8">
           <div
             className="absolute inset-0 pointer-events-none"
             style={{
               background:
-                "radial-gradient(ellipse 70% 120% at 50% -20%, rgba(255,184,0,0.05) 0%, transparent 70%)",
+                "linear-gradient(180deg, rgba(255,184,0,0.045) 0%, transparent 76%)",
             }}
           />
-          <div className="relative flex items-start justify-between gap-4">
-            <div>
-              <p className="font-mono text-[9px] uppercase tracking-[0.35em] text-clash-gold/55 mb-1.5">
+          <div className="relative flex items-center justify-between gap-4">
+            <div className="min-w-0">
+              <p className="font-mono text-[9px] uppercase tracking-[0.35em] text-clash-gold/60 mb-2">
                 Declare your battle
               </p>
-              <h3 className="font-display text-2xl sm:text-3xl font-extrabold text-clash-white uppercase leading-none tracking-tight">
-                New Challenge Room
+              <h3 className="font-display text-3xl sm:text-4xl font-extrabold text-clash-white uppercase leading-none">
+                Create Challenge
               </h3>
+            </div>
+            <div className="hidden sm:flex items-center gap-3">
+              <div className="px-3 py-2 border border-white/10 bg-white/[0.025] text-right rounded-[6px]">
+                <p className="font-mono text-[8px] uppercase tracking-widest text-white/28">
+                  Stake
+                </p>
+                <p className="font-display text-lg font-extrabold leading-none text-clash-gold">
+                  ${stake} USDC
+                </p>
+              </div>
             </div>
             <button
               onClick={onClose}
-              className="flex-shrink-0 w-9 h-9 flex items-center justify-center border border-white/10 text-white/35 hover:text-white/70 hover:border-white/25 transition-all font-display text-sm mt-1"
+              className="flex-shrink-0 w-10 h-10 flex items-center justify-center border border-white/10 bg-white/[0.02] text-white/40 hover:text-white/80 hover:border-white/28 transition-all font-display text-sm rounded-[6px]"
+              aria-label="Close create challenge"
             >
               ✕
             </button>
@@ -611,69 +623,69 @@ function CreateDrawer({
 
         {/* ── Scrollable body ──────────────────────────────────────── */}
         <div className="flex-1 overflow-y-auto">
-          <div className="p-6 space-y-8">
-
-            {/* Topic selection */}
-            <div>
-              <div className="flex items-center justify-between mb-4">
-                <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/25">
-                  Pick your hot take
-                </p>
-                <AnimatePresence>
-                  {loadingTakes && (
-                    <motion.span
-                      initial={{ opacity: 0 }}
-                      animate={{ opacity: 1 }}
-                      exit={{ opacity: 0 }}
-                      className="flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-widest text-clash-gold/50"
-                    >
-                      <span className="w-2 h-2 border border-clash-gold/40 border-t-clash-gold/80 rounded-full animate-spin" />
-                      {hotTakeSource === "venice" ? "Venice AI generating…" : "Scanning markets…"}
-                    </motion.span>
-                  )}
-                </AnimatePresence>
-              </div>
-              <div className="grid grid-cols-2 gap-2 mb-4">
-                {[
-                  { id: "venice" as const, label: "Venice Hot Takes", meta: "Fresh culture prompts" },
-                  { id: "polymarket" as const, label: "Market Hot Takes", meta: "Live Polymarket odds" },
-                ].map((source) => {
-                  const isSelected = hotTakeSource === source.id;
-                  return (
-                    <button
-                      key={source.id}
-                      onClick={() => switchHotTakeSource(source.id)}
-                      className="relative overflow-hidden border px-4 py-3 text-left transition-all duration-200"
-                      style={{
-                        borderColor: isSelected ? "rgba(255,184,0,0.42)" : "rgba(255,255,255,0.08)",
-                        background: isSelected ? "rgba(255,184,0,0.075)" : "rgba(255,255,255,0.018)",
-                      }}
-                    >
-                      {isSelected && (
-                        <motion.div
-                          layoutId="hotTakeSourceActive"
-                          className="absolute inset-x-0 top-0 h-[2px] bg-clash-gold"
-                        />
-                      )}
-                      <span
-                        className="font-mono text-[9px] uppercase tracking-widest block"
-                        style={{ color: isSelected ? "#FFB800" : "rgba(255,255,255,0.34)" }}
+          <div className="p-5 sm:p-6">
+            <div className="grid gap-5 lg:grid-cols-[minmax(0,1fr)_320px]">
+              {/* Topic selection */}
+              <div className="space-y-4">
+                <div className="flex items-center justify-between gap-3">
+                  <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/25">
+                    Pick your hot take
+                  </p>
+                  <AnimatePresence>
+                    {loadingTakes && (
+                      <motion.span
+                        initial={{ opacity: 0 }}
+                        animate={{ opacity: 1 }}
+                        exit={{ opacity: 0 }}
+                        className="flex items-center gap-1.5 font-mono text-[8px] uppercase tracking-widest text-clash-gold/50"
                       >
-                        {source.label}
-                      </span>
-                      <span className="font-mono text-[8px] uppercase tracking-widest text-white/18 mt-1 block">
-                        {source.meta}
-                      </span>
-                    </button>
-                  );
-                })}
-              </div>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
-                {loadingTakes
-                  ? Array.from({ length: 6 }).map((_, i) => (
+                        <span className="w-2 h-2 border border-clash-gold/40 border-t-clash-gold/80 rounded-full animate-spin" />
+                        {hotTakeSource === "venice" ? "Venice AI generating…" : "Scanning markets…"}
+                      </motion.span>
+                    )}
+                  </AnimatePresence>
+                </div>
+                <div className="grid grid-cols-2 gap-2">
+                  {[
+                    { id: "venice" as const, label: "Venice Hot Takes", meta: "Fresh culture prompts" },
+                    { id: "polymarket" as const, label: "Market Hot Takes", meta: "Live Polymarket odds" },
+                  ].map((source) => {
+                    const isSelected = hotTakeSource === source.id;
+                    return (
+                      <button
+                        key={source.id}
+                        onClick={() => switchHotTakeSource(source.id)}
+                        className="relative overflow-hidden border px-3.5 py-3 text-left transition-all duration-200 rounded-[6px]"
+                        style={{
+                          borderColor: isSelected ? "rgba(255,184,0,0.42)" : "rgba(255,255,255,0.08)",
+                          background: isSelected ? "rgba(255,184,0,0.085)" : "rgba(255,255,255,0.025)",
+                        }}
+                      >
+                        {isSelected && (
+                          <motion.div
+                            layoutId="hotTakeSourceActive"
+                            className="absolute inset-x-0 top-0 h-[2px] bg-clash-gold"
+                          />
+                        )}
+                        <span
+                          className="font-mono text-[9px] uppercase tracking-widest block"
+                          style={{ color: isSelected ? "#FFB800" : "rgba(255,255,255,0.34)" }}
+                        >
+                          {source.label}
+                        </span>
+                        <span className="font-mono text-[8px] uppercase tracking-widest text-white/18 mt-1 block">
+                          {source.meta}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
+                  {loadingTakes
+                    ? Array.from({ length: 6 }).map((_, i) => (
                       <div
                         key={i}
-                        className="relative p-4 border border-white/7 bg-white/[0.02] overflow-hidden"
+                        className="relative min-h-[124px] p-4 border border-white/7 bg-white/[0.02] overflow-hidden rounded-[6px]"
                       >
                         <motion.div
                           className="absolute inset-0 pointer-events-none"
@@ -685,21 +697,21 @@ function CreateDrawer({
                         <div className="h-4 rounded-sm bg-white/10" style={{ width: `${60 + (i % 3) * 15}%` }} />
                       </div>
                     ))
-                  : allTakes.map((take) => {
+                    : allTakes.map((take) => {
                       const isSelected = selectedTopic === take.label;
                       const c = CATEGORY_COLORS[take.category] ?? CATEGORY_COLORS.Custom;
                       return (
                         <button
                           key={take.label}
                           onClick={() => setSelectedTopic(take.label)}
-                          className="relative text-left p-4 border transition-all duration-250 overflow-hidden group"
+                          className="relative text-left min-h-[124px] p-4 border transition-all duration-250 overflow-hidden group rounded-[6px]"
                           style={{
                             borderColor: isSelected
                               ? `${c.fg}50`
                               : "rgba(255,255,255,0.07)",
                             background: isSelected
-                              ? `linear-gradient(140deg, rgba(${c.glow},0.13) 0%, rgba(${c.glow},0.04) 100%)`
-                              : "rgba(255,255,255,0.02)",
+                              ? `linear-gradient(140deg, rgba(${c.glow},0.15) 0%, rgba(${c.glow},0.045) 100%)`
+                              : "rgba(255,255,255,0.025)",
                           }}
                         >
                           {/* Hover glow overlay */}
@@ -753,7 +765,7 @@ function CreateDrawer({
                           <span
                             className="font-display text-sm font-extrabold uppercase leading-tight block transition-colors duration-200"
                             style={{
-                              color: isSelected ? "#F5F5F0" : "rgba(245,245,240,0.45)",
+                              color: isSelected ? "#F5F5F0" : "rgba(245,245,240,0.58)",
                             }}
                           >
                             {take.label}
@@ -771,238 +783,243 @@ function CreateDrawer({
                         </button>
                       );
                     })}
-              </div>
-            </div>
+                </div>
 
-            {/* Custom topic input */}
-            <AnimatePresence>
-              {selectedTopic === "Custom hot take..." && (
-                <motion.div
-                  initial={{ opacity: 0, height: 0 }}
-                  animate={{ opacity: 1, height: "auto" }}
-                  exit={{ opacity: 0, height: 0 }}
-                  className="overflow-hidden"
-                >
-                  <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/25 mb-3">
-                    State your take
-                  </p>
-                  <div className="relative">
-                    <textarea
-                      rows={2}
-                      placeholder="e.g. Davido vs Wizkid — who moved the culture more?"
-                      value={customTopic}
-                      onChange={(e) => setCustomTopic(e.target.value)}
-                      maxLength={120}
-                      className="w-full bg-transparent border border-white/10 focus:border-clash-gold/45 px-4 py-3.5 font-display text-sm font-extrabold uppercase text-clash-white placeholder-white/15 outline-none transition-colors resize-none leading-snug"
-                      autoFocus
-                    />
-                    <div className="absolute inset-x-0 bottom-0 h-[1px] bg-clash-gold/0 focus-within:bg-clash-gold/35 transition-colors" />
-                    <span className="absolute bottom-3 right-3 font-mono text-[9px] text-white/15 pointer-events-none">
-                      {customTopic.length}/120
-                    </span>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-
-            {/* Stake selector */}
-            <div>
-              <div className="flex items-center justify-between mb-4">
-                <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/25">
-                  Stake per side
-                </p>
-                <p className="font-mono text-[9px] text-white/18">
-                  Winner takes both
-                </p>
-              </div>
-              <div className="flex gap-2">
-                {[0.5, 1, 2, 5, 10].map((s) => {
-                  const isSel = stake === s;
-                  return (
-                    <button
-                      key={s}
-                      onClick={() => setStake(s)}
-                      className="relative flex-1 py-4 border transition-all duration-200 overflow-hidden group"
-                      style={{
-                        borderColor: isSel
-                          ? "rgba(255,184,0,0.55)"
-                          : "rgba(255,255,255,0.07)",
-                        background: isSel
-                          ? "rgba(255,184,0,0.1)"
-                          : "rgba(255,255,255,0.02)",
-                      }}
+                {/* Custom topic input */}
+                <AnimatePresence>
+                  {selectedTopic === "Custom hot take..." && (
+                    <motion.div
+                      initial={{ opacity: 0, height: 0 }}
+                      animate={{ opacity: 1, height: "auto" }}
+                      exit={{ opacity: 0, height: 0 }}
+                      className="overflow-hidden"
                     >
-                      {isSel && (
-                        <motion.div
-                          layoutId="stakeActive"
-                          className="absolute top-0 left-0 right-0 h-[2px]"
-                          style={{ background: "#FFB800" }}
+                      <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/25 mb-3">
+                        State your take
+                      </p>
+                      <div className="relative">
+                        <textarea
+                          rows={2}
+                          placeholder="e.g. Davido vs Wizkid — who moved the culture more?"
+                          value={customTopic}
+                          onChange={(e) => setCustomTopic(e.target.value)}
+                          maxLength={120}
+                          className="w-full bg-white/[0.025] border border-white/10 focus:border-clash-gold/45 px-4 py-3.5 font-display text-sm font-extrabold uppercase text-clash-white placeholder-white/18 outline-none transition-colors resize-none leading-snug rounded-[6px]"
+                          autoFocus
                         />
-                      )}
-                      {!isSel && (
-                        <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-white/[0.025]" />
-                      )}
-                      <span
-                        className="font-display text-base font-extrabold leading-none block"
-                        style={{
-                          color: isSel ? "#FFB800" : "rgba(255,255,255,0.28)",
-                        }}
-                      >
-                        ${s}
-                      </span>
-                      <span
-                        className="font-mono text-[8px] uppercase tracking-widest mt-1 block"
-                        style={{
-                          color: isSel
-                            ? "rgba(255,184,0,0.48)"
-                            : "rgba(255,255,255,0.15)",
-                        }}
-                      >
-                        USDC
-                      </span>
-                    </button>
-                  );
-                })}
+                        <span className="absolute bottom-3 right-3 font-mono text-[9px] text-white/18 pointer-events-none">
+                          {customTopic.length}/120
+                        </span>
+                      </div>
+                    </motion.div>
+                  )}
+                </AnimatePresence>
               </div>
-            </div>
 
-            {/* ── Fight card summary + CTA ─────────────────────────── */}
-            <div>
-              {/* Declaration card */}
-              <div
-                className="relative p-5 mb-3 overflow-hidden transition-all duration-300"
-                style={{
-                  border: `1px solid ${finalTopic ? `${activeCat.fg}30` : "rgba(255,255,255,0.06)"}`,
-                  background: finalTopic
-                    ? `linear-gradient(140deg, rgba(${activeCat.glow},0.07) 0%, transparent 60%)`
-                    : "rgba(255,255,255,0.015)",
-                }}
-              >
-                {/* Top accent line on selection */}
-                {finalTopic && (
-                  <div
-                    className="absolute top-0 left-0 right-0 h-[1px] pointer-events-none"
-                    style={{
-                      background: `linear-gradient(90deg, transparent, ${activeCat.fg}50, transparent)`,
-                    }}
-                  />
-                )}
-
-                <div className="flex items-start justify-between gap-4 mb-4">
-                  <div className="flex-1 min-w-0">
-                    <p className="font-mono text-[8px] uppercase tracking-[0.3em] text-white/22 mb-2">
-                      Your declaration
+              <aside className="space-y-4 lg:sticky lg:top-0 lg:self-start">
+                {/* Stake selector */}
+                <div className="border border-white/8 bg-white/[0.025] p-4 rounded-[6px]">
+                  <div className="flex items-center justify-between mb-3">
+                    <p className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/28">
+                      Stake per side
                     </p>
-                    <p
-                      className="font-display text-sm sm:text-base font-extrabold uppercase leading-snug transition-colors duration-200"
-                      style={{
-                        color: finalTopic ? "#F5F5F0" : "rgba(245,245,240,0.18)",
-                      }}
-                    >
-                      {finalTopic || "Select a topic above"}
+                    <p className="font-mono text-[9px] text-white/22">
+                      Winner takes both
                     </p>
                   </div>
-                  <div className="flex-shrink-0 text-right">
-                    <p className="font-mono text-[8px] uppercase tracking-[0.3em] text-white/22 mb-1.5">
-                      At stake
-                    </p>
-                    <p
-                      className="font-display text-4xl font-extrabold leading-none transition-colors duration-200"
-                      style={{
-                        color: finalTopic
-                          ? activeCat.fg
-                          : "rgba(255,255,255,0.18)",
-                      }}
-                    >
-                      ${stake}
-                    </p>
-                    <p className="font-mono text-[8px] uppercase tracking-widest text-white/18 mt-1">
-                      USDC
-                    </p>
+                  <div className="grid grid-cols-5 lg:grid-cols-2 gap-2">
+                    {[0.5, 1, 2, 5, 10].map((s) => {
+                      const isSel = stake === s;
+                      return (
+                        <button
+                          key={s}
+                          onClick={() => setStake(s)}
+                          className="relative min-h-[58px] border transition-all duration-200 overflow-hidden group rounded-[6px]"
+                          style={{
+                            borderColor: isSel
+                              ? "rgba(255,184,0,0.55)"
+                              : "rgba(255,255,255,0.07)",
+                            background: isSel
+                              ? "rgba(255,184,0,0.12)"
+                              : "rgba(255,255,255,0.025)",
+                          }}
+                        >
+                          {isSel && (
+                            <motion.div
+                              layoutId="stakeActive"
+                              className="absolute top-0 left-0 right-0 h-[2px]"
+                              style={{ background: "#FFB800" }}
+                            />
+                          )}
+                          {!isSel && (
+                            <div className="absolute inset-0 opacity-0 group-hover:opacity-100 transition-opacity duration-200 bg-white/[0.025]" />
+                          )}
+                          <span
+                            className="font-display text-base font-extrabold leading-none block"
+                            style={{
+                              color: isSel ? "#FFB800" : "rgba(255,255,255,0.28)",
+                            }}
+                          >
+                            ${s}
+                          </span>
+                          <span
+                            className="font-mono text-[8px] uppercase tracking-widest mt-1 block"
+                            style={{
+                              color: isSel
+                                ? "rgba(255,184,0,0.48)"
+                                : "rgba(255,255,255,0.15)",
+                            }}
+                          >
+                            USDC
+                          </span>
+                        </button>
+                      );
+                    })}
                   </div>
                 </div>
 
-                <div className="flex items-center gap-3 pt-3.5 border-t border-white/6">
-                  <span className="font-mono text-[9px] text-white/20">
-                    Winner takes{" "}
-                    <span className="text-white/38">${(stake * 2).toFixed(stake % 1 !== 0 ? 1 : 0)}</span>
-                  </span>
-                  <span className="w-px h-3 bg-white/10" />
-                  <span className="font-mono text-[9px] text-white/20">
-                    Locked until challenger accepts
-                  </span>
-                </div>
-                {selectedTake?.source === "polymarket" && (
-                  <div className="mt-3 pt-3 border-t border-white/6 flex flex-wrap items-center gap-2">
-                    <span className="font-mono text-[8px] uppercase tracking-widest text-clash-gold/50">
-                      Polymarket context
-                    </span>
-                    {selectedTake.url && (
-                      <a
-                        href={selectedTake.url}
-                        target="_blank"
-                        rel="noreferrer"
-                        onClick={(event) => event.stopPropagation()}
-                        className="font-mono text-[8px] uppercase tracking-widest text-white/24 hover:text-clash-gold/70 transition-colors"
+                {/* Declaration card */}
+                <div
+                  className="relative p-4 overflow-hidden transition-all duration-300 rounded-[6px]"
+                  style={{
+                    border: `1px solid ${finalTopic ? `${activeCat.fg}30` : "rgba(255,255,255,0.06)"}`,
+                    background: finalTopic
+                      ? `linear-gradient(140deg, rgba(${activeCat.glow},0.07) 0%, transparent 60%)`
+                      : "rgba(255,255,255,0.015)",
+                  }}
+                >
+                  {/* Top accent line on selection */}
+                  {finalTopic && (
+                    <div
+                      className="absolute top-0 left-0 right-0 h-[1px] pointer-events-none"
+                      style={{
+                        background: `linear-gradient(90deg, transparent, ${activeCat.fg}50, transparent)`,
+                      }}
+                    />
+                  )}
+
+                  <div className="space-y-4">
+                    <div>
+                      <p className="font-mono text-[8px] uppercase tracking-[0.3em] text-white/24 mb-2">
+                        Your declaration
+                      </p>
+                      <p
+                        className="font-display text-base font-extrabold uppercase leading-snug transition-colors duration-200"
+                        style={{
+                          color: finalTopic ? "#F5F5F0" : "rgba(245,245,240,0.18)",
+                        }}
                       >
-                        View source market
-                      </a>
+                        {finalTopic || "Select a topic above"}
+                      </p>
+                    </div>
+
+                    <div className="grid grid-cols-2 gap-4 border-y border-white/6 py-3">
+                      <div>
+                        <p className="font-mono text-[8px] uppercase tracking-widest text-white/24 mb-1">
+                          You lock
+                        </p>
+                        <p
+                          className="font-display text-2xl font-extrabold leading-none transition-colors duration-200"
+                          style={{
+                            color: finalTopic ? activeCat.fg : "rgba(255,255,255,0.18)",
+                          }}
+                        >
+                          ${stake}
+                        </p>
+                        <p className="font-mono text-[8px] uppercase tracking-widest text-white/18 mt-1">
+                          USDC
+                        </p>
+                      </div>
+                      <div className="border-l border-white/8 pl-4">
+                        <p className="font-mono text-[8px] uppercase tracking-widest text-white/24 mb-1">
+                          Pot
+                        </p>
+                        <p className="font-display text-2xl font-extrabold leading-none text-clash-white/85">
+                          ${(stake * 2).toFixed(stake % 1 !== 0 ? 1 : 0)}
+                        </p>
+                        <p className="font-mono text-[8px] uppercase tracking-widest text-white/18 mt-1">
+                          USDC
+                        </p>
+                      </div>
+                    </div>
+
+                    <div>
+                      <p className="font-mono text-[9px] text-white/24 leading-relaxed">
+                        Stake locked until accepted · Cancel anytime before that
+                      </p>
+                    </div>
+
+                    {selectedTake?.source === "polymarket" && (
+                      <div className="pt-3 border-t border-white/6 flex flex-wrap items-center gap-2">
+                        <span className="font-mono text-[8px] uppercase tracking-widest text-clash-gold/50">
+                          Polymarket context
+                        </span>
+                        {selectedTake.url && (
+                          <a
+                            href={selectedTake.url}
+                            target="_blank"
+                            rel="noreferrer"
+                            onClick={(event) => event.stopPropagation()}
+                            className="font-mono text-[8px] uppercase tracking-widest text-white/30 hover:text-clash-gold/75 transition-colors"
+                          >
+                            View source market
+                          </a>
+                        )}
+                      </div>
                     )}
                   </div>
-                )}
-              </div>
+                </div>
 
-              {/* CTA */}
-              <motion.button
-                whileHover={finalTopic && !submitting ? { scale: 1.005 } : {}}
-                whileTap={finalTopic && !submitting ? { scale: 0.985 } : {}}
-                onClick={handleSubmit}
-                disabled={!finalTopic || submitting}
-                className="relative w-full py-5 font-display text-sm sm:text-base font-extrabold uppercase tracking-widest text-clash-black overflow-hidden transition-all duration-200"
-                style={{
-                  background: "#FFB800",
-                  opacity: finalTopic && !submitting ? 1 : 0.5,
-                  cursor: finalTopic && !submitting ? "pointer" : "not-allowed",
-                }}
-              >
-                {!submitting && (
-                  <motion.div
-                    className="absolute inset-0 bg-white/25"
-                    initial={{ x: "-100%" }}
-                    whileHover={{ x: "100%" }}
-                    transition={{ duration: 0.4 }}
-                  />
-                )}
-                <span className="relative flex items-center justify-center gap-2.5">
-                  {submitting ? (
-                    <>
-                      <span className="w-4 h-4 border-2 border-black/25 border-t-black/70 rounded-full animate-spin flex-shrink-0" />
-                      1Shot funding challenge…
-                    </>
-                  ) : (
-                    <>
-                      <span className="text-base">⚔</span>
-                      Create Challenge — ${stake} USDC
-                    </>
-                  )}
-                </span>
-              </motion.button>
-
-              {txError && (
-                <motion.div
-                  initial={{ opacity: 0, y: -4 }}
-                  animate={{ opacity: 1, y: 0 }}
-                  className="mt-2 px-4 py-3 border border-red-500/30 bg-red-500/8 flex items-start gap-2"
+                {/* CTA */}
+                <motion.button
+                  whileHover={finalTopic && !submitting ? { y: -1 } : {}}
+                  whileTap={finalTopic && !submitting ? { scale: 0.985 } : {}}
+                  onClick={handleSubmit}
+                  disabled={!finalTopic || submitting}
+                  className="relative w-full min-h-[56px] px-5 font-display text-sm font-extrabold uppercase tracking-widest text-clash-black overflow-hidden transition-all duration-200 rounded-[6px]"
+                  style={{
+                    background: "#FFB800",
+                    opacity: finalTopic && !submitting ? 1 : 0.45,
+                    cursor: finalTopic && !submitting ? "pointer" : "not-allowed",
+                    boxShadow: finalTopic ? "0 14px 34px rgba(255,184,0,0.16)" : "none",
+                  }}
                 >
-                  <span className="text-red-400 text-xs mt-0.5 flex-shrink-0">✕</span>
-                  <p className="font-mono text-[10px] text-red-400/80 leading-relaxed">{txError}</p>
-                </motion.div>
-              )}
+                  {!submitting && (
+                    <motion.div
+                      className="absolute inset-0 bg-white/24"
+                      initial={{ x: "-100%" }}
+                      whileHover={{ x: "100%" }}
+                      transition={{ duration: 0.4 }}
+                    />
+                  )}
+                  <span className="relative flex items-center justify-center gap-2.5">
+                    {submitting ? (
+                      <>
+                        <span className="w-4 h-4 border-2 border-black/25 border-t-black/70 rounded-full animate-spin flex-shrink-0" />
+                        1Shot funding challenge…
+                      </>
+                    ) : (
+                      <>
+                        <span className="text-base">⚔</span>
+                        Create Challenge · ${stake} USDC
+                      </>
+                    )}
+                  </span>
+                </motion.button>
 
-              <p className="font-mono text-[8px] text-center text-white/15 mt-3 uppercase tracking-widest">
-                Stake locked until accepted · Cancel anytime before that
-              </p>
+                {txError && (
+                  <motion.div
+                    initial={{ opacity: 0, y: -4 }}
+                    animate={{ opacity: 1, y: 0 }}
+                    className="px-4 py-3 border border-red-500/30 bg-red-500/8 flex items-start gap-2 rounded-[6px]"
+                  >
+                    <span className="text-red-400 text-xs mt-0.5 flex-shrink-0">✕</span>
+                    <p className="font-mono text-[10px] text-red-400/80 leading-relaxed">{txError}</p>
+                  </motion.div>
+                )}
+              </aside>
             </div>
+
           </div>
         </div>
       </motion.div>

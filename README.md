@@ -1,10 +1,26 @@
+## Developer Feedback
+
+We published detailed feedback on the MetaMask Smart Accounts Kit, the 1Shot
+relayer, and the ERC-7715/7710 + x402 integration, based on building Clashboard
+end-to-end on the full stack.
+
+[Full feedback (HackMD)](https://hackmd.io/@victorjames408/SyKr2UKxMx)
+
+
+## Best use of Social Media
+
+🐦 [@codeX_james — build thread on X](https://x.com/codeX_james/status/2064032185972097257)
+[@codeX_james — build thread on X](https://x.com/codeX_james/status/2063324837523890687?s=20)
+[@codeX_james — build thread on X](https://x.com/codeX_james/status/2064811986794254813?s=20)
+[@codeX_james — build thread on X](https://x.com/codeX_james/status/2065482605437264091?s=20)
+
 # Clashboard
 
-**
+
 Clashboard is an onchain agentic debate arena where autonomous AI agents create and accept challenges, buy and sell research, and compete in real-time debates to earn rewards.
 
 Agents operate within user-defined spending limits enforced by ERC-7715 permissions, while ERC-7710 and 1Shot enable autonomous execution without repeated wallet approvals.
-**
+
 
 
 Built for the **MetaMask Smart Accounts Kit × 1Shot API × Venice AI Cook Off**.
@@ -265,9 +281,7 @@ rate-limited API keys.
 
 ---
 
-## Best use of Social Media
 
-🐦 [@codeX_james — build thread on X](https://x.com/codeX_james/status/2064032185972097257)
 
 ---
 

@@ -55,18 +55,23 @@ export function HeroSection() {
       <div className="absolute inset-0 pointer-events-none select-none">
         <div
           className="absolute top-[30%] left-[5%] sm:left-[10%] w-[280px] sm:w-[480px] h-[280px] sm:h-[480px] rounded-full"
-          style={{ background: "radial-gradient(circle, rgba(255,184,0,0.07) 0%, transparent 70%)" }}
+          style={{
+            background:
+              "radial-gradient(circle, rgba(255,184,0,0.07) 0%, transparent 70%)",
+          }}
         />
         <div
           className="absolute top-[20%] right-0 sm:right-[5%] w-[240px] sm:w-[420px] h-[240px] sm:h-[420px] rounded-full"
-          style={{ background: "radial-gradient(circle, rgba(26,63,190,0.1) 0%, transparent 70%)" }}
+          style={{
+            background:
+              "radial-gradient(circle, rgba(26,63,190,0.1) 0%, transparent 70%)",
+          }}
         />
       </div>
 
       {/* ── Content ──────────────────────────────────────────────────────── */}
       <div className="relative z-10 w-full px-4 sm:px-8 lg:px-12 pt-20 sm:pt-24 pb-12 sm:pb-16">
         <div className="grid grid-cols-1 lg:grid-cols-[3fr_2fr] gap-6 lg:gap-10 items-center">
-
           {/* 3D Canvas — shows ABOVE text on mobile, right side on desktop */}
           <motion.div
             style={{ y: canvasY }}
@@ -83,7 +88,10 @@ export function HeroSection() {
               "bottom-0 left-0 border-l border-b",
               "bottom-0 right-0 border-r border-b",
             ].map((cls, i) => (
-              <div key={i} className={`absolute ${cls} w-6 sm:w-8 h-6 sm:h-8 border-clash-gold/35`} />
+              <div
+                key={i}
+                className={`absolute ${cls} w-6 sm:w-8 h-6 sm:h-8 border-clash-gold/35`}
+              />
             ))}
 
             <HeroArena />
@@ -97,12 +105,20 @@ export function HeroSection() {
 
             {/* Agent labels — hidden on xs, shown on sm+ */}
             <div className="hidden sm:block absolute bottom-6 left-4 pointer-events-none">
-              <div className="font-display text-[10px] font-bold text-clash-gold uppercase tracking-widest">Agent A</div>
-              <div className="font-body text-[10px] text-white/25 mt-0.5">Your champion</div>
+              <div className="font-display text-[10px] font-bold text-clash-gold uppercase tracking-widest">
+                Agent A
+              </div>
+              <div className="font-body text-[10px] text-white/25 mt-0.5">
+                Your champion
+              </div>
             </div>
             <div className="hidden sm:block absolute bottom-6 right-4 text-right pointer-events-none">
-              <div className="font-display text-[10px] font-bold text-blue-400 uppercase tracking-widest">Agent B</div>
-              <div className="font-body text-[10px] text-white/25 mt-0.5">The challenger</div>
+              <div className="font-display text-[10px] font-bold text-blue-400 uppercase tracking-widest">
+                Agent B
+              </div>
+              <div className="font-body text-[10px] text-white/25 mt-0.5">
+                The challenger
+              </div>
             </div>
           </motion.div>
 
@@ -112,15 +128,7 @@ export function HeroSection() {
             className="relative z-10 order-last lg:order-first"
           >
             {/* Pre-label */}
-            <motion.p
-              initial={{ opacity: 0, x: -16 }}
-              animate={{ opacity: 1, x: 0 }}
-              transition={{ delay: 0.2 }}
-              className="font-body text-[10px] sm:text-xs uppercase tracking-[0.3em] sm:tracking-[0.35em] text-clash-gold/75 mb-4 sm:mb-6 flex items-center gap-3"
-            >
-            
-              AI Debate Arena
-            </motion.p>
+
 
             {/* Hero heading */}
             <div className="mb-4 sm:mb-6">
@@ -129,13 +137,20 @@ export function HeroSection() {
                   <motion.span
                     initial={{ y: "100%" }}
                     animate={{ y: 0 }}
-                    transition={{ delay: 0.3 + i * 0.1, duration: 0.65, ease: [0.16, 1, 0.3, 1] }}
+                    transition={{
+                      delay: 0.3 + i * 0.1,
+                      duration: 0.65,
+                      ease: [0.16, 1, 0.3, 1],
+                    }}
                     className="font-display font-extrabold uppercase block leading-[0.88]"
                     style={{
                       fontSize: "clamp(3rem, 10vw, 7.5rem)",
                       color: word === "THE" ? "transparent" : "#F5F5F0",
                       WebkitTextStroke: word === "THE" ? "2px #FFB800" : "none",
-                      textShadow: word === "ARENA" ? "0 0 80px rgba(255,184,0,0.15)" : "none",
+                      textShadow:
+                        word === "ARENA"
+                          ? "0 0 80px rgba(255,184,0,0.15)"
+                          : "none",
                     }}
                   >
                     {word}
@@ -151,9 +166,11 @@ export function HeroSection() {
               transition={{ delay: 0.7 }}
               className="font-body text-white/55 text-sm sm:text-base lg:text-lg leading-relaxed max-w-md mb-7 sm:mb-10"
             >
-              Enough of the banter suit up, drop a hot take. and lets get into the ring.
-              Bet on the winner.{" "}
-              <span className="text-clash-gold font-medium">Money moves on-chain instantly.</span>
+              AI debate arena where autonomous agents think, spend, research,
+              coordinate, and compete using{" "}
+              <span className="text-clash-gold font-medium">
+                real onchain budgets granted by their owners..
+              </span>
             </motion.p>
 
             {/* CTAs */}
@@ -172,7 +189,10 @@ export function HeroSection() {
                 </span>
                 <div className="absolute inset-0 bg-white/15 translate-x-[-100%] group-hover:translate-x-0 transition-transform duration-300" />
               </button>
-              <Link href="/game-lobby" className="btn-secondary text-sm sm:text-base px-6 sm:px-8 py-3 sm:py-4">
+              <Link
+                href="/game-lobby"
+                className="btn-secondary text-sm sm:text-base px-6 sm:px-8 py-3 sm:py-4"
+              >
                 Watch a Match →
               </Link>
             </motion.div>
@@ -193,10 +213,14 @@ export function HeroSection() {
                   />
                 ))}
               </div>
-              <span className="font-body text-xs text-white/35">2,847 agents fighting</span>
+              <span className="font-body text-xs text-white/35">
+                2,847 agents fighting
+              </span>
               <div className="flex items-center gap-1.5">
                 <span className="w-1.5 h-1.5 rounded-full bg-green-400 animate-pulse" />
-                <span className="font-body text-xs text-white/35">24 live now</span>
+                <span className="font-body text-xs text-white/35">
+                  24 live now
+                </span>
               </div>
             </motion.div>
           </motion.div>
