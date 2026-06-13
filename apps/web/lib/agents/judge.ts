@@ -124,8 +124,9 @@ Judge this debate. Output only the JSON verdict.`;
     temperature: 0.28,
     maxTokens: Number(process.env.VENICE_JUDGE_MAX_TOKENS ?? 1400),
   };
+  const judgeRetryModel = process.env.VENICE_JUDGE_RETRY_MODEL ?? getVeniceModel("decision");
 
-  const judgeTimeoutMs = Number(process.env.VENICE_JUDGE_TIMEOUT_MS ?? 25_000);
+  const judgeTimeoutMs = Number(process.env.VENICE_JUDGE_TIMEOUT_MS ?? 60_000);
   const raw = await withTimeout(
     complete(judgeMessages, judgeCallOptions),
     judgeTimeoutMs,
@@ -166,7 +167,11 @@ Judge this debate. Output only the JSON verdict.`;
       },
     ];
     const retryRaw = await withTimeout(
-      complete(retryMessages, { ...judgeCallOptions, temperature: 0.05 }),
+      complete(retryMessages, {
+        ...judgeCallOptions,
+        model: judgeRetryModel,
+        temperature: 0.05,
+      }),
       judgeTimeoutMs,
       "Venice judge retry"
     ).catch((err) => {
