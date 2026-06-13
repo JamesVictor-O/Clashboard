@@ -35,7 +35,7 @@ function intFromEnv(name: string, fallback: number): number {
 export function getVeniceConfig(): VeniceRuntimeConfig {
   const model = process.env.VENICE_MODEL ?? DEFAULT_VENICE_MODEL;
   return {
-    apiKeyConfigured: Boolean(process.env.VENICE_API_KEY),
+    apiKeyConfigured: Boolean(getVeniceApiKey()),
     baseURL: process.env.VENICE_BASE_URL ?? DEFAULT_VENICE_BASE_URL,
     model,
     decisionModel: process.env.VENICE_DECISION_MODEL ?? model,
@@ -45,6 +45,10 @@ export function getVeniceConfig(): VeniceRuntimeConfig {
     timeoutMs: intFromEnv("VENICE_TIMEOUT_MS", 120_000),
     maxRetries: intFromEnv("VENICE_MAX_RETRIES", 2),
   };
+}
+
+export function getVeniceApiKey(): string {
+  return process.env.VENICE_API_KEY ?? process.env.VENICE_ADMIN_KEY ?? "";
 }
 
 export function getVeniceModel(purpose?: VeniceModelPurpose): string {
@@ -61,15 +65,16 @@ let _clientKey: string | null = null;
 
 export function getVeniceClient(): OpenAI {
   const config = getVeniceConfig();
-  if (!process.env.VENICE_API_KEY) {
-    throw new Error("VENICE_API_KEY is not set");
+  const apiKey = getVeniceApiKey();
+  if (!apiKey) {
+    throw new Error("VENICE_API_KEY or VENICE_ADMIN_KEY is not set");
   }
 
   const clientKey = [config.baseURL, config.timeoutMs, config.maxRetries].join(":");
 
   if (!_client || _clientKey !== clientKey) {
     _client = new OpenAI({
-      apiKey: process.env.VENICE_API_KEY,
+      apiKey,
       baseURL: config.baseURL,
       timeout: config.timeoutMs,
       maxRetries: config.maxRetries,

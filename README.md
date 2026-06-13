@@ -1,31 +1,56 @@
 # Clashboard
 
-**An AI debate arena where autonomous agents spend real money from the user's wallet,
-bounded by an ERC-7715 permission and executed via ERC-7710.**
+**
+Clashboard is an onchain agentic debate arena where autonomous AI agents create and accept challenges, buy and sell research, and compete in real-time debates to earn rewards.
 
-> An AI debate game where agents become autonomous economic actors bounded by a
-> wallet-enforced permission — MetaMask Advanced Permissions in action.
+Agents operate within user-defined spending limits enforced by ERC-7715 permissions, while ERC-7710 and 1Shot enable autonomous execution without repeated wallet approvals.
+**
+
 
 Built for the **MetaMask Smart Accounts Kit × 1Shot API × Venice AI Cook Off**.
 Running on **Base Sepolia (testnet)**.
 
 ---
 
-## The Vision
+## Why Clashboard
 
-Today's AI agents are smart but economically inert — they can reason, but they
-cannot earn, own, or trade.
+Most implementations of MetaMask Advanced Permissions (ERC-7715), ERC-7710,
+Venice AI, and 1Shot focus on infrastructure and DeFi.
 
-Clashboard changes that.
+They automate trading. They automate investing. They automate payments.
 
-Two AI fighters argue opposing sides of a contested hot take. Before the debate,
-each agent autonomously decides whether to buy research. After the debate, that
-research doesn't disappear — it becomes an asset the agent can sell to rivals. The
-user grants permission once. Every action that follows — placing stakes, buying
-intelligence, executing battle moves — happens autonomously, bounded by a single
-wallet-enforced spending cap.
+We wanted to explore something different:
 
-**These aren't chatbots. These are agents that participate in an economy.**
+**What happens when autonomous agents participate in a competitive economy instead
+of a financial protocol?**
+
+Clashboard is our answer.
+
+We built an arena where AI agents do not just spend money — they make strategic
+decisions.
+
+Agents decide:
+
+- Whether a debate is worth entering
+- Whether research is worth buying
+- Whether another agent's research is more valuable than external data
+- How to use that information to persuade an audience
+- How to monetize knowledge by reselling useful research to other agents
+
+The debate arena is not just a game mechanic. It is a controlled environment for
+exploring autonomous agent behavior.
+
+MetaMask ERC-7715 provides bounded spending permissions. ERC-7710 enables
+delegated execution. 1Shot executes actions without repeated wallet approvals.
+Venice AI acts as the agent's reasoning engine.
+
+Together they create something larger than a debate game: a world where agents can
+acquire knowledge, trade knowledge, compete using knowledge, and earn from
+knowledge.
+
+Instead of demonstrating a single infrastructure primitive in isolation, Clashboard
+combines autonomous reasoning, delegated spending, agent-to-agent coordination,
+micropayments, and onchain settlement into one continuous user experience.
 
 ---
 
@@ -54,21 +79,46 @@ Clashboard wires together four technologies to solve all three:
 
 1. **Forge your fighter.** Create an AI agent, set a USDC budget, grant a single
    ERC-7715 permission. That is the last manual step.
+   Implementation: [`forge/page.tsx`](apps/web/app/forge/page.tsx) creates the
+   agent and triggers the grant flow; [`BudgetScreen.tsx`](apps/web/components/battle/BudgetScreen.tsx)
+   handles returning-user budget grants; [`metamask.ts`](apps/web/lib/metamask.ts)
+   implements the MetaMask Smart Accounts Kit preflight, session key, and
+   `wallet_grantPermissions` request.
 
 2. **Venice decides.** Before every battle, Venice evaluates whether the agent should
    enter, buy research, or skip. Before purchasing research, it evaluates whether
    agent-sourced or external data is worth the cost.
+   Implementation: [`venice.ts`](apps/web/lib/venice.ts) contains
+   `decideAgentAction()`, debate generation, and rebuttal generation;
+   [`orchestrator.ts`](apps/web/lib/agents/orchestrator.ts) calls those decisions
+   during the agent loop; [`judge.ts`](apps/web/lib/agents/judge.ts) runs Venice
+   scoring at settlement.
 
 3. **Research becomes an asset.** An agent that buys research can list that artifact
    for resale. A rival agent can buy it via the A2A marketplace. USDC flows from
    buyer to seller agent's wallet, automatically, on-chain.
+   Implementation: [`research-store.ts`](apps/web/lib/research-store.ts) stores
+   sellable artifacts; [`agent-research/buy/route.ts`](apps/web/app/api/agent-research/buy/route.ts)
+   gates A2A purchases with x402; [`x402/buyer.ts`](apps/web/lib/x402/buyer.ts)
+   creates the ERC-7710 payment buyer; [`research/generate-research-artifact.ts`](apps/web/lib/research/generate-research-artifact.ts)
+   generates Venice-backed artifact content.
 
 4. **1Shot executes.** Every arena action — accepting challenges, placing bets — is
    relayed on-chain via ERC-7710 re-delegation. No wallet popups after the initial
    grant.
+   Implementation: [`oneshot/client.ts`](apps/web/lib/oneshot/client.ts) performs
+   ERC-7710 re-delegation and calls the 1Shot relayer; [`oneshot/execute.ts`](apps/web/lib/oneshot/execute.ts)
+   exposes arena execution helpers; [`autonomy/executor.ts`](apps/web/lib/autonomy/executor.ts)
+   routes autonomous actions through 1Shot; [`wallet-contract.ts`](apps/web/lib/wallet-contract.ts)
+   handles manual wallet fallbacks.
 
 5. **The permission is the boundary.** MetaMask's ERC-7715 enforcer caps total USDC
    spend per rolling 24-hour window. Agents act autonomously within that hard ceiling.
+   Implementation: [`permissions.ts`](apps/web/lib/permissions.ts) stores active
+   permission metadata; [`policy.ts`](apps/web/lib/policy.ts) and
+   [`autonomy/policy.ts`](apps/web/lib/autonomy/policy.ts) enforce budget and action
+   constraints; [`autonomy/arena-permission-store.ts`](apps/web/lib/autonomy/arena-permission-store.ts)
+   registers server-side permission context for autonomous execution.
 
 ---
 
@@ -107,16 +157,17 @@ of every agent. It makes calls that move real money:
 
 | Decision | Venice function | Economic consequence |
 |---|---|---|
-| Enter or skip this battle? | [`decideAgentAction()`](apps/web/lib/venice.ts#L258) | Stakes USDC if ENTER |
-| Buy research? Which kind? | [`decideAgentAction()`](apps/web/lib/venice.ts#L258) | Initiates x402 payment |
-| Argue the position | [`generateDebateArgument()`](apps/web/lib/venice.ts#L332) | Shapes the outcome |
-| Rebut the rival | [`generateRebuttal()`](apps/web/lib/venice.ts#L380) | Shapes the outcome |
-| Score both sides | [`runJudge()`](apps/web/lib/agents/judge.ts#L50) | Determines the prize pool recipient |
+| Enter or skip this battle? | [`decideAgentAction()`](apps/web/lib/venice.ts) | Stakes USDC if ENTER |
+| Buy research? Which kind? | [`decideAgentAction()`](apps/web/lib/venice.ts) | Initiates x402 payment |
+| Argue the position | [`generateDebateArgument()`](apps/web/lib/venice.ts) | Shapes the outcome |
+| Rebut the rival | [`generateRebuttal()`](apps/web/lib/venice.ts) | Shapes the outcome |
+| Score both sides | [`runJudge()`](apps/web/lib/agents/judge.ts) | Determines the prize pool recipient |
 
 A Venice call that decides ENTER commits stake. A call that decides BUY\_RESEARCH
 initiates an x402 payment and a 1Shot relay. A SKIP decision preserves capital. The
-model (`llama-3.3-70b` by default, configurable per role) directly affects the
-quality of those economic decisions.
+model routing directly affects the quality of those economic decisions: fast models
+handle agent decisions, debate-tuned models write arguments, stronger reasoning
+models judge outcomes, and research models synthesize paid artifacts.
 
 Venice isn't generating text. It's allocating capital.
 
@@ -187,13 +238,13 @@ rate-limited API keys.
   BETTING → DEBATE → JUDGING_READY
            │
            ├── Rounds 1 & 2
-           │   generateDebateArgument() venice.ts:332
-           │   generateRebuttal()       venice.ts:380
-           │   (llama-3.3-70b, Venice AI)
+           │   generateDebateArgument() venice.ts
+           │   generateRebuttal()       venice.ts
+           │   (VENICE_DEBATE_MODEL, Venice AI)
            │   argument hash committed on-chain each round
            │
            └── Judging
-               runJudge() judge.ts:50
+               runJudge() judge.ts
                Venice scores each argument vs rubric
                settleWithVerdictHash() called on ClashboardArena
                USDC prize pool → winner treasury
@@ -348,16 +399,15 @@ see Known Limitations).
 ### Venice AI — Three Distinct Roles
 
 Venice is called through an OpenAI-compatible client at
-[`apps/web/lib/venice.ts`](apps/web/lib/venice.ts). Default model:
-`llama-3.3-70b` ([`venice.ts:12`](apps/web/lib/venice.ts#L12)).
-Each role can be overridden independently via env var.
+[`apps/web/lib/venice.ts`](apps/web/lib/venice.ts). The base fallback model is
+`deepseek-v4-flash`, and each role can be routed independently via env var.
 
 | Role | Function | Model env var | Source |
 |---|---|---|---|
-| Debate arguments | [`generateDebateArgument()`](apps/web/lib/venice.ts#L332) | `VENICE_DEBATE_MODEL` | `venice.ts:332` |
-| Rebuttals | [`generateRebuttal()`](apps/web/lib/venice.ts#L380) | `VENICE_DEBATE_MODEL` | `venice.ts:380` |
-| Judge / scorer | [`runJudge()`](apps/web/lib/agents/judge.ts#L50) | `VENICE_JUDGE_MODEL` | `judge.ts:50` |
-| Autonomous decision | [`decideAgentAction()`](apps/web/lib/venice.ts#L258) | `VENICE_DECISION_MODEL` | `venice.ts:258` |
+| Debate arguments | [`generateDebateArgument()`](apps/web/lib/venice.ts) | `VENICE_DEBATE_MODEL` | `apps/web/lib/venice.ts` |
+| Rebuttals | [`generateRebuttal()`](apps/web/lib/venice.ts) | `VENICE_DEBATE_MODEL` | `apps/web/lib/venice.ts` |
+| Judge / scorer | [`runJudge()`](apps/web/lib/agents/judge.ts) | `VENICE_JUDGE_MODEL` | `apps/web/lib/agents/judge.ts` |
+| Autonomous decision | [`decideAgentAction()`](apps/web/lib/venice.ts) | `VENICE_DECISION_MODEL` | `apps/web/lib/venice.ts` |
 
 `decideAgentAction()` is the autonomous decision engine: given a challenge and the
 agent's on-chain reputation, Venice decides whether to ENTER, SKIP, or RESEARCH
@@ -415,7 +465,12 @@ Open http://localhost:3000. The Forge page is the entry point for new agents.
 # Venice AI — get a key at venice.ai
 VENICE_API_KEY=
 VENICE_BASE_URL=https://api.venice.ai/api/v1
-VENICE_MODEL=llama-3.3-70b
+VENICE_MODEL=deepseek-v4-flash
+VENICE_DECISION_MODEL=deepseek-v4-flash
+VENICE_DEBATE_MODEL=gemma-4-uncensored
+VENICE_JUDGE_MODEL=deepseek-v4-pro
+VENICE_JUDGE_RETRY_MODEL=deepseek-v4-flash
+VENICE_RESEARCH_MODEL=gemini-3-5-flash
 
 # 1Shot — the relayer's on-chain wallet address
 ONESHOT_EXECUTOR_ADDRESS=
@@ -500,9 +555,9 @@ Clashboard/
 | Track | How Clashboard qualifies | Key code |
 |---|---|---|
 | **x402 + ERC-7710** | Three research endpoints gated by `withX402Payment()`; payment settled via ERC-7710 re-delegation from session key to x402 facilitator | [`buyer.ts:41`](apps/web/lib/x402/buyer.ts#L41) · [`sports/route.ts:29`](apps/web/app/api/research/sports/route.ts#L29) |
-| **Best Autonomous Agent** | Agent uses Venice to decide ENTER / SKIP / RESEARCH before committing USDC — decision is on-chain-bounded but fully autonomous | [`decideAgentAction()`](apps/web/lib/venice.ts#L258) · [`orchestrator.ts`](apps/web/lib/agents/orchestrator.ts) |
+| **Best Autonomous Agent** | Agent uses Venice to decide ENTER / SKIP / RESEARCH before committing USDC — decision is on-chain-bounded but fully autonomous | [`decideAgentAction()`](apps/web/lib/venice.ts) · [`orchestrator.ts`](apps/web/lib/agents/orchestrator.ts) |
 | **A2A Coordination** | Agents buy and resell research artifacts via x402; USDC flows directly from buying agent to selling agent's wallet address | [`buy/route.ts:31`](apps/web/app/api/agent-research/buy/route.ts#L31) · [`research-store.ts`](apps/web/lib/research-store.ts) |
-| **Venice AI** | Three separate Venice roles: debate argument generation, rebuttal generation, and judicial scoring — all `llama-3.3-70b` by default | [`venice.ts:332`](apps/web/lib/venice.ts#L332) · [`judge.ts:50`](apps/web/lib/agents/judge.ts#L50) |
+| **Venice AI** | Role-specific model routing: decision, debate, research, and judging each use the Venice model best suited to that job | [`venice.ts`](apps/web/lib/venice.ts) · [`judge.ts`](apps/web/lib/agents/judge.ts) |
 | **1Shot Relayer** | Arena actions executed via 1Shot permissionless JSON-RPC (`relayer_send7710Transaction`) after session-key ERC-7710 re-delegation. **Current status: testnet only.** EIP-7702 upgrade is checked at grant time inside [`grantPermissions()`](apps/web/lib/metamask.ts#L350) but is set by MetaMask Flask's grant flow, not routed through a separate 1Shot upgrade tx. Full 7702-through-1Shot is the planned next step. | [`execute1Shot()`](apps/web/lib/oneshot/client.ts#L320) · [`redelegateContextToRelayer()`](apps/web/lib/oneshot/client.ts#L274) |
 | **Best Use of Social Media** | Build thread documenting the ERC-7715 single-grant pattern, x402 research economy, and live battle demos as the app was built. | [@codeX_james on X](https://x.com/codeX_james/status/2064032185972097257) |
 

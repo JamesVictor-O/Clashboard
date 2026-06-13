@@ -1,8 +1,8 @@
 import { NextRequest } from "next/server";
+import { getVeniceApiKey } from "@/lib/venice";
 
 // Venice AI TTS — OpenAI-compatible audio/speech endpoint
 const VENICE_BASE_URL = process.env.VENICE_BASE_URL ?? "https://api.venice.ai/api/v1";
-const VENICE_API_KEY  = process.env.VENICE_API_KEY ?? "";
 const TTS_MODEL = process.env.VENICE_TTS_MODEL ?? "tts-kokoro";
 const MAX_TTS_CHARS = Number(process.env.VENICE_TTS_MAX_CHARS ?? 2000);
 const TTS_TIMEOUT_MS = Number(process.env.VENICE_TTS_TIMEOUT_MS ?? 30000);
@@ -13,8 +13,9 @@ const VALID_VOICES = new Set([
 ]);
 
 export async function POST(req: NextRequest) {
-  if (!VENICE_API_KEY) {
-    return new Response("VENICE_API_KEY not configured", { status: 503 });
+  const apiKey = getVeniceApiKey();
+  if (!apiKey) {
+    return new Response("VENICE_API_KEY or VENICE_ADMIN_KEY not configured", { status: 503 });
   }
 
   let payload: { text?: unknown; voice?: unknown };
@@ -42,7 +43,7 @@ export async function POST(req: NextRequest) {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
-        Authorization: `Bearer ${VENICE_API_KEY}`,
+        Authorization: `Bearer ${apiKey}`,
       },
       signal: AbortSignal.timeout(TTS_TIMEOUT_MS),
       body: JSON.stringify({
