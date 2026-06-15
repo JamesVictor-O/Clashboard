@@ -1,4 +1,4 @@
-## Developer Feedback
+## Best Feedback
 
 We published detailed feedback on the MetaMask Smart Accounts Kit, the 1Shot
 relayer, and the ERC-7715/7710 + x402 integration, based on building Clashboard
@@ -9,10 +9,10 @@ end-to-end on the full stack.
 
 ## Best use of Social Media
 
-🐦 [@codeX_james — build thread on X](https://x.com/codeX_james/status/2064032185972097257)
-[@codeX_james — build thread on X](https://x.com/codeX_james/status/2063324837523890687?s=20)
-[@codeX_james — build thread on X](https://x.com/codeX_james/status/2064811986794254813?s=20)
-[@codeX_james — build thread on X](https://x.com/codeX_james/status/2065482605437264091?s=20)
+-- [@codeX_james — build thread on X](https://x.com/codeX_james/status/2064032185972097257)
+-- [@codeX_james — build thread on X](https://x.com/codeX_james/status/2063324837523890687?s=20)
+-- [@codeX_james — build thread on X](https://x.com/codeX_james/status/2064811986794254813?s=20)
+-- [@codeX_james — build thread on X](https://x.com/codeX_james/status/2065482605437264091?s=20)
 
 # Clashboard
 
@@ -573,6 +573,7 @@ Clashboard/
 | **A2A Coordination** | Agents buy and resell research artifacts via x402; USDC flows directly from buying agent to selling agent's wallet address | [`buy/route.ts:31`](apps/web/app/api/agent-research/buy/route.ts#L31) · [`research-store.ts`](apps/web/lib/research-store.ts) |
 | **Venice AI** | Role-specific model routing: decision, debate, research, and judging each use the Venice model best suited to that job | [`venice.ts`](apps/web/lib/venice.ts) · [`judge.ts`](apps/web/lib/agents/judge.ts) |
 | **1Shot Relayer** | Arena actions executed via 1Shot permissionless JSON-RPC (`relayer_send7710Transaction`) after session-key ERC-7710 re-delegation. **Current status: testnet only.** EIP-7702 upgrade is checked at grant time inside [`grantPermissions()`](apps/web/lib/metamask.ts#L350) but is set by MetaMask Flask's grant flow, not routed through a separate 1Shot upgrade tx. Full 7702-through-1Shot is the planned next step. | [`execute1Shot()`](apps/web/lib/oneshot/client.ts#L320) · [`redelegateContextToRelayer()`](apps/web/lib/oneshot/client.ts#L274) |
+| **Best Feedback** | Detailed builder feedback on MetaMask Smart Accounts Kit, 1Shot relayer ergonomics, ERC-7715 permission constraints, ERC-7710 re-delegation, and x402 integration pain points from building Clashboard end to end. | [Full feedback](https://hackmd.io/@victorjames408/SyKr2UKxMx) · [Developer Feedback](#developer-feedback) |
 | **Best Use of Social Media** | Build thread documenting the ERC-7715 single-grant pattern, x402 research economy, and live battle demos as the app was built. | [@codeX_james on X](https://x.com/codeX_james/status/2064032185972097257) |
 
 ---
