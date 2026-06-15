@@ -281,7 +281,55 @@ rate-limited API keys.
 
 ---
 
+## Hackathon Code Usage Checklist
 
+This section maps the requested hackathon review items to the exact files where
+Clashboard uses each primitive.
+
+### Smart Accounts Kit Usage
+
+| Requirement | Clashboard usage | Code |
+|---|---|---|
+| Advanced Permissions request | The forge and lobby budget flows call MetaMask Flask's `wallet_grantPermissions` through the Smart Accounts Kit flow. The grant creates the bounded USDC permission, session key, and permission context used by the agent. | [`metamask.ts`](apps/web/lib/metamask.ts) · [`forge/page.tsx`](apps/web/app/forge/page.tsx) · [`BudgetScreen.tsx`](apps/web/components/battle/BudgetScreen.tsx) |
+| Advanced Permissions redeeming | The stored permission context is redeemed for arena execution by re-delegating it to the 1Shot relayer target before challenge, accept, and bet actions. | [`oneshot/client.ts`](apps/web/lib/oneshot/client.ts) · [`oneshot/execute.ts`](apps/web/lib/oneshot/execute.ts) · [`autonomy/execute/route.ts`](apps/web/app/api/autonomy/execute/route.ts) |
+| Permission persistence and policy checks | Active permission metadata is stored locally and checked before autonomous actions so the agent only acts inside the user's budget window. | [`permissions.ts`](apps/web/lib/permissions.ts) · [`autonomy/policy.ts`](apps/web/lib/autonomy/policy.ts) · [`autonomy/executor.ts`](apps/web/lib/autonomy/executor.ts) |
+
+### Delegations
+
+| Requirement | Clashboard usage | Code |
+|---|---|---|
+| Create delegation | Clashboard's primary delegation path is the ERC-7715 Advanced Permission grant from the user's smart account to an agent session key. | [`metamask.ts`](apps/web/lib/metamask.ts) |
+| Redeem delegation | Arena actions redeem the permission-derived delegation through 1Shot; x402 purchases redeem the same permission context through the x402 buyer/facilitator rail. | [`oneshot/client.ts`](apps/web/lib/oneshot/client.ts) · [`x402/buyer.ts`](apps/web/lib/x402/buyer.ts) · [`oneshot-facilitator.ts`](apps/web/lib/facilitator/oneshot-facilitator.ts) |
+
+### Redelegation
+
+| Requirement | Clashboard usage | Code |
+|---|---|---|
+| Create redelegation for Advanced Permissions | The session key re-delegates the user's permission context to the 1Shot relayer for arena actions. | [`oneshot/client.ts`](apps/web/lib/oneshot/client.ts) |
+| Create redelegation for x402 payments | Research purchases re-delegate the session permission to the x402 facilitator so paid data and A2A artifact purchases can settle in USDC. | [`x402/buyer.ts`](apps/web/lib/x402/buyer.ts) · [`payments/x402client.ts`](apps/web/lib/payments/x402client.ts) |
+
+### x402
+
+| Requirement | Clashboard usage | Code |
+|---|---|---|
+| x402 server | Research APIs and A2A artifact purchases are gated with `withX402Payment()`, with a local facilitator route for payment verification and settlement. | [`x402/next.ts`](apps/web/lib/x402/next.ts) · [`x402/facilitator.ts`](apps/web/lib/x402/facilitator.ts) · [`research/sports/route.ts`](apps/web/app/api/research/sports/route.ts) · [`research/news/route.ts`](apps/web/app/api/research/news/route.ts) · [`research/history/route.ts`](apps/web/app/api/research/history/route.ts) · [`agent-research/buy/route.ts`](apps/web/app/api/agent-research/buy/route.ts) |
+| x402 + ERC-7710 client payment | Agents buy research by using the stored session permission context to create an ERC-7710-capable x402 buyer. | [`x402/buyer.ts`](apps/web/lib/x402/buyer.ts) · [`agents/orchestrator.ts`](apps/web/lib/agents/orchestrator.ts) |
+
+### 1Shot API Usage
+
+| Requirement | Clashboard usage | Code |
+|---|---|---|
+| 1Shot API calls | Clashboard calls the 1Shot permissionless JSON-RPC method `relayer_send7710Transaction` after building and signing the ERC-7710 redelegation payload. | [`oneshot/client.ts`](apps/web/lib/oneshot/client.ts) |
+| Arena execution through 1Shot | Challenge, accept, and bet actions route through 1Shot when an active permission context exists. | [`oneshot/execute.ts`](apps/web/lib/oneshot/execute.ts) · [`autonomy/executor.ts`](apps/web/lib/autonomy/executor.ts) · [`autonomy/execute/route.ts`](apps/web/app/api/autonomy/execute/route.ts) |
+
+### Venice AI Usage
+
+| Requirement | Clashboard usage | Code |
+|---|---|---|
+| Agent decisions | Venice decides whether an agent should enter, skip, buy research, or continue without research before USDC is committed. | [`venice.ts`](apps/web/lib/venice.ts) · [`agents/orchestrator.ts`](apps/web/lib/agents/orchestrator.ts) |
+| Debate generation | Venice generates opening arguments and rebuttals for both debate rounds, with role-specific model routing. | [`venice.ts`](apps/web/lib/venice.ts) · [`battle-lifecycle.ts`](apps/web/lib/battle-lifecycle.ts) |
+| Judging | Venice scores the completed debate and returns the winner used for settlement. | [`agents/judge.ts`](apps/web/lib/agents/judge.ts) · [`battle-settlement.ts`](apps/web/lib/battle-settlement.ts) |
+| Research artifact generation | Venice synthesizes paid research artifacts that agents can use in battle and resell through the A2A marketplace. | [`research/generate-research-artifact.ts`](apps/web/lib/research/generate-research-artifact.ts) |
 
 ---
 
@@ -561,8 +609,6 @@ Clashboard/
         ├── AgentRegistry.sol         # Agent identity + reputation
         └── AgentTreasury.sol         # Per-agent USDC balance
 ```
-
----
 
 ## Track Mapping
 
